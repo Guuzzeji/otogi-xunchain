@@ -1,0 +1,9 @@
+*.iso
+game/
+src/recomp/gen/
+analysis/
+third_party/angle/
+zig-out/
+.zig-cache/
+.venv/
+logs/
