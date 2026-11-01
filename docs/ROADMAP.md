@@ -54,7 +54,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 
 ---
 
-## M0: Scaffold and toolchain spike (goal: risk check)
+## M0: Scaffold and toolchain spike (goal: risk check) — DONE 2026-11-01
 1. Run `git init`. Write `.gitignore`. Run `git subtree add --prefix xboxrecomp https://github.com/sp00nznet/xboxrecomp v0.16.0 --squash`.
 2. Install the dev tools: zig (pin the latest stable release, recorded in `build.zig.zon` `minimum_zig_version`) and Python 3.12 with `pip install capstone`.
 3. Write `build.zig`:

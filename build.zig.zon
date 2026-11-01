@@ -1,0 +1,7 @@
+.{
+    .name = .otogi,
+    .version = "0.0.0",
+    .fingerprint = 0x644488cb8ac62c0a,
+    .minimum_zig_version = "0.17.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
