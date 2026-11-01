@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     inline for (.{ "kernel", "d3d", "audio", "apu", "nv2a", "usb", "input", "video", "platform" }) |d|
         mod.addIncludePath(b.path("xboxrecomp/src/" ++ d));
     mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-w" } });
+    addGenerated(b, mod);
     for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "xinput1_4", "dbghelp", "gdi32" }) |l|
         mod.linkSystemLibrary(l, .{});
 
@@ -33,6 +34,21 @@ pub fn build(b: *std.Build) void {
     const unpack = b.addRunArtifact(xiso);
     unpack.addPassthruArgs();
     b.step("unpack", "Unpack an Xbox ISO: zig build unpack -- <iso> <out_dir>").dependOn(&unpack.step);
+}
+
+/// Lifted C from `tools.recomp --gen-dir src/recomp/gen` (gitignored, absent on a fresh clone).
+fn addGenerated(b: *std.Build, mod: *std.Build.Module) void {
+    const io = b.graph.io;
+    const gen = b.root.join(b.allocator, "src/recomp/gen") catch @panic("OOM");
+    var dir = gen.root_dir.handle.openDir(io, gen.sub_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var files: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind == .file and std.mem.endsWith(u8, e.name, ".c")) files.append(b.allocator, b.dupe(e.name)) catch @panic("OOM");
+    }
+    mod.addIncludePath(b.path("src/recomp/gen"));
+    mod.addCSourceFiles(.{ .root = b.path("src/recomp/gen"), .files = files.items, .flags = &.{ "-std=gnu11", "-O1", "-fno-strict-aliasing", "-fwrapv", "-w" } });
 }
 
 // Windows source set from xboxrecomp's CMakeLists (minus the SDL/POSIX-only files).

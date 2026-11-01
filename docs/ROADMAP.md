@@ -68,7 +68,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 
 **Exit check:** `zig build` produces an exe. The exe runs `xbox_MemoryLayoutInit` and exits cleanly.
 
-## M1: Lift and link
+## M1: Lift and link — DONE 2026-11-01
 1. Run the pipeline from `docs/GETTING_STARTED.md`: `xbe_parser --json`, `disasm`, `func_id`, `abi_analysis`, then `recomp --all --split 250 --gen-dir src/recomp/gen`.
 2. Make `build.zig` glob `src/recomp/gen/*.c`. Build with limited parallelism, because Sneak King needed about 16 GB of RAM.
 3. Fix lifter gaps (`/* mnemonic */` holes, seen as segment prefixes and x87/SSE forms) in `xboxrecomp/tools/recomp/translator.py`. Keep data that was lifted as code out of the seeds. This was Sneak King P2.

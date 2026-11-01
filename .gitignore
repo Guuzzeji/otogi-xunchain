@@ -7,3 +7,5 @@ zig-out/
 .zig-cache/
 .venv/
 logs/
+.claude/settings.local.json
+.vscode/
