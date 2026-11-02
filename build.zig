@@ -64,7 +64,7 @@ pub fn build(b: *std.Build) void {
     setup_mod.addAnonymousImport("source.zip", .{ .root_source_file = source_zip });
     setup_mod.addOptions("build_info", info);
     setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
-    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32" }) |l| setup_mod.linkSystemLibrary(l, .{});
+    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| setup_mod.linkSystemLibrary(l, .{});
     const setup = b.addExecutable(.{ .name = "otogi-setup", .root_module = setup_mod });
     setup.subsystem = .windows;
     b.step("setup", "Build otogi-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);

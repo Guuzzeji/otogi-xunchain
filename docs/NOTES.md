@@ -204,12 +204,11 @@
 - The log starts with support info: setup commit, Windows build, CPU, RAM, GPU (DXGI adapter), ISO path and size,
   install folder and free space; each step line carries its start time. The UI has Copy log (whole file to the
   clipboard) and Open log file.
-- Look: before a disc is picked, a red-black window with a seigaiha header, dark panels with gold edges and light
-  text, steps left and log right. Once the disc image checks out, setup reads the game's own menu art from it
-  (`menu	itle.dds` logo on brocade, `fe_end00` Raikoh, `fe_bg03A` red waves as the backdrop, `fe_lo000` red brush
-  stroke under the Build button and the running step). Those are plain DDS (DXT1/3, BGRA); `setup/window.cpp` makes
-  D3D11 textures of them as they are. No game art ships in the exe. Bundled: Shippori Mincho B1 Bold (OFL, subset to
-  130 KB with fontTools, `setup/assets/README.md`); Segoe UI and Consolas come from Windows.
+- Look: the game's own menu art, bundled (`setup/assets/art/`, ripped from the disc to JPEG/PNG, loaded through WIC):
+  the `title.dds` logo on brocade fading to `fe_end00` Raikoh in the header, `fe_bg03A` red waves as the backdrop,
+  the `fe_lo000` red brush stroke under the Build button and the running step. Dark panels with gold edges, light
+  text, steps left and log right. Shippori Mincho B1 Bold (OFL, subset to 130 KB with fontTools); Segoe UI and
+  Consolas come from Windows. Bundling the art is an owner's-choice exception to the no-game-data rule.
 - Time estimate: per-step seconds from a measured first run (`step_secs` in `setup/main.zig`): extract 5 s (warm
   cache; 20 assumed), source 1 s, Zig 19 s, Python 1 s, lift 231 s (disasm 189 s), compile 238 s; 8 min 15 s in all.
   Steps already stamped count 0; the compile counts 2.5x under 16 GB of RAM. Before a run setup shows the total for
@@ -218,7 +217,7 @@
   Stop terminates the job, so zig's compiler children die too, and closing setup mid-build does the same. Extract and
   downloads run in-process and finish their step first. Tested: stop during the compile left no processes.
 - The last disc image that checked out is remembered in `otogi-setup-iso.txt` beside the exe; without one, setup
-  tries the first `.iso` beside the exe. Either way the game art shows at once on the next launch.
+  tries the first `.iso` beside the exe.
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
   `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
 

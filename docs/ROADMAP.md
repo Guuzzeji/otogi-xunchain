@@ -51,6 +51,8 @@ settings.ini, mkb.ini        copied pattern from Sneak King
 third_party/angle/, game/    gitignored
 ```
 Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `third_party/angle/`, `zig-out/`, `.zig-cache/`. Never commit game data, lifted C, or the XBE. That content is derived from copyrighted material, so it is why the player's own ISO is required.
+  Exception (owner's choice, 2026-11-01): four menu textures ripped from the disc are bundled in otogi-setup.exe
+  for its look (`setup/assets/art/`).
 
 ---
 

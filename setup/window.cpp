@@ -7,6 +7,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <wincodec.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -182,19 +183,42 @@ static void* makeTexture(DXGI_FORMAT fmt, const void* px, UINT pitch, int w, int
     return srv;
 }
 
-// A .dds from the game disc (top level only): DXT1/3/5 or 32-bit BGRA.
-extern "C" void* win_texture_dds(const unsigned char* d, int len, int* w, int* h) {
-    if (len < 128 || memcmp(d, "DDS ", 4) != 0) return nullptr;
-    *h = *(const int*)(d + 12);
-    *w = *(const int*)(d + 16);
-    const unsigned pf_flags = *(const unsigned*)(d + 80), bits = *(const unsigned*)(d + 88), amask = *(const unsigned*)(d + 104);
-    UINT bw = (*w + 3) / 4;
-    if (memcmp(d + 84, "DXT1", 4) == 0) return makeTexture(DXGI_FORMAT_BC1_UNORM, d + 128, bw * 8, *w, *h);
-    if (memcmp(d + 84, "DXT3", 4) == 0) return makeTexture(DXGI_FORMAT_BC2_UNORM, d + 128, bw * 16, *w, *h);
-    if (memcmp(d + 84, "DXT5", 4) == 0) return makeTexture(DXGI_FORMAT_BC3_UNORM, d + 128, bw * 16, *w, *h);
-    if ((pf_flags & 0x40) && bits == 32 && 128 + *w * *h * 4 <= len)
-        return makeTexture(amask ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM, d + 128, *w * 4, *w, *h);
-    return nullptr;
+// A JPG/PNG kept in the exe (setup/assets/art), through WIC, the image codecs
+// Windows ships.
+extern "C" void* win_texture_image(const unsigned char* data, int len, int* w, int* h) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IWICImagingFactory* wic;
+    if (CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)) != S_OK) return nullptr;
+    void* out = nullptr;
+    IWICStream* stream;
+    IWICBitmapDecoder* dec;
+    IWICBitmapFrameDecode* frame;
+    IWICFormatConverter* conv;
+    if (wic->CreateStream(&stream) == S_OK) {
+        if (stream->InitializeFromMemory((BYTE*)data, len) == S_OK && wic->CreateDecoderFromStream(stream, nullptr, WICDecodeMetadataCacheOnDemand, &dec) == S_OK) {
+            if (dec->GetFrame(0, &frame) == S_OK) {
+                if (wic->CreateFormatConverter(&conv) == S_OK) {
+                    UINT uw, uh;
+                    frame->GetSize(&uw, &uh);
+                    if (conv->Initialize(frame, GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom) == S_OK) {
+                        unsigned char* px = (unsigned char*)malloc(uw * uh * 4);
+                        if (px && conv->CopyPixels(nullptr, uw * 4, uw * uh * 4, px) == S_OK) {
+                            *w = uw;
+                            *h = uh;
+                            out = makeTexture(DXGI_FORMAT_R8G8B8A8_UNORM, px, uw * 4, uw, uh);
+                        }
+                        free(px);
+                    }
+                    conv->Release();
+                }
+                frame->Release();
+            }
+            dec->Release();
+        }
+        stream->Release();
+    }
+    wic->Release();
+    return out;
 }
 
 // A font kept in the exe: the atlas must not free it.

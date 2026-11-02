@@ -18,7 +18,7 @@ extern fn win_pick_iso(buf: [*]u8, len: c_int) bool;
 extern fn win_pick_folder(buf: [*]u8, len: c_int) bool;
 extern fn win_open(path: [*:0]const u8) void;
 extern fn win_gpu_name() [*:0]const u8;
-extern fn win_texture_dds(data: [*]const u8, len: c_int, w: *c_int, h: *c_int) ?*anyopaque;
+extern fn win_texture_image(data: [*]const u8, len: c_int, w: *c_int, h: *c_int) ?*anyopaque;
 extern fn win_font_memory(data: *const anyopaque, len: c_int) ?*im.ImFont;
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn SetEnvironmentVariableA(name: [*:0]const u8, value: [*:0]const u8) callconv(.winapi) c_int;
@@ -156,10 +156,9 @@ const spirit = 0x8FD0FF;
 const good = 0x8DBF6B;
 const bad = 0xE0604F;
 
-// ── Art. Bundled: an OFL font (Shippori Mincho B1 Bold, subset); see
-// setup/assets/README.md. Once a disc
-// image checks out, the game's own menu art is read from it: nothing of the
-// game ships in this exe.
+// ── Art, all inside the exe (setup/assets): the game's own menu textures,
+// ripped from the disc to JPEG/PNG so setup looks like the game before any
+// disc is picked, and an OFL font (Shippori Mincho B1 Bold, subset).
 const Art = struct {
     tex: ?*anyopaque = null,
     w: f32 = 0,
@@ -171,26 +170,14 @@ const Art = struct {
 var disc: struct { title: Art = .{}, raikoh: Art = .{}, waves: Art = .{}, brush: Art = .{} } = .{};
 var disc_loaded = false;
 
-/// The game's menu textures (plain DDS) from the disc's menu\ folder.
-fn loadDiscArt(io: Io, gpa: std.mem.Allocator, img: xiso.Image) void {
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const root = img.readDir(a, img.root_sector, img.root_size) catch return;
-    const menu = for (root) |e| {
-        if (e.is_dir and std.ascii.eqlIgnoreCase(e.name, "menu")) break e;
-    } else return;
-    const files = img.readDir(a, menu.sector, menu.size) catch return;
-    inline for (.{ .{ "title", "title.dds" }, .{ "raikoh", "fe_end00.dds" }, .{ "waves", "fe_bg03A.dds" }, .{ "brush", "fe_lo000.dds" } }) |f| {
-        for (files) |e| if (std.ascii.eqlIgnoreCase(e.name, f[1])) {
-            const data = a.alloc(u8, e.size) catch break;
-            const n = img.file.readPositionalAll(io, data, img.base + @as(u64, e.sector) * 2048) catch break;
-            var w: c_int = 0;
-            var h: c_int = 0;
-            @field(disc, f[0]) = .{ .tex = win_texture_dds(data.ptr, @intCast(n), &w, &h), .w = @floatFromInt(w), .h = @floatFromInt(h) };
-        };
+fn loadArt() void {
+    inline for (.{ "title", "raikoh", "waves", "brush" }, .{ "title.jpg", "raikoh.jpg", "waves.jpg", "brush.png" }) |field, file| {
+        const data = @embedFile("assets/art/" ++ file);
+        var w: c_int = 0;
+        var h: c_int = 0;
+        @field(disc, field) = .{ .tex = win_texture_image(data, data.len, &w, &h), .w = @floatFromInt(w), .h = @floatFromInt(h) };
     }
-    disc_loaded = disc.title.tex != null;
+    disc_loaded = disc.title.tex != null and disc.raikoh.tex != null;
 }
 
 /// Part of a texture (uv rect) into a screen rect.
@@ -280,6 +267,7 @@ pub fn main(init: std.process.Init) !void {
     if (!win_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi: Myth of Demons - Setup v" ++ build_info.version), 1240, 960)) return error.NoWindow;
     dpi = im.ImGui_GetStyle().*.FontScaleDpi;
     makeJob();
+    loadArt();
 
     var u: Ui = .{ .io = io, .gpa = gpa };
     // otogi-setup.exe <iso> <output folder>: start building at once.
@@ -348,11 +336,6 @@ const Ui = struct {
         };
         u.iso_state = if (std.mem.eql(u8, &hex, xbe_sha1)) .ok else .wrong;
         if (u.iso_state == .ok) Io.Dir.cwd().writeFile(u.io, .{ .sub_path = remembered, .data = path }) catch {};
-        if (u.iso_state == .ok and !disc_loaded) {
-            const f = Io.Dir.cwd().openFile(u.io, path, .{}) catch return;
-            defer f.close(u.io);
-            loadDiscArt(u.io, u.gpa, xiso.Image.open(u.io, f) catch return);
-        }
     }
 
     fn start(u: *Ui) void {

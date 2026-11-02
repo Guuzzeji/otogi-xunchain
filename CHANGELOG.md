@@ -7,6 +7,10 @@ the Release workflow moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
+### Changed
+- Setup's game art (title logo, Raikoh, red waves, brush stroke) is built into the
+  exe, so it shows as soon as setup opens, before a disc is picked.
+
 ## [0.6.0] - 2026-11-01
 
 ### Added
