@@ -1,0 +1,33 @@
+# Every push and pull request: the version has a changelog section, setup builds,
+# the tests pass. The game itself needs the lifted C (from a disc), so CI builds
+# only otogi-setup.exe, which is what players download.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Changelog has a section for the version in build.zig.zon
+        shell: bash
+        run: |
+          version=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+
+      - run: zig build setup
+      - run: zig build test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otogi-setup
+          path: zig-out/bin/otogi-setup.exe

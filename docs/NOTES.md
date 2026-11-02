@@ -163,3 +163,73 @@
   for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
   test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
   (143) is right: StencilEnable 144 and ZBias 149 match the XbSymbol variables.
+
+## Debug menu (F1)
+- Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
+  sources and backends and exposes `dcimgui.h` as module `imgui`. Backend functions are hand-declared externs.
+- `src/debug_menu.zig`: drawn at the end of `blitWindow` (so shots include it), on the GL thread, through
+  `imgui_impl_opengl3` (GLES 3) and `imgui_impl_win32`. Closed, it costs nothing. `RECOMP_DEBUG_MENU=1` opens it at
+  boot. Window layout in `logs\imgui.ini`.
+- Render tab: renderer, settings, game/shown fps, guest work time per frame (from the end of one Swap to the start of the
+  next) with a graph and a count of frames over 33.3 ms, last frame's draws/clears/CopyRects/texture uploads
+  (`gl_hle.last`), host cache sizes, pause and frame step (Swap shows the held frame until resumed).
+- Memory tab: hex view and u32 write at a guest VA.
+- Cheats tab (`src/cheats.zig`; addresses from the lifted code, all static): story stage `0x13DAC08`, all-stages flag
+  `0x13DAC04`, stage order `0x1B98A0`, stage records `0x1D2C88` (0x3C each, +0x18 bit 0 cleared), exit request
+  `0x1D80EC` (-1 none, 1 hub), status `0x13DA270` (level, +0x18 exp, +0x1C money, +0x24 max life), player object
+  `0x13C91D0` (HP f32 `0x13D8BA8`, shown HP `+4`, max i32 `+8`; magic f32 `0x13D8BB4`, max `+4`), inventories
+  (16-byte entries, +8 owned/quantity): weapons `0x13DA4C8` count `0x13DAAD0`, magic `0x13DA170`/`0x13DA8C8`,
+  accessories `0x13DA2C0`/`0x13DA4C0`, items `0x13DA8D0`/`0x13DA8CC`.
+- Warp sets the story stage and requests exit 1; the hub then opens on that stage. Tested: stage 1 to m005 (the
+  hub's Next Stage loaded `map\m005`). Give-all, max money, god mode and infinite magic tested in stage 1.
+- Seen with it: in m005 the magic gauge draws on a white square (not looked into).
+- Testing by script: `Get-Process otogi` gives the window; `SetCursorPos` + `mouse_event` clicks reach ImGui once
+  the window is topmost.
+
+## Setup (M6)
+- `zig build setup` makes `zig-out\bin\otogi-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
+  zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in
+  `setup/main.zig`. `otogi-setup.exe <iso> <out>` starts at once (for tests).
+- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` SHA-1 in the
+  ISO (`src/xiso.zig`), extract to `<out>\game`, unpack the source to `<out>\build`, download Zig 0.17.0, Python
+  3.14.7 embeddable and the Capstone 5.0.9 wheel (SHA-256 pinned in `setup/main.zig`, kept in
+  `<out>\build\downloads`), lift (xbe_parser, disasm, func_id, abi_analysis, recomp), `zig build --prefix <out>
+  --prefix-exe-dir .` (`-j1` under 16 GB of RAM), copy `settings.ini` unless the player has one.
+- Embeddable Python takes its sys.path from `python314._pth`; setup writes the site-packages and toolkit paths there.
+- Tool output: stdout and stderr are `.pipe`s, drained by two threads into `<out>\setup.log`. Passing the log as
+  `.file` does not work: Zig 0.17's Windows spawn reopens a `.file` handle by name, so the tool writes from offset 0 over
+  the log (and an anonymous pipe fails to reopen with `NoDevice`).
+- Zig's cache goes to `<out>\build\zig-cache` through `ZIG_GLOBAL_CACHE_DIR`; 0.17's `zig build` has no
+  `--global-cache-dir`.
+- The log starts with support info: setup commit, Windows build, CPU, RAM, GPU (DXGI adapter), ISO path and size,
+  install folder and free space; each step line carries its start time. The UI has Copy log (whole file to the
+  clipboard) and Open log file.
+- Look: before a disc is picked, a red-black window with a seigaiha header, dark panels with gold edges and light
+  text, steps left and log right. Once the disc image checks out, setup reads the game's own menu art from it
+  (`menu	itle.dds` logo on brocade, `fe_end00` Raikoh, `fe_bg03A` red waves as the backdrop, `fe_lo000` red brush
+  stroke under the Build button and the running step). Those are plain DDS (DXT1/3, BGRA); `setup/window.cpp` makes
+  D3D11 textures of them as they are. No game art ships in the exe. Bundled: Shippori Mincho B1 Bold (OFL, subset to
+  130 KB with fontTools, `setup/assets/README.md`); Segoe UI and Consolas come from Windows.
+- Time estimate: per-step seconds from a measured first run (`step_secs` in `setup/main.zig`): extract 5 s (warm
+  cache; 20 assumed), source 1 s, Zig 19 s, Python 1 s, lift 231 s (disasm 189 s), compile 238 s; 8 min 15 s in all.
+  Steps already stamped count 0; the compile counts 2.5x under 16 GB of RAM. Before a run setup shows the total for
+  what is left; during it, time left and elapsed.
+- Stop: the main button turns into "Stop the build" (click twice). Tools run in a job object (KILL_ON_JOB_CLOSE);
+  Stop terminates the job, so zig's compiler children die too, and closing setup mid-build does the same. Extract and
+  downloads run in-process and finish their step first. Tested: stop during the compile left no processes.
+- The last disc image that checked out is remembered in `otogi-setup-iso.txt` beside the exe; without one, setup
+  tries the first `.iso` beside the exe. Either way the game art shows at once on the next launch.
+- Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
+  `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
+
+## Versions and releases
+- The version is `build.zig.zon`'s `.version` (semver; 0.6.0 = M6). `build.zig` passes it and the short commit to both
+  exes as module `build_info`: the game log's first line, the debug menu, setup's window title and `setup.log`.
+- `CHANGELOG.md` (Keep a Changelog): add entries under `## [Unreleased]` as work lands.
+- GitHub Actions (need a GitHub remote; none yet):
+  - `ci.yml` on push to main and on pull requests: changelog has a section for the current version, `zig build setup`,
+    `zig build test`, setup exe as an artifact. The game itself is not built (it needs the lifted C from a disc).
+  - `release.yml`, run by hand with a bump (patch, minor, major, none): bumps the version, moves Unreleased into a dated
+    section, commits "Release vX.Y.Z", tags, builds setup, pushes, and publishes a release with `otogi-setup.exe`, the
+    font's OFL text, and that changelog section as notes. "none" releases the current version (for 0.6.0).
+  - The bump and changelog shell was dry-run locally on a scratch repo.

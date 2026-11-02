@@ -1,6 +1,11 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    // The release version is build.zig.zon's; CHANGELOG.md has a section for it.
+    const info = b.addOptions();
+    info.addOption([]const u8, "version", @import("build.zig.zon").version);
+    info.addOption([]const u8, "commit", std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "--short", "HEAD" }), " \r\n"));
+
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
     // ReleaseFast by default: the Debug renderer cannot hold the game's frame rate.
     const optimize = b.option(std.builtin.Optimize, "optimize", "Optimization mode (default fast)") orelse .fast;
@@ -12,6 +17,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .sanitize_c = .off, // guest structs are 4-byte aligned; UBSan alignment checks fire on every one
     });
+    mod.addOptions("build_info", info);
     mod.addCMacro("WIN32_LEAN_AND_MEAN", "");
     mod.addCMacro("NOMINMAX", "");
     mod.addIncludePath(b.path("xboxrecomp/include"));
@@ -30,6 +36,7 @@ pub fn build(b: *std.Build) void {
     mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
     inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
         b.getInstallStep().dependOn(&b.addInstallBinFile(angle.path("bin/" ++ dll), dll).step);
+    addImgui(b, mod, target, optimize, &.{ "win32", "opengl3" });
     for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "xinput1_4", "dbghelp", "gdi32", "user32" }) |l|
         mod.linkSystemLibrary(l, .{});
 
@@ -38,6 +45,23 @@ pub fn build(b: *std.Build) void {
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
     b.step("run", "Run the game").dependOn(&run.step);
+
+    // otogi-setup.exe: builds the game from the player's ISO. It embeds a
+    // `git archive` of HEAD, so commit before `zig build setup`.
+    const setup_mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
+    addImgui(b, setup_mod, target, .ReleaseSmall, &.{ "win32", "dx11" });
+    setup_mod.addCSourceFile(.{ .file = b.path("setup/window.cpp"), .flags = &.{ "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-w" } });
+    setup_mod.addImport("xiso", b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = target }));
+    const archive = b.addSystemCommand(&.{ "git", "archive", "--format=zip", "-o" });
+    const source_zip = archive.addOutputFileArg("source.zip");
+    archive.addArg("HEAD");
+    archive.has_side_effects = true;
+    setup_mod.addAnonymousImport("source.zip", .{ .root_source_file = source_zip });
+    setup_mod.addOptions("build_info", info);
+    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32" }) |l| setup_mod.linkSystemLibrary(l, .{});
+    const setup = b.addExecutable(.{ .name = "otogi-setup", .root_module = setup_mod });
+    setup.subsystem = .windows;
+    b.step("setup", "Build otogi-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);
 
     const test_step = b.step("test", "Run tests");
     inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig" }) |f| {
@@ -53,6 +77,27 @@ pub fn build(b: *std.Build) void {
     const pe = b.addRunArtifact(b.addExecutable(.{ .name = "xbe_to_pe", .root_module = b.createModule(.{ .root_source_file = b.path("src/xbe_to_pe.zig"), .target = b.graph.host }) }));
     pe.addPassthruArgs();
     b.step("pe", "Wrap the XBE in a PE32 for REA/Ghidra: zig build pe -- <xbe> <out.exe>").dependOn(&pe.step);
+}
+
+/// Dear ImGui (C++) plus its C API from dear_bindings, as module "imgui".
+/// Backends are called through hand-declared externs (see debug_menu.zig).
+fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, comptime backends: []const []const u8) void {
+    const imgui = b.dependency("imgui", .{});
+    const bind = b.dependency("dear_bindings", .{});
+    const flags: []const []const u8 = &.{ "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-w", "-DIMGUI_IMPL_OPENGL_ES3", "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS" };
+    for ([_]std.Build.LazyPath{ imgui.path(""), imgui.path("backends"), bind.path(""), bind.path("backends"), b.dependency("angle", .{}).path("include") }) |p| mod.addIncludePath(p);
+    mod.addCSourceFiles(.{ .root = imgui.path(""), .files = &.{ "imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_demo.cpp" }, .flags = flags });
+    mod.addCSourceFile(.{ .file = bind.path("dcimgui.cpp"), .flags = flags });
+    inline for (backends) |be| {
+        mod.addCSourceFile(.{ .file = imgui.path("backends/imgui_impl_" ++ be ++ ".cpp"), .flags = flags });
+        mod.addCSourceFile(.{ .file = bind.path("backends/dcimgui_impl_" ++ be ++ ".cpp"), .flags = flags });
+    }
+    mod.link_libcpp = true;
+    mod.linkSystemLibrary("dwmapi", .{});
+    const tc = b.addTranslateC(.{ .root_source_file = b.path("src/imgui.h"), .target = target, .optimize = optimize });
+    tc.addIncludePath(bind.path(""));
+    tc.addIncludePath(imgui.path(""));
+    mod.addImport("imgui", tc.createModule());
 }
 
 /// Lifted C from `tools.recomp --gen-dir src/recomp/gen` (gitignored, absent on a fresh clone).

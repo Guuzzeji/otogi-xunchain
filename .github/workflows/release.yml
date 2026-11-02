@@ -1,0 +1,74 @@
+# Actions > Release > Run workflow. Bumps the version in build.zig.zon, turns the
+# changelog's "Unreleased" section into that version, commits and tags it, builds
+# otogi-setup.exe and publishes a GitHub release with the changelog section as notes.
+# "none" releases the current version as it is (its section must already exist).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Version and changelog
+        id: version
+        shell: bash
+        run: |
+          cur=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
+          IFS=. read -r major minor patch <<< "$cur"
+          case "${{ inputs.bump }}" in
+            major) new="$((major + 1)).0.0" ;;
+            minor) new="$major.$((minor + 1)).0" ;;
+            patch) new="$major.$minor.$((patch + 1))" ;;
+            none)  new="$cur" ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "::error::v$new is already released"; exit 1
+          fi
+          if [ "$new" != "$cur" ]; then
+            unreleased=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)
+            if ! grep -q '[^[:space:]]' <<< "$unreleased"; then
+              echo "::error::Nothing under ## [Unreleased] in CHANGELOG.md"; exit 1
+            fi
+            sed -i "s/^\( *\.version = \)\"$cur\",/\1\"$new\",/" build.zig.zon
+            sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$new] - $(date -u +%F)/" CHANGELOG.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Release v$new"
+          fi
+          awk -v v="$new" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/{f=0} f' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "::error::CHANGELOG.md has no notes for $new"; exit 1; }
+          git tag "v$new"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+
+      # After the commit: setup embeds `git archive HEAD` and the new version.
+      - run: zig build setup
+      - run: zig build test
+
+      - name: Push and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="v${{ steps.version.outputs.version }}"
+          git push origin HEAD "$v"
+          gh release create "$v" zig-out/bin/otogi-setup.exe setup/assets/OFL-ShipporiMinchoB1.txt \
+            --title "Otogi recomp $v" --notes-file notes.md

@@ -1,6 +1,6 @@
 .{
     .name = .otogi,
-    .version = "0.0.0",
+    .version = "0.6.0",
     .fingerprint = 0x644488cb8ac62c0a,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
@@ -8,6 +8,14 @@
         .angle = .{
             .url = "https://github.com/Guuzzeji/sneaky-whopper-recomp/releases/download/angle-feebf60/angle-feebf60-win-x64.zip",
             .hash = "N-V-__8AAIvH-wArHOCo819CSIXEEiYqgDj9midIDT28UpUS",
+        },
+        .imgui = .{
+            .url = "https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0.tar.gz",
+            .hash = "N-V-__8AAEVjfgCU7hthaWtlDkNjFB4HE1XYqFl6UO7oqXwD",
+        },
+        .dear_bindings = .{
+            .url = "https://github.com/dearimgui/dear_bindings/releases/download/DearBindings_v0.27_ImGui_v1.93.0/DearBindings_v0.27_ImGui_v1.93.0.zip",
+            .hash = "N-V-__8AAAyPKATC1EDo719mRKC0M_H8gtItzVFv4u_RbaYt",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },

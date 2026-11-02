@@ -20,6 +20,7 @@
 const std = @import("std");
 const gl = @import("gl");
 const d3d = @import("d3d.zig");
+const debug_menu = @import("debug_menu.zig");
 
 const arg = d3d.arg;
 const mem32 = d3d.mem32;
@@ -29,9 +30,8 @@ extern threadlocal var g_edx: u32;
 extern threadlocal var g_eax: u32;
 
 // ── Window ──────────────────────────────────────────────────────────────────
-// Our own Win32 window on the guest thread, pumped at each Swap.
-// ponytail: no keyboard input from it yet; feed the toolkit's key table from
-// WM_KEYDOWN when wanted.
+// Our own Win32 window on the guest thread, pumped at each Swap. Its keys and
+// mouse drive only the debug menu (F1); the game reads the controller.
 
 const HWND = *opaque {};
 const WNDCLASSEXW = extern struct {
@@ -66,6 +66,7 @@ const WM_CLOSE: u32 = 0x0010;
 
 fn wndProc(wnd: HWND, msg: u32, wp: usize, lp: isize) callconv(.winapi) isize {
     if (msg == WM_CLOSE) ExitProcess(0); // closing the window ends the game
+    if (debug_menu.wndProc(wnd, msg, wp, lp)) return 1;
     return DefWindowProcW(wnd, msg, wp, lp);
 }
 
@@ -139,7 +140,7 @@ fn addCopy(data: u32) void {
     bb_copy_next = (bb_copy_next + 1) % bb_copies.len;
 }
 
-var hwnd: ?HWND = null;
+pub var hwnd: ?HWND = null;
 var dpy: gl.EGLDisplay = null;
 var surf: gl.EGLSurface = null;
 var state: enum { none, ready, failed } = .none;
@@ -229,6 +230,7 @@ fn ready() bool {
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, fbo_color, 0);
     gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, fbo_depth);
     target_fbo = fbo;
+    renderer_name = gl.glGetString(gl.GL_RENDERER);
     std.debug.print("[GL] {s}, {s}; rendering at {d}x{s}\n", .{ gl.glGetString(gl.GL_RENDERER), gl.glGetString(gl.GL_VERSION), scale, if (s3tc) "" else " (no S3TC)" });
     frInit();
     state = .ready;
@@ -236,6 +238,18 @@ fn ready() bool {
 }
 
 // ── Textures: everything but DXT becomes RGBA8 on the CPU ──────────────────
+
+pub var renderer_name: [*:0]const u8 = "";
+
+/// Per game frame counts for the debug menu: `stats` fills during a frame,
+/// `last` is the frame before.
+pub const Stats = struct { draws: u32 = 0, clears: u32 = 0, copies: u32 = 0, uploads: u32 = 0, work_ms: f32 = 0 };
+pub var stats: Stats = .{};
+pub var last: Stats = .{};
+
+pub fn cacheSizes() struct { textures: usize, programs: usize, vertex_programs: usize, pixel_shaders: usize, targets: usize, pushbuffers: usize } {
+    return .{ .textures = textures.items.len, .programs = progs.items.len, .vertex_programs = programs.items.len, .pixel_shaders = pixel_shaders.items.len, .targets = rts.items.len, .pushbuffers = pb_recs.items.len };
+}
 
 var conv: std.ArrayList(u8) = .empty;
 const alloc = std.heap.page_allocator;
@@ -289,6 +303,7 @@ fn texCreate(f: d3d.Fmt, data: u32, format: u32, w: u32, h: u32, pitch: u32, pal
     const bind: gl.GLenum = if (cube) gl.GL_TEXTURE_CUBE_MAP else gl.GL_TEXTURE_2D;
     var src = d3d.ptr(data);
     var t: gl.GLuint = 0;
+    stats.uploads += 1;
     gl.glGenTextures(1, &t);
     gl.glBindTexture(bind, t);
     for (0..if (cube) 6 else 1) |face| {
@@ -1366,6 +1381,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         return recordDraw(ri, xprim, n, idx, base);
     }
     if (fr_on and !fr_replaying) frameDraw(xprim, n, idx, up, up_stride, base);
+    if (!fr_replaying) stats.draws += 1;
     const p = prepareDraw() orelse return;
     if (target_fbo != fbo) for (stage_tex) |t| if (isCopy(t)) addCopy(d3d.resData(render_target));
     var lo: u32 = 0;
@@ -1527,7 +1543,7 @@ var vsc_dirty = true;
 var xf_dirty = true;
 var hold_fbo: gl.GLuint = 0;
 var hold_tex: gl.GLuint = 0;
-var shown: u32 = 0; // frames shown, game and in-between
+pub var shown: u32 = 0; // frames shown, game and in-between
 
 extern "gdi32" fn GetDeviceCaps(hdc: ?*anyopaque, index: c_int) callconv(.winapi) c_int;
 extern "user32" fn GetDC(wnd: ?HWND) callconv(.winapi) ?*anyopaque;
@@ -1749,14 +1765,23 @@ fn present() void {
     }
     blitWindow(fbo);
     if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
-    _ = gl.eglSwapBuffers(dpy, surf);
-    shown += 1;
-    pumpMessages();
+    swapWindow();
+    last = stats;
+    stats = .{};
+    // Debug menu pause: show this frame until resumed or stepped.
+    while (debug_menu.holdFrame()) {
+        showFbo(fbo);
+        Sleep(10);
+    }
 }
 
 /// An in-between frame (frame interpolation).
 fn showFbo(src: gl.GLuint) void {
     blitWindow(src);
+    swapWindow();
+}
+
+fn swapWindow() void {
     _ = gl.eglSwapBuffers(dpy, surf);
     shown += 1;
     pumpMessages();
@@ -1779,6 +1804,7 @@ fn blitWindow(src: gl.GLuint) void {
     const y = @divTrunc(sz[1] - h, 2);
     gl.glBlitFramebuffer(0, 0, bw * @as(i32, @intCast(scale)), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
+    debug_menu.draw(hwnd.?);
 }
 
 /// RECOMP_SHOT=120,600: write the window at those frames to logs\frame_N.bmp.
@@ -1897,7 +1923,10 @@ var last_present: f64 = 0;
 /// 0x80000002: every second vblank of 60 Hz, at once when late. Its game
 /// logic steps once per frame, so 30 Hz is its speed.
 const present_period = 1000.0 / 30.0;
+var last_swap_end: f64 = 0;
 export fn sub_000F4D00() void {
+    if (last_swap_end != 0) stats.work_ms = @floatCast(nowMs() - last_swap_end);
+    defer last_swap_end = nowMs();
     sub_000F4D00_gen();
     if (!ready()) return;
     if (fr_on) return swapInterp();
@@ -1924,6 +1953,7 @@ export fn sub_000F4EB0() void {
     sub_000F4EB0_gen();
     if (!ready()) return;
     if (fr_on and !fr_replaying) frames[fcur].ops.append(alloc, .{ .clear = .{ .c = c, .tgt = tgtNow() } }) catch {};
+    stats.clears += 1;
     clearGl(&c);
 }
 
@@ -2031,6 +2061,7 @@ export fn sub_000F7FC0() void {
     const n = arg(2);
     const dst = arg(3);
     const points = arg(4);
+    stats.copies += 1;
     sub_000F7FC0_gen();
     if (drawlog_frame == frame + 1) std.debug.print("[DRAW] copyrects src={X} dst={X} n={d} rect0={d},{d}-{d},{d} rt={d}\n", .{ src, dst, n, if (rects != 0) mem32(rects) else 0, if (rects != 0) mem32(rects + 4) else 0, if (rects != 0) mem32(rects + 8) else 0, if (rects != 0) mem32(rects + 12) else 0, target_fbo });
     if (src == 0 or src != render_target or dst == 0 or !ready()) return;

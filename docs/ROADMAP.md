@@ -131,7 +131,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 - 2560x1440 at 16:9 renders with an undistorted HUD.
 - `RECOMP_SCALE=1` and `RECOMP_WIDESCREEN=0` give the original image.
 
-## M6: Setup GUI (`otogi-setup.exe`)
+## M6: Setup GUI (`otogi-setup.exe`) — built 2026-11-01; full run from ISO verified on the dev machine, clean-VM exit check not run
 1. **Window:** Dear ImGui using `imgui_impl_win32` and `imgui_impl_dx11`. These need only system DLLs, so the result is one exe with no extra files. Build the ImGui C++ with `zig c++`. Call it from Zig through dear_bindings `dcimgui.h` with `@cImport`.
 2. **Screen:** ISO picker (Win32 `GetOpenFileName`), output folder, a Build button, a progress bar, and a scrolling log.
 3. **Steps.** Each step is resumable through stamp files, as in Sneak King's `analysis/.stamps`.
