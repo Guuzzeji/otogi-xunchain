@@ -122,7 +122,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 
 **Exit check:** Stage 1 is playable start to finish at the game's native frame rate, with sound.
 
-## M5: Enhancements — IN PROGRESS (items 1-2 done 2026-11-01; settings.ini next)
+## M5: Enhancements — items 1-3 done 2026-11-01 (plus frame interpolation and vsync); exit check not run at 2560x1440
 1. **2x internal resolution:** `RECOMP_SCALE` (1 to 4). Scale render targets, viewport and scissor in `gl_hle.zig`. Copy Sneak King's approach.
 2. **16:9 widescreen:** find Otogi's projection/FOV setup and its 2D ortho function. Override both in `manual.zig` (hor+). Keep the HUD at 4:3, centered, or anchored.
 3. **`settings.ini`:** an environment variable wins over the file, as in Sneak King. Add a small F1 ImGui overlay only if it is wanted later.

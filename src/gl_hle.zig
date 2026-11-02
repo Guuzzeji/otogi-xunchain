@@ -199,7 +199,10 @@ fn ready() bool {
         std.debug.print("[GL] EGL context failed: 0x{X}\n", .{gl.eglGetError()});
         return false;
     }
-    _ = gl.eglSwapInterval(dpy, 0); // the game paces itself by its vblank
+    // The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
+    // also waits for the monitor's, so frames do not tear.
+    const vsync = if (std.c.getenv("RECOMP_VSYNC")) |e| e[0] != '0' else true;
+    _ = gl.eglSwapInterval(dpy, @intFromBool(vsync));
     // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
     // dome lies past the far plane.
     if (hasExt("GL_EXT_depth_clamp")) gl.glEnable(gl.GL_DEPTH_CLAMP_EXT) else std.debug.print("[GL] no GL_EXT_depth_clamp: geometry past the far plane is clipped\n", .{});
@@ -1656,6 +1659,7 @@ fn frameReplay(prev: *const Frame, cur: *const Frame, t: f32) void {
     fr_replaying = false;
     stage_tex, vshader, pshader, stream_vb, stream_stride, vsc, xf, vp, target_fbo, target_size, render_target = saved;
 }
+
 
 fn blitFbo(src: gl.GLuint, dst: gl.GLuint) void {
     const w: i32 = @intCast(bbw() * scale);

@@ -130,9 +130,31 @@ fn vehHandler(ep: *w.EXCEPTION_POINTERS) callconv(.winapi) c_long {
     return 0;
 }
 
+/// settings.ini (beside game\): each `key = value` line sets RECOMP_<KEY>
+/// unless the environment already has it. '#' and ';' start comments.
+fn loadSettings(init: std.process.Init) void {
+    const text = std.Io.Dir.cwd().readFileAlloc(init.io, "settings.ini", init.arena.allocator(), .limited(64 * 1024)) catch return;
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (lines.next()) |raw| {
+        const line = raw[0 .. std.mem.indexOfAny(u8, raw, "#;") orelse raw.len];
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (key.len == 0 or val.len == 0) continue;
+        var name: [64]u8 = undefined;
+        const n = std.fmt.bufPrintSentinel(&name, "RECOMP_{s}", .{key}, 0) catch continue;
+        for (n[7..]) |*c| c.* = std.ascii.toUpper(c.*);
+        if (std.c.getenv(n) != null) continue;
+        var kv: [256]u8 = undefined;
+        _ = _putenv(std.fmt.bufPrintSentinel(&kv, "{s}={s}", .{ n, val }, 0) catch continue);
+        print("[SETTINGS] {s}={s}\n", .{ n, val });
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     openLog();
     _ = timeBeginPeriod(1);
+    loadSettings(init);
     // Toolkit switches Otogi needs. The environment still wins.
     //  RECOMP_ASYNC_IO: async-opened files must return STATUS_PENDING; the
     //    stream loader only reads the byte count on that path (else disc error).

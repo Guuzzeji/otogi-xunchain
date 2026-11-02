@@ -147,3 +147,10 @@
   shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency).
   CPU-written vertices (particles, 2D) do not blend. `RECOMP_FPS=1` prints game and shown frames per second.
   Tested: 30 game / 60 and 120 shown in stage 1.
+- `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
+  (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
+- `RECOMP_VSYNC` (default on): `eglSwapInterval(1)`. On a 144 Hz monitor interpolation shows 120 frames a second,
+  which judders against the refresh; a 60/120 Hz refresh or `framerate = 60` paces evenly.
+- Flicker report (2026-11-01): a probe reading nine points of the window after every shown frame (title, menus,
+  stage, combat, 95 s at 120 Hz, vsync off) found no black frames except the game's own cut at stage start.
+  Unexplained; vsync was added in case it was tearing.
