@@ -8,10 +8,46 @@ extern var g_icall_trace: [16]u32;
 extern var g_icall_trace_idx: u32;
 extern var g_icall_count: u64;
 
-/// Overrides for lifted functions. Empty until a crash says otherwise.
+extern threadlocal var g_eax: u32;
+extern threadlocal var g_esp: u32;
+extern var g_xbox_mem_offset: isize;
+
+fn mem32(va: u32) *volatile u32 {
+    return @ptrFromInt(@as(usize, @bitCast(g_xbox_mem_offset)) + va);
+}
+
+const D3D_DEVICE_PTR: u32 = 0x1051C8; // XDK 5455 D3D's global device pointer
+
+/// Extra indirect-call targets. The overrides below are listed in
+/// seeds/manual.json, so the lifter leaves their bodies out and the dispatch
+/// table already points at these exports.
 export fn recomp_lookup_manual(va: u32) ?RecompFn {
     _ = va;
     return null;
+}
+
+/// XAPI DVD media check. Its cert flag (cert+0x1D8 bit 0) asks for the disc's
+/// security sector via READ DVD STRUCTURE, which a plain ISO does not carry, so
+/// it fails five times and the title reboots to the dashboard. Report success
+/// (STATUS_SUCCESS), as an authenticated drive would.
+export fn sub_000E571D() void {
+    g_eax = 0;
+    g_esp += 4; // ret
+}
+
+/// D3D BlockOnTime(fence, flags): spins until the GPU semaphore (*(device+0x30))
+/// reaches the fence. Nothing executes the pushbuffer, so nothing ever writes the
+/// semaphore. Point it at the device's own fence counter (device+0x2C) instead:
+/// every fence then reads as done, for this wait and for every other semaphore
+/// reader (ring make-space). With that pointer the original body returns at once.
+/// Re-applied on each call because a device reset rewrites the field.
+/// ponytail: GPU "always caught up"; M3's renderer needs a real semaphore if a
+/// pushbuffer executor runs behind the title (xboxrecomp d3d8ltcg-device-context.md).
+export fn sub_000FA2A0() void {
+    const dev = mem32(D3D_DEVICE_PTR).*;
+    mem32(dev + 0x30).* = dev + 0x2C;
+    g_eax = mem32(dev + 0x2C).*;
+    g_esp += 12; // ret 8
 }
 
 /// RECOMP_ICALL could not resolve a target.
@@ -56,4 +92,13 @@ export fn recomp_unimpl(text: [*:0]const u8, va: u32) void {
         std.debug.print("[UNIMPL] untranslated instruction REACHED: `{s}` at 0x{X:0>8} (a no-op; set RECOMP_UNIMPL_TRAP=1 to stop here)\n", .{ text, va });
     }
     if (stop) std.process.abort();
+}
+
+/// Game's per-frame movie step (XMV): returns 1 once the movie has ended. XMV's
+/// clock only starts once its decode and audio pipeline report ready, which
+/// does not happen here yet, so it would Sleep(2) forever. Report the movie as
+/// ended. ponytail: skips every movie; M4 ("XMV intro movie") replaces this.
+export fn sub_000C81A0() void {
+    g_eax = 1;
+    g_esp += 4; // ret
 }

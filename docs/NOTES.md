@@ -29,3 +29,21 @@
   - Jump-table bytes after a final `jmp`, so unreachable: `sub_000CF460`, `sub_000EB0D0`, `sub_0011620A`, `sub_0011D415`.
   - Real, harmless as no-ops: `cli`/`sti` in `sub_000E5E7D`, `wbinvd` in `sub_000FFAB0` (D3D).
   - Real, needs an override in M2: `sub_000E88E4` does `sgdt` and a far jump (writes a GDT entry).
+
+## Boot (M2, in progress)
+- Re-lift after changing `seeds/manual.json` (directly called overrides; their bodies are left out):
+  `recomp ../game/default.xbe --all --split 250 --gen-dir ../src/recomp/gen --manual-functions ../seeds/manual.json` (~40 s).
+  Overrides live in `src/manual.zig` as `export fn sub_XXXXXXXX`.
+- `build.zig` sets `sanitize_c = .off`: Zig Debug enables UBSan for C, and its alignment check fires on 4-byte-aligned guest structs.
+- Log: `logs\otogi.log` (stdout and stderr). Watchdog: `RECOMP_WATCHDOG_SECS=N` prints guest regs and stack.
+- Fixes so far, in boot order:
+  1. `sub_000E571D` (XAPI DVD media check) returns success. Cert+0x1D8 bit 0 asks for the security sector (READ DVD STRUCTURE), which an ISO lacks; it retried 5x and rebooted to the dashboard.
+  2. `RECOMP_ASYNC_IO` on by default (`main.zig`). The stream loader `sub_0007BDD0` reads overlapped and only fills the byte count on ERROR_IO_PENDING; a synchronous completion read as 0 bytes, E_FAIL, and the disc-error loop `sub_000137D0`.
+  3. `sub_000FA2A0` (D3D BlockOnTime): GPU semaphore (device+0x30) points at the fence counter (device+0x2C), so every fence reads as done. Device pointer is at `0x1051C8`.
+  4. `RECOMP_VBLANK` on by default; vblank interrupts come from the toolkit tick (~40 Hz, 600 in 15 s).
+  5. `sub_000C81A0` (per-frame XMV step) returns "movie ended". XMV's clock (`sub_00146D25`) stays 0 until its decode/audio pipeline starts the clock, so it would Sleep(2) forever. M4 replaces this.
+  6. `xbox_OhciInit()` is called at boot (the template never called it); inert unless `RECOMP_USB` is set.
+- Current state with no env vars: menu assets, BGM, player data load; the title/attract loop runs (promo XMV reopened each cycle); 60 s, no crash.
+- Missing on disc too (the game probes them): `sfx\s000_00.dds` etc., `media\distortion.dds`.
+- Open: with `RECOMP_USB=1` the pad enumerates (XID descriptor read) but the game thread crashes in `sub_000DB930` (`edi=0x73FFFF80`, via `sub_000D0A60` from the game main `sub_00043310`). Without a pad there is no input, so no stage loads and `chr\`/`map\` are never opened.
+- Unhandled but harmless so far: `cli`/`sti` at `0x00171BA5`/`0x00171BB6` (XPP USB code).

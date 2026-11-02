@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .sanitize_c = .off, // guest structs are 4-byte aligned; UBSan alignment checks fire on every one
     });
     mod.addCMacro("WIN32_LEAN_AND_MEAN", "");
     mod.addCMacro("NOMINMAX", "");

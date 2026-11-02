@@ -9,3 +9,4 @@ zig-out/
 logs/
 .claude/settings.local.json
 .vscode/
+xbox_kernel.log
