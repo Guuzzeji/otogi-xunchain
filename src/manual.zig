@@ -102,3 +102,93 @@ export fn sub_000C81A0() void {
     g_eax = 1;
     g_esp += 4; // ret
 }
+
+// ── XAPI input (XPP section) ────────────────────────────────────────────────
+// The title talks to its pad through XAPI's USB stack, which hangs and then
+// crashes on the toolkit's OHCI model. Replace the eight entry points it calls
+// with the toolkit's host input: usb_gamepad_report merges the host XInput pad,
+// the keyboard and RECOMP_PAD_SCRIPT into an XID report, whose bytes 2..19 are
+// exactly XINPUT_GAMEPAD. All are stdcall; args start at [esp+4].
+// ponytail: port 0 only, always present (the keyboard stands in for a missing
+// pad); report hot-plug and ports 1-3 if co-op is wanted.
+
+extern fn usb_gamepad_report(pad: c_int, out: [*]u8, max: c_int) c_int;
+
+fn arg(n: u32) u32 {
+    return mem32(g_esp + 4 * n).*;
+}
+
+fn ret(eax: u32, arg_bytes: u32) void {
+    g_eax = eax;
+    g_esp += 4 + arg_bytes;
+}
+
+fn guestBytes(va: u32, len: usize) []u8 {
+    const p: [*]u8 = @ptrFromInt(@as(usize, @bitCast(g_xbox_mem_offset)) + va);
+    return p[0..len];
+}
+
+/// XInitDevices(count, types)
+export fn sub_0016E924() void {
+    ret(0, 8);
+}
+
+/// XGetDevices(type) -> bitmask of occupied ports
+export fn sub_0016E929() void {
+    ret(1, 4);
+}
+
+/// XGetDeviceChanges(type, *insertions, *removals) -> any change. The game
+/// opens a pad on its insertion, so port 0 arrives once, as on hardware.
+var pad_arrived = false;
+export fn sub_0016E94B() void {
+    mem32(arg(2)).* = if (pad_arrived) 0 else 1;
+    mem32(arg(3)).* = 0;
+    ret(if (pad_arrived) 0 else 1, 12);
+    pad_arrived = true;
+}
+
+/// XInputOpen(type, port, slot, params) -> handle (port + 1), or 0
+export fn sub_0016EA1A() void {
+    ret(if (arg(2) == 0) 1 else 0, 16);
+}
+
+/// XInputClose(handle)
+export fn sub_0016EA70() void {
+    ret(0, 4);
+}
+
+/// XInputGetCapabilities(handle, *caps): XINPUT_CAPABILITIES is 26 bytes,
+/// SubType at 0, In (an XINPUT_GAMEPAD of supported bits) at 4, Out at 22.
+export fn sub_0016EA7C() void {
+    const caps = guestBytes(arg(2), 26);
+    @memset(caps, 0xFF);
+    caps[0] = 1; // XINPUT_DEVSUBTYPE_GC_GAMEPAD
+    caps[1] = 0;
+    caps[2] = 0;
+    caps[3] = 0;
+    ret(0, 8);
+}
+
+var pad_last: [18]u8 = @splat(0);
+var pad_packet: u32 = 0;
+
+/// XInputGetState(handle, *state): dwPacketNumber, then XINPUT_GAMEPAD (18 bytes).
+export fn sub_0016EC54() void {
+    var report: [20]u8 = undefined;
+    _ = usb_gamepad_report(@intCast(arg(1) -% 1), &report, report.len);
+    if (!std.mem.eql(u8, &pad_last, report[2..20])) {
+        pad_last = report[2..20].*;
+        pad_packet +%= 1;
+    }
+    const state = guestBytes(arg(2), 22);
+    std.mem.writeInt(u32, state[0..4], pad_packet, .little);
+    @memcpy(state[4..22], &pad_last);
+    ret(0, 8);
+}
+
+/// XInputSetState(handle, *feedback): rumble, ignored; the feedback header's
+/// dwStatus (already 0) reads as complete.
+export fn sub_0016ECC7() void {
+    ret(0, 8);
+}

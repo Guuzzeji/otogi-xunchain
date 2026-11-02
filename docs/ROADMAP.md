@@ -77,7 +77,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 - The build links cleanly.
 - `grep` finds no `/* <mnemonic> */` holes in the generated code.
 
-## M2: Boot without graphics — IN PROGRESS (title/attract loop runs; no input yet, see NOTES)
+## M2: Boot without graphics — DONE 2026-11-01
 1. Port `templates/new-game/src/main.c` to `src/main.zig`. Boot order:
    1. VEH handler
    2. `xbox_MemoryLayoutInit`

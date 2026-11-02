@@ -32,7 +32,6 @@ extern fn xbox_MemoryLayoutShutdown() void;
 extern fn xbox_GetMemoryBase() [*]u8;
 extern fn xbox_VehMmioFault(ep: *w.EXCEPTION_POINTERS) c_int;
 extern fn xbox_WatchdogStart() void;
-extern fn xbox_OhciInit() void;
 extern fn xbox_kernel_init() void;
 extern fn xbox_kernel_shutdown() void;
 extern fn xbox_kernel_bridge_init() void;
@@ -137,7 +136,9 @@ pub fn main(init: std.process.Init) !void {
     //  RECOMP_ASYNC_IO: async-opened files must return STATUS_PENDING; the
     //    stream loader only reads the byte count on that path (else disc error).
     //  RECOMP_VBLANK: vblank interrupts, so D3D and the game get frame ticks.
-    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK" }) |v| {
+    //  RECOMP_AC97_READY: the emulated APU. Without DirectSound the game never
+    //    starts its sound-stream worker, and the main menu waits on it forever.
+    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
     print("=== Otogi: Myth of Demons - static recompilation ===\n", .{});
@@ -157,7 +158,6 @@ pub fn main(init: std.process.Init) !void {
         print("[BOOT] emulated APU {s}\n", .{if (g_apu_state != null) "up" else "FAILED to initialise"});
     }
 
-    xbox_OhciInit(); // USB pads; inert unless RECOMP_USB is set
     xbox_kernel_init();
     xbox_path_init("game", null); // D:\ -> game\, saves under SaveData\
     xbox_kernel_bridge_init();
