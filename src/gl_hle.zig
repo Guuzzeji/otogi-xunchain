@@ -123,9 +123,21 @@ fn bbSpan(x1: u32, x2: u32) [2]u32 {
 
 /// The current draw stretches across the wide back buffer (setViewport).
 var draw_stretch = false;
-/// Data of recent full-width back buffer copies (CopyRects).
+/// Data of recent full-width back buffer copies (CopyRects), and of offscreen
+/// targets drawn from one (the pause blur downsamples a copy): each holds the
+/// whole wide back buffer.
 var bb_copies: [8]u32 = @splat(0);
 var bb_copy_next: usize = 0;
+
+fn isCopy(tex: u32) bool {
+    return tex != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(tex)) != null;
+}
+
+fn addCopy(data: u32) void {
+    if (std.mem.indexOfScalar(u32, &bb_copies, data) != null) return;
+    bb_copies[bb_copy_next] = data;
+    bb_copy_next = (bb_copy_next + 1) % bb_copies.len;
+}
 
 var hwnd: ?HWND = null;
 var dpy: gl.EGLDisplay = null;
@@ -215,6 +227,7 @@ fn ready() bool {
     gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, fbo_depth);
     target_fbo = fbo;
     std.debug.print("[GL] {s}, {s}; rendering at {d}x{s}\n", .{ gl.glGetString(gl.GL_RENDERER), gl.glGetString(gl.GL_VERSION), scale, if (s3tc) "" else " (no S3TC)" });
+    frInit();
     state = .ready;
     return true;
 }
@@ -347,6 +360,9 @@ var vshader: u32 = 0; // FVF, or a program handle (odd)
 var pshader: u32 = 0;
 var stream_vb: [16]u32 = @splat(0);
 var stream_stride: [16]u32 = @splat(0);
+/// Host copies standing in for the streams while a recorded frame replays
+/// (pointing where vertex 0 would be).
+var stream_host: [16]?[*]const u8 = @splat(null);
 var base_vertex: u32 = 0;
 var xf: [10][16]f32 = @splat(identity); // view, proj, tex0-3, world0-3
 var vp: struct { x: u32 = 0, y: u32 = 0, w: u32 = 640, h: u32 = 480 } = .{};
@@ -1024,9 +1040,7 @@ fn uploadTscale(p: *const Prog) void {
     var v: [4][4]f32 = undefined;
     for (0..4) |i| {
         v[i] = .{ if (lin[i][0] != 0) 1 / lin[i][0] else 1, if (lin[i][1] != 0) 1 / lin[i][1] else 1, 0, 0 };
-        if (target_fbo == fbo and !draw_stretch and stage_tex[i] != 0 and
-            std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(stage_tex[i])) != null)
-        {
+        if (target_fbo == fbo and !draw_stretch and isCopy(stage_tex[i])) {
             const bw: f32 = @floatFromInt(bbw());
             v[i][0] *= 640 / bw;
             v[i][2] = @as(f32, @floatFromInt((bbw() - 640) / 2)) / bw;
@@ -1167,7 +1181,7 @@ fn vsVertices(h: *HostVs, base: u32, lo: u32, hi: u32, up: ?[*]const u8, up_stri
         const o = out + (v - lo) * ns;
         for (0..ns) |s| o[s] = .{ 0, 0, 0, 1 };
         for (in[0..n]) |e| {
-            const src: [*]const u8, const sstride = if (e.stream == 0 and up != null) .{ up.?, up_stride } else if (stream_vb[e.stream] != 0) .{ d3d.ptr(d3d.resData(stream_vb[e.stream])), stream_stride[e.stream] } else continue;
+            const src: [*]const u8, const sstride = if (e.stream == 0 and up != null) .{ up.?, up_stride } else if (stream_host[e.stream]) |hp| .{ hp, stream_stride[e.stream] } else if (stream_vb[e.stream] != 0) .{ d3d.ptr(d3d.resData(stream_vb[e.stream])), stream_stride[e.stream] } else continue;
             d3d.vsdtRead(e.type, src + (base + v) * sstride + e.offset, &o[slot[e.reg]]);
         }
     }
@@ -1334,7 +1348,9 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         if (up != null) return sayOnce("DrawVerticesUP inside a recorded pushbuffer skipped");
         return recordDraw(ri, xprim, n, idx, base);
     }
+    if (fr_on and !fr_replaying) frameDraw(xprim, n, idx, up, up_stride, base);
     const p = prepareDraw() orelse return;
+    if (target_fbo != fbo) for (stage_tex) |t| if (isCopy(t)) addCopy(d3d.resData(render_target));
     var lo: u32 = 0;
     var hi: u32 = n - 1;
     var nv = n; // vertices drawn: extend2d may add banner tiles
@@ -1364,7 +1380,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     } else {
         var stride = if (up != null) up_stride else stream_stride[0];
         if (stride == 0) stride = fvfStride(vshader);
-        const verts = if (up) |u| u else if (stream_vb[0] != 0) d3d.ptr(d3d.resData(stream_vb[0])) + base * stride else return;
+        const verts = if (up) |u| u else if (stream_host[0]) |h| h + base * stride else if (stream_vb[0] != 0) d3d.ptr(d3d.resData(stream_vb[0])) + base * stride else return;
         if (stride == 0) return;
         var src = verts + lo * stride;
         var bytes = (hi - lo + 1) * stride;
@@ -1375,7 +1391,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         // edit, or that draws a back buffer copy back (it holds the whole buffer), stretches.
         if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639)) {
             const copy = for (stage_tex) |t| {
-                if (t != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(t)) != null) break true;
+                if (isCopy(t)) break true;
             } else false;
             const ext = if (!copy and idx == null and vp.x == 0 and vp.w == 640) extend2d(src, stride, n, xprim) else null;
             if (drawlog_frame == frame + 1) std.debug.print("       edge: copy={} ext={}\n", .{ copy, ext != null });
@@ -1427,6 +1443,264 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     }
 }
 
+// ── Frame interpolation (RECOMP_FRAMERATE) ──────────────────────────────────
+// The game steps its logic once per 30 Hz frame. To show more frames without
+// speeding it up, each frame's draws and clears are recorded (state, vertex
+// and index copies, constants), and while Swap waits out the 30 Hz slot the
+// frame is drawn again at in-between times with vertex shader constants and
+// transforms blended from the matching draw of the frame before. The real
+// frame shows at the end of its slot: one game frame of extra latency.
+// ponytail: only constants blend (camera, objects, bones); vertex data the CPU
+// writes each frame (particles, 2D) shows at the newer frame's positions.
+
+var fr_on = false;
+var fr_steps: u32 = 1; // shown frames per game frame
+var fr_replaying = false;
+
+const Tgt = struct { fbo: gl.GLuint, size: [2]u32, rt: u32 };
+fn tgtNow() Tgt {
+    return .{ .fbo = target_fbo, .size = target_size, .rt = render_target };
+}
+
+const FDraw = struct {
+    prim: u32,
+    n: u32,
+    base: u32,
+    lo: u32,
+    idx: ?u32 = null, // offsets into Frame.bytes
+    up: ?u32 = null,
+    up_stride: u32,
+    streams: [16]?u32 = @splat(null),
+    stride: [16]u32,
+    vb: [16]u32,
+    tex: [4]u32,
+    vs: u32,
+    ps: u32,
+    state: [d3d.STATE_WORDS]u32,
+    vsc: u32, // index into Frame.consts
+    xf: u32, // index into Frame.xfs
+    vp: @TypeOf(vp),
+    tgt: Tgt,
+    key: u64,
+};
+const FOp = union(enum) { draw: FDraw, clear: struct { c: Clear, tgt: Tgt } };
+const Frame = struct {
+    ops: std.ArrayList(FOp) = .empty,
+    bytes: std.ArrayList(u8) = .empty,
+    consts: std.ArrayList([192][4]f32) = .empty,
+    xfs: std.ArrayList([10][16]f32) = .empty,
+    match: std.ArrayList(?u32) = .empty, // per op, the previous frame's matching draw
+
+    fn reset(f: *Frame) void {
+        f.ops.clearRetainingCapacity();
+        f.bytes.clearRetainingCapacity();
+        f.consts.clearRetainingCapacity();
+        f.xfs.clearRetainingCapacity();
+        f.match.clearRetainingCapacity();
+    }
+    fn store(f: *Frame, b: []const u8) u32 {
+        const o: u32 = @intCast(f.bytes.items.len);
+        f.bytes.appendSlice(alloc, b) catch @panic("OOM");
+        return o;
+    }
+};
+var frames: [2]Frame = .{ .{}, .{} };
+var fcur: usize = 0;
+var vsc_dirty = true;
+var xf_dirty = true;
+var hold_fbo: gl.GLuint = 0;
+var hold_tex: gl.GLuint = 0;
+var shown: u32 = 0; // frames shown, game and in-between
+
+extern "gdi32" fn GetDeviceCaps(hdc: ?*anyopaque, index: c_int) callconv(.winapi) c_int;
+extern "user32" fn GetDC(wnd: ?HWND) callconv(.winapi) ?*anyopaque;
+
+/// RECOMP_FRAMERATE=<hz> shows that many frames a second (rounded to a
+/// multiple of 30); unset or 0 follows the monitor's refresh rate; 30 is off.
+fn frInit() void {
+    var hz: u32 = 0;
+    if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
+    if (hz == 0) hz = @intCast(@max(GetDeviceCaps(GetDC(null), 116), 30)); // VREFRESH
+    fr_steps = @max((hz + 15) / 30, 1);
+    fr_on = fr_steps > 1;
+    if (!fr_on) return;
+    gl.glGenTextures(1, &hold_tex);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, hold_tex);
+    gl.glTexStorage2D(gl.GL_TEXTURE_2D, 1, gl.GL_RGBA8, @intCast(bbw() * scale), @intCast(480 * scale));
+    gl.glGenFramebuffers(1, &hold_fbo);
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, hold_fbo);
+    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, hold_tex, 0);
+    std.debug.print("[GL] frame interpolation: {d} frames a second\n", .{30 * fr_steps});
+}
+
+fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_stride: u32, base: u32) void {
+    const f = &frames[fcur];
+    var lo: u32 = 0;
+    var hi: u32 = n - 1;
+    if (idx) |ix| {
+        lo = 0xFFFF;
+        hi = 0;
+        for (0..n) |i| {
+            lo = @min(lo, ix[i]);
+            hi = @max(hi, ix[i]);
+        }
+    }
+    if (vsc_dirty) f.consts.append(alloc, vsc) catch @panic("OOM");
+    if (xf_dirty) f.xfs.append(alloc, xf) catch @panic("OOM");
+    vsc_dirty = false;
+    xf_dirty = false;
+    var d: FDraw = .{
+        .prim = xprim,
+        .n = n,
+        .base = base,
+        .lo = lo,
+        .up_stride = up_stride,
+        .stride = stream_stride,
+        .vb = stream_vb,
+        .tex = stage_tex,
+        .vs = vshader,
+        .ps = pshader,
+        .state = undefined,
+        .vsc = @intCast(f.consts.items.len - 1),
+        .xf = @intCast(f.xfs.items.len - 1),
+        .vp = vp,
+        .tgt = tgtNow(),
+        .key = 0,
+    };
+    if (d3d.state_snap) |s| d.state = s.* else d3d.stateBlock(&d.state);
+    if (idx) |ix| d.idx = f.store(@as([*]const u8, @ptrCast(ix))[0 .. 2 * n]);
+    if (up) |u| d.up = f.store(u[0 .. (hi + 1) * up_stride]);
+    // The streams the draw reads: a program's declared ones, or stream 0 for an FVF.
+    var used: u16 = 1;
+    if (vshader & 1 != 0) if (vsFind(vshader)) |h| {
+        var in: [16]d3d.VsInput = undefined;
+        used = 0;
+        for (in[0..d3d.vsInputs(&h.decl, &in)]) |e| used |= @as(u16, 1) << @intCast(e.stream);
+    };
+    if (up != null) used &= ~@as(u16, 1);
+    for (0..16) |s| if (used & (@as(u16, 1) << @intCast(s)) != 0 and stream_vb[s] != 0) {
+        var st = stream_stride[s];
+        if (s == 0 and st == 0) st = fvfStride(vshader);
+        if (st == 0) continue;
+        d.stride[s] = st;
+        d.streams[s] = f.store(d3d.ptr(d3d.resData(stream_vb[s]))[(base + lo) * st .. (base + hi + 1) * st]);
+    };
+    var hsh = std.hash.Wyhash.init(0);
+    hsh.update(std.mem.asBytes(&[_]u32{ vshader, pshader, stage_tex[0], stream_vb[0], n, xprim, render_target }));
+    d.key = hsh.final();
+    f.ops.append(alloc, .{ .draw = d }) catch @panic("OOM");
+}
+
+/// For each draw of `cur`, the draw of `prev` with the same key and occurrence.
+fn frameMatch(prev: *const Frame, cur: *Frame) void {
+    var heads: std.AutoHashMapUnmanaged(u64, u32) = .empty; // key -> next unmatched op of prev to look from
+    defer heads.deinit(alloc);
+    cur.match.clearRetainingCapacity();
+    for (cur.ops.items) |op| {
+        var m: ?u32 = null;
+        if (op == .draw) {
+            const k = op.draw.key;
+            const g = heads.getOrPut(alloc, k) catch @panic("OOM");
+            if (!g.found_existing) g.value_ptr.* = 0;
+            var i = g.value_ptr.*;
+            while (i < prev.ops.items.len) : (i += 1) {
+                const po = &prev.ops.items[i];
+                if (po.* == .draw and po.draw.key == k) {
+                    m = i;
+                    i += 1;
+                    break;
+                }
+            }
+            g.value_ptr.* = i;
+        }
+        cur.match.append(alloc, m) catch @panic("OOM");
+    }
+}
+
+fn lerpInto(out: []f32, a: []const f32, b: []const f32, t: f32) void {
+    for (out, a, b) |*o, x, y| o.* = x + (y - x) * t;
+}
+
+/// Draw `cur` again at `t` (0..1) of the way from `prev`.
+fn frameReplay(prev: *const Frame, cur: *const Frame, t: f32) void {
+    const saved = .{ stage_tex, vshader, pshader, stream_vb, stream_stride, vsc, xf, vp, target_fbo, target_size, render_target };
+    fr_replaying = true;
+    const bytes = cur.bytes.items.ptr;
+    for (cur.ops.items, cur.match.items) |*op, m| switch (op.*) {
+        .clear => |*c| {
+            target_fbo, target_size, render_target = .{ c.tgt.fbo, c.tgt.size, c.tgt.rt };
+            clearGl(&c.c);
+        },
+        .draw => |*d| {
+            target_fbo, target_size, render_target = .{ d.tgt.fbo, d.tgt.size, d.tgt.rt };
+            vsc = cur.consts.items[d.vsc];
+            xf = cur.xfs.items[d.xf];
+            if (m) |pi| {
+                const p = &prev.ops.items[pi].draw;
+                lerpInto(@as(*[192 * 4]f32, @ptrCast(&vsc)), @as(*const [192 * 4]f32, @ptrCast(&prev.consts.items[p.vsc])), @as(*const [192 * 4]f32, @ptrCast(&cur.consts.items[d.vsc])), t);
+                lerpInto(@as(*[160]f32, @ptrCast(&xf)), @as(*const [160]f32, @ptrCast(&prev.xfs.items[p.xf])), @as(*const [160]f32, @ptrCast(&cur.xfs.items[d.xf])), t);
+            }
+            stage_tex = d.tex;
+            vshader = d.vs;
+            pshader = d.ps;
+            stream_vb = d.vb;
+            stream_stride = d.stride;
+            vp = d.vp;
+            for (&stream_host, d.streams, d.stride) |*h, o, st| h.* = if (o) |off| @ptrFromInt(@intFromPtr(bytes + off) -% (d.base + d.lo) * st) else null;
+            d3d.state_snap = &d.state;
+            draw(d.prim, d.n, if (d.idx) |o| @ptrCast(bytes + o) else null, if (d.up) |o| bytes + o else null, d.up_stride, d.base);
+        },
+    };
+    d3d.state_snap = null;
+    stream_host = @splat(null);
+    fr_replaying = false;
+    stage_tex, vshader, pshader, stream_vb, stream_stride, vsc, xf, vp, target_fbo, target_size, render_target = saved;
+}
+
+fn blitFbo(src: gl.GLuint, dst: gl.GLuint) void {
+    const w: i32 = @intCast(bbw() * scale);
+    const h: i32 = @intCast(480 * scale);
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, src);
+    gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, dst);
+    gl.glDisable(gl.GL_SCISSOR_TEST);
+    gl.glColorMask(1, 1, 1, 1);
+    gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST);
+}
+
+fn waitUntil(t: f64) void {
+    var now = nowMs();
+    while (now < t) : (now = nowMs()) Sleep(if (t - now >= 2) @intFromFloat(t - now - 1) else 0);
+}
+
+/// Swap with interpolation: in-between frames inside the 30 Hz slot, then
+/// the game's frame at its end.
+fn swapInterp() void {
+    const cur = &frames[fcur];
+    const prev = &frames[1 - fcur];
+    if (last_present != 0 and prev.ops.items.len != 0) {
+        blitFbo(fbo, hold_fbo);
+        frameMatch(prev, cur);
+        const step = present_period / @as(f64, @floatFromInt(fr_steps));
+        for (1..fr_steps) |k| {
+            const t = last_present + step * @as(f64, @floatFromInt(k));
+            if (nowMs() >= t + step) continue; // too late for this one
+            frameReplay(prev, cur, @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(fr_steps)));
+            waitUntil(t);
+            showFbo(fbo);
+        }
+        blitFbo(hold_fbo, fbo);
+    }
+    const due = last_present + present_period;
+    if (last_present != 0) waitUntil(due);
+    const now = nowMs();
+    last_present = if (now - due < present_period) due else now;
+    present();
+    fcur = 1 - fcur;
+    frames[fcur].reset();
+    vsc_dirty = true;
+    xf_dirty = true;
+}
+
 // ── Present ─────────────────────────────────────────────────────────────────
 
 pub var frame: u32 = 0;
@@ -1442,27 +1716,46 @@ fn present() void {
         drawlog_frame = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
     };
     if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
-    // RECOMP_FPS=1: presents per second, every 5 s.
+    // RECOMP_FPS=1: game frames and shown frames per second, every 5 s.
     if (frame % 64 == 0 and std.c.getenv("RECOMP_FPS") != null) {
         const s = struct {
             var t0: f64 = 0;
             var f0: u32 = 0;
+            var s0: u32 = 0;
         };
         const now = nowMs();
         if (now - s.t0 >= 5000) {
-            if (s.t0 != 0) std.debug.print("[GL] {d:.1} fps\n", .{@as(f64, @floatFromInt(frame - s.f0)) * 1000 / (now - s.t0)});
+            if (s.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown\n", .{ @as(f64, @floatFromInt(frame - s.f0)) * 1000 / (now - s.t0), @as(f64, @floatFromInt(shown - s.s0)) * 1000 / (now - s.t0) });
             s.t0 = now;
             s.f0 = frame;
+            s.s0 = shown;
         }
     }
+    blitWindow(fbo);
+    if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
+    _ = gl.eglSwapBuffers(dpy, surf);
+    shown += 1;
+    pumpMessages();
+}
+
+/// An in-between frame (frame interpolation).
+fn showFbo(src: gl.GLuint) void {
+    blitWindow(src);
+    _ = gl.eglSwapBuffers(dpy, surf);
+    shown += 1;
+    pumpMessages();
+}
+
+/// The back buffer `src` to the window, letterboxed to its aspect and flipped:
+/// the back buffer keeps the guest's row order.
+fn blitWindow(src: gl.GLuint) void {
     const sz = clientSize();
-    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo);
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, src);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
     gl.glDisable(gl.GL_SCISSOR_TEST);
     gl.glColorMask(1, 1, 1, 1);
     gl.glClearColor(0, 0, 0, 1);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-    // Letterboxed to the back buffer's aspect, flipped: the back buffer keeps the guest's row order.
     const bw: i32 = @intCast(bbw());
     const w: i32 = @min(sz[0], @divTrunc(sz[1] * bw, 480));
     const h: i32 = @divTrunc(w * 480, bw);
@@ -1470,9 +1763,6 @@ fn present() void {
     const y = @divTrunc(sz[1] - h, 2);
     gl.glBlitFramebuffer(0, 0, bw * @as(i32, @intCast(scale)), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
-    if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
-    _ = gl.eglSwapBuffers(dpy, surf);
-    pumpMessages();
 }
 
 /// RECOMP_SHOT=120,600: write the window at those frames to logs\frame_N.bmp.
@@ -1594,6 +1884,7 @@ const present_period = 1000.0 / 30.0;
 export fn sub_000F4D00() void {
     sub_000F4D00_gen();
     if (!ready()) return;
+    if (fr_on) return swapInterp();
     var now = nowMs();
     const due = last_present + present_period;
     while (last_present != 0 and now < due) : (now = nowMs()) Sleep(if (due - now >= 2) @intFromFloat(due - now - 1) else 0);
@@ -1605,42 +1896,49 @@ export fn sub_000F4D00() void {
 /// D3DDevice_Clear(Count, pRects, Flags, Color, Z, Stencil).
 /// Xbox flags: ZBUFFER 0x1, STENCIL 0x2, TARGET 0xF0 (one bit per channel).
 export fn sub_000F4EB0() void {
-    const count = @min(arg(0), 16);
+    var c: Clear = .{ .flags = arg(2), .color = arg(3), .z = arg(4), .stencil = arg(5) };
     const rects = arg(1);
-    const flags = arg(2);
-    const c = argbVec(arg(3));
-    const z: f32 = @bitCast(arg(4));
-    const stencil = arg(5);
-    if (drawlog_frame == frame + 1) std.debug.print("[DRAW] clear flags={X} color={X} rects={d} rt={d}\n", .{ flags, arg(3), count, target_fbo });
+    if (rects != 0) {
+        c.count = @min(arg(0), 16);
+        for (0..c.count) |i| for (0..4) |j| {
+            c.rects[i][j] = @bitCast(mem32(rects + 16 * @as(u32, @intCast(i)) + 4 * @as(u32, @intCast(j))));
+        };
+    }
+    if (drawlog_frame == frame + 1) std.debug.print("[DRAW] clear flags={X} color={X} rects={d} rt={d}\n", .{ c.flags, c.color, c.count, target_fbo });
     sub_000F4EB0_gen();
     if (!ready()) return;
+    if (fr_on and !fr_replaying) frames[fcur].ops.append(alloc, .{ .clear = .{ .c = c, .tgt = tgtNow() } }) catch {};
+    clearGl(&c);
+}
+
+const Clear = struct { count: u32 = 0, rects: [16][4]i32 = undefined, flags: u32, color: u32, z: u32, stencil: u32 };
+
+fn clearGl(c: *const Clear) void {
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target_fbo);
     var mask: gl.GLbitfield = 0;
-    if (flags & 0xF0 != 0) mask |= gl.GL_COLOR_BUFFER_BIT;
-    if (flags & 1 != 0) mask |= gl.GL_DEPTH_BUFFER_BIT;
-    if (flags & 2 != 0) mask |= gl.GL_STENCIL_BUFFER_BIT;
+    if (c.flags & 0xF0 != 0) mask |= gl.GL_COLOR_BUFFER_BIT;
+    if (c.flags & 1 != 0) mask |= gl.GL_DEPTH_BUFFER_BIT;
+    if (c.flags & 2 != 0) mask |= gl.GL_STENCIL_BUFFER_BIT;
     if (mask == 0) return;
+    const col = argbVec(c.color);
     gl.glColorMask(1, 1, 1, 1);
     gl.glDepthMask(1);
     gl.glStencilMask(0xFF);
-    gl.glClearColor(c[0], c[1], c[2], c[3]);
-    gl.glClearDepthf(z);
-    gl.glClearStencil(@intCast(stencil & 0xFF));
-    if (rects != 0 and count != 0) {
+    gl.glClearColor(col[0], col[1], col[2], col[3]);
+    gl.glClearDepthf(@bitCast(c.z));
+    gl.glClearStencil(@intCast(c.stencil & 0xFF));
+    if (c.count != 0) {
         gl.glEnable(gl.GL_SCISSOR_TEST);
-        for (0..count) |i| {
-            const r: u32 = rects + 16 * @as(u32, @intCast(i));
-            var x1: i32 = @bitCast(mem32(r));
-            const y1: i32 = @bitCast(mem32(r + 4));
-            var x2: i32 = @bitCast(mem32(r + 8));
-            const y2: i32 = @bitCast(mem32(r + 12));
+        for (c.rects[0..c.count]) |r| {
+            var x1 = r[0];
+            var x2 = r[2];
             if (target_fbo == fbo and x1 >= 0 and x2 > x1) {
                 const sp = bbSpan(@intCast(x1), @intCast(x2));
                 x1 = @intCast(sp[0]);
                 x2 = @intCast(sp[1]);
             }
             const s: i32 = @intCast(scale);
-            gl.glScissor(x1 * s, y1 * s, (x2 - x1) * s, (y2 - y1) * s);
+            gl.glScissor(x1 * s, r[1] * s, (x2 - x1) * s, (r[3] - r[1]) * s);
             gl.glClear(mask);
         }
         gl.glDisable(gl.GL_SCISSOR_TEST);
@@ -1749,11 +2047,7 @@ export fn sub_000F7FC0() void {
         // in the 4:3 middle); a narrower one keeps its 4:3 place.
         const sp = if (target_fbo == fbo) bbSpan(x1, x2) else [2]u32{ x1, x2 };
         if (target_fbo == fbo and sp[1] - sp[0] > w) {
-            const data = d3d.resData(dst);
-            if (std.mem.indexOfScalar(u32, &bb_copies, data) == null) {
-                bb_copies[bb_copy_next] = data;
-                bb_copy_next = (bb_copy_next + 1) % bb_copies.len;
-            }
+            addCopy(d3d.resData(dst));
         }
         const hw = (sp[1] - sp[0]) * scale;
         // ponytail: nearest sample of the scaled back buffer, not a filtered downscale
@@ -1788,6 +2082,7 @@ export fn sub_000F78D0() void {
     const st = arg(0);
     const p = arg(1);
     if (st < 10 and p != 0) @memcpy(std.mem.asBytes(&xf[st]), d3d.ptr(p)[0..64]);
+    xf_dirty = true;
     sub_000F78D0_gen();
 }
 
@@ -1869,6 +2164,7 @@ export fn sub_000F6EC0() void {
 
 /// SetVertexShaderConstant1/4 (fastcall: ecx = register 0..191, edx = data).
 fn vscCopy(reg: i32, n: u32, p: u32) void {
+    vsc_dirty = true;
     for (0..n) |k| {
         const r = reg + @as(i32, @intCast(k));
         if (r >= 0 and r < 192) @memcpy(std.mem.asBytes(&vsc[@intCast(r)]), d3d.ptr(p + 16 * @as(u32, @intCast(k)))[0..16]);
