@@ -40,8 +40,8 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run the game").dependOn(&run.step);
 
     const test_step = b.step("test", "Run tests");
-    inline for (.{ "src/xiso.zig", "src/d3d.zig" }) |f| {
-        const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host }) });
+    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig" }) |f| {
+        const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host, .link_libc = true }) });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
 

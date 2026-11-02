@@ -177,6 +177,7 @@ var pad_packet: u32 = 0;
 export fn sub_0016EC54() void {
     var report: [20]u8 = undefined;
     _ = usb_gamepad_report(@intCast(arg(1) -% 1), &report, report.len);
+    @import("pad.zig").hostPad(report[2..20]);
     if (!std.mem.eql(u8, &pad_last, report[2..20])) {
         pad_last = report[2..20].*;
         pad_packet +%= 1;
@@ -187,8 +188,17 @@ export fn sub_0016EC54() void {
     ret(0, 8);
 }
 
-/// XInputSetState(handle, *feedback): rumble, ignored; the feedback header's
-/// dwStatus (already 0) reads as complete.
+/// XInputSetState(handle, *feedback): rumble to the host pad. XINPUT_FEEDBACK
+/// is a 66-byte header (dwStatus, hEvent, Reserved[58]), then the left and
+/// right motor speeds. Completes at once: dwStatus 0, ERROR_IO_PENDING returned
+/// as the XDK does on success.
+/// ponytail: the header's hEvent is not signalled; Otogi polls dwStatus.
+extern fn xbox_InputSetState(port: u32, vib: *const [2]u16) u32;
 export fn sub_0016ECC7() void {
-    ret(0, 8);
+    const fb = arg(2);
+    const r = guestBytes(fb + 66, 4);
+    const motors = [2]u16{ std.mem.readInt(u16, r[0..2], .little), std.mem.readInt(u16, r[2..4], .little) };
+    _ = xbox_InputSetState(arg(1) -% 1, &motors);
+    mem32(fb).* = 0;
+    ret(997, 8);
 }

@@ -139,12 +139,9 @@ pub fn main(init: std.process.Init) !void {
     //  RECOMP_VBLANK: vblank interrupts, so D3D and the game get frame ticks.
     //  RECOMP_AC97_READY: the emulated APU. Without DirectSound the game never
     //    starts its sound-stream worker, and the main menu waits on it forever.
-    //  RECOMP_MKB: keyboard and mouse as pad 0 when no XInput pad is plugged in,
-    //    bound in mkb.ini.
-    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_MKB" }) |v| {
+    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
-    if (std.c.getenv("RECOMP_MKB_INI") == null) _ = _putenv("RECOMP_MKB_INI=mkb.ini");
     print("=== Otogi: Myth of Demons - static recompilation ===\n", .{});
 
     // Symbols up front: SymInitialize allocates, which is unsafe inside the handler.

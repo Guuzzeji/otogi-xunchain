@@ -83,8 +83,12 @@
   at once when late) and the game steps once per frame, so Swap is held to 30 Hz on a vblank grid. Holding 60 ran
   the game at twice its speed. `zig build` defaults to `-Doptimize=fast`: the Debug renderer could not keep up.
   `RECOMP_FPS=1` prints presents per second every 5 s.
-- Input: Sneak King's `mkb_input.c`/`.h` (P7-P9: `bind.<PAD>=` lines) copied into the toolkit. `RECOMP_MKB` is on by
-  default with `RECOMP_MKB_INI=mkb.ini`; it stands in for pad 0 only when no XInput pad is connected.
+- Input: controller only (keyboard/mouse dropped for now). The game reads its pad in `0x44060`: `(raw + 0.5) / 32767.5`,
+  a 40% dead zone per axis, buttons pressed above 0x1E. Controls (Options > Controller Config, Type A): LT lock-on,
+  RT dash, A jump, B small attack, X spell, Y great attack. `src/pad.zig` adapts a modern pad: LB/RB also press
+  LT/RT (Otogi does not use Black/White), the right stick is inverted on both axes (Otogi orbits the camera;
+  `RECOMP_CAM_INVERT=0` keeps it) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
+  pad (`XInputSetState`, motors at feedback+66).
 - Audio: already worked through the emulated APU and XAudio2 (`RECOMP_AC97_READY`); title music and movie sound play.
 - Saves: `xbox_path_init("game", "%LOCALAPPDATA%\Otogi")`. Create, list (with thumbnail) and load were tested.
 - Movie: `otogi_us_promo.xmv` is the attract-mode trailer (title idle ~25 s), not an intro. `sub_000C81A0` now runs the
