@@ -140,7 +140,7 @@
   (A every 2 s); add `70000:start` for the pause menu. `RECOMP_SHOT` frames ~1800 are in the stage.
 - Pause blur: it copies the back buffer, downsamples the copy into a 320x240 target and draws that back. A target drawn
   from a back buffer copy counts as one (`addCopy`), so the blur stretches across instead of extending its edge.
-- Frame interpolation (`RECOMP_FRAMERATE`, default the monitor's refresh rate, rounded to a multiple of 30; 30 is off):
+- Frame interpolation (`RECOMP_FRAMERATE`, default the monitor's refresh rate, rounded down to a multiple of 30; 30 is off):
   the logic still steps once per 30 Hz frame. Each frame's draws and clears are recorded (state block, textures,
   shaders, vertex/index copies, vertex shader constants, transforms); Swap then draws the frame again at in-between
   times inside its slot with constants and transforms blended from the previous frame's matching draw (same

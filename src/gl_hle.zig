@@ -1515,13 +1515,13 @@ var shown: u32 = 0; // frames shown, game and in-between
 extern "gdi32" fn GetDeviceCaps(hdc: ?*anyopaque, index: c_int) callconv(.winapi) c_int;
 extern "user32" fn GetDC(wnd: ?HWND) callconv(.winapi) ?*anyopaque;
 
-/// RECOMP_FRAMERATE=<hz> shows that many frames a second (rounded to a
+/// RECOMP_FRAMERATE=<hz> shows that many frames a second (rounded down to a
 /// multiple of 30); unset or 0 follows the monitor's refresh rate; 30 is off.
 fn frInit() void {
     var hz: u32 = 0;
     if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
     if (hz == 0) hz = @intCast(@max(GetDeviceCaps(GetDC(null), 116), 30)); // VREFRESH
-    fr_steps = @max((hz + 15) / 30, 1);
+    fr_steps = @max(hz / 30, 1); // not past the refresh rate: 144 Hz shows 120
     fr_on = fr_steps > 1;
     if (!fr_on) return;
     gl.glGenTextures(1, &hold_tex);
