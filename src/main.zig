@@ -172,6 +172,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (recomp_dispatch_init() == 0) print("[BOOT] flat dispatch unavailable; indirect calls use the binary search\n", .{});
     xbox_WatchdogStart(); // inert unless RECOMP_WATCHDOG_SECS is set
+    _ = CreateThread(null, 0, samplerThread, null, 0, null);
 
     print("Starting game at 0x{X:0>8}, esp 0x{X:0>8}\n", .{ XBE_ENTRY, g_esp });
     xbe_entry_point();
@@ -179,6 +180,88 @@ pub fn main(init: std.process.Init) !void {
     print("Game returned.\n", .{});
     xbox_kernel_shutdown();
     xbox_MemoryLayoutShutdown();
+}
+
+// ── Sampling profiler: `type nul > logs\sample` ─────────────────────────────
+// Where each busy thread spends its time: every thread is suspended every
+// 2 ms for 3 s and its RIP named through the PDB. The watchdog says where a
+// thread is stuck; this says where a thread that is busy goes.
+
+const ThreadEntry = extern struct { dwSize: u32 = @sizeOf(ThreadEntry), cntUsage: u32 = 0, th32ThreadID: u32 = 0, th32OwnerProcessID: u32 = 0, tpBasePri: i32 = 0, tpDeltaPri: i32 = 0, dwFlags: u32 = 0 };
+extern "kernel32" fn CreateThread(sa: ?*anyopaque, stack: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, tid: ?*u32) callconv(.winapi) ?w.HANDLE;
+extern "kernel32" fn CreateToolhelp32Snapshot(flags: u32, pid: u32) callconv(.winapi) w.HANDLE;
+extern "kernel32" fn Thread32First(snap: w.HANDLE, te: *ThreadEntry) callconv(.winapi) c_int;
+extern "kernel32" fn Thread32Next(snap: w.HANDLE, te: *ThreadEntry) callconv(.winapi) c_int;
+extern "kernel32" fn OpenThread(access: u32, inherit: c_int, tid: u32) callconv(.winapi) ?w.HANDLE;
+extern "kernel32" fn SuspendThread(h: w.HANDLE) callconv(.winapi) u32;
+extern "kernel32" fn ResumeThread(h: w.HANDLE) callconv(.winapi) u32;
+extern "kernel32" fn GetThreadContext(h: w.HANDLE, ctx: *w.CONTEXT) callconv(.winapi) c_int;
+extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+extern "kernel32" fn DeleteFileA(name: [*:0]const u8) callconv(.winapi) c_int;
+extern "kernel32" fn Sleep(ms: u32) callconv(.winapi) void;
+extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
+
+fn samplerThread(_: ?*anyopaque) callconv(.winapi) u32 {
+    while (true) : (Sleep(500)) {
+        if (DeleteFileA("logs\\sample") != 0) sample() catch {};
+    }
+}
+
+fn sample() !void {
+    const a = std.heap.page_allocator;
+    var threads: [64]struct { id: u32, h: w.HANDLE } = undefined;
+    var n: usize = 0;
+    const snap = CreateToolhelp32Snapshot(4, 0); // TH32CS_SNAPTHREAD
+    var te: ThreadEntry = .{};
+    var ok = Thread32First(snap, &te);
+    while (ok != 0 and n < threads.len) : (ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != GetCurrentProcessId() or te.th32ThreadID == GetCurrentThreadId()) continue;
+        threads[n] = .{ .id = te.th32ThreadID, .h = OpenThread(0x004A, 0, te.th32ThreadID) orelse continue }; // SUSPEND_RESUME | GET_CONTEXT | QUERY_INFORMATION
+        n += 1;
+    }
+    w.CloseHandle(snap);
+    // The innermost return address into the exe: names the caller of a system call.
+    const base = @intFromPtr(GetModuleHandleA(null));
+    const pe = base + std.mem.readInt(u32, @as(*const [4]u8, @ptrFromInt(base + 0x3C)), .little);
+    const top = base + std.mem.readInt(u32, @as(*const [4]u8, @ptrFromInt(pe + 0x50)), .little); // SizeOfImage
+    const rips = try a.alloc([2]u64, 1500 * n);
+    @memset(rips, .{ 0, 0 });
+    var ctx: w.CONTEXT = undefined;
+    for (0..1500) |s| {
+        Sleep(2);
+        for (threads[0..n], 0..) |t, i| {
+            if (SuspendThread(t.h) == 0xFFFFFFFF) continue;
+            ctx.ContextFlags = 0x100001; // CONTEXT_CONTROL
+            if (GetThreadContext(t.h, &ctx) != 0) {
+                rips[s * n + i][0] = ctx.Rip;
+                const sp: [*]const u64 = @ptrFromInt(ctx.Rsp);
+                // ponytail: this page only; the next may be past the stack's top
+                for (0..((ctx.Rsp | 0xFFF) + 1 - ctx.Rsp) / 8) |j| if (sp[j] > base and sp[j] < top) {
+                    rips[s * n + i][1] = sp[j];
+                    break;
+                };
+            }
+            _ = ResumeThread(t.h);
+        }
+    }
+    // (thread id, function, caller in the exe) -> samples
+    var counts: std.StringHashMapUnmanaged(u32) = .empty;
+    for (rips, 0..) |r, k| {
+        if (r[0] == 0) continue;
+        var names: [2][]const u8 = .{ try std.fmt.allocPrint(a, "0x{X}", .{r[0] & ~@as(u64, 0xFFF)}), "?" };
+        for (r, 0..) |addr, j| {
+            var sym: SymbolInfo = .{};
+            var disp: u64 = 0;
+            if (addr != 0 and SymFromAddr(w.GetCurrentProcess(), addr, &disp, &sym) != 0) names[j] = try a.dupe(u8, sym.Name[0..sym.NameLen]);
+        }
+        const e = try counts.getOrPut(a, try std.fmt.allocPrint(a, "{d} {s} <- {s}", .{ threads[k % n].id, names[0], names[1] }));
+        e.value_ptr.* = if (e.found_existing) e.value_ptr.* + 1 else 1;
+    }
+    for (threads[0..n]) |t| w.CloseHandle(t.h);
+    print("[SAMPLE] 1500 samples per thread (2 ms); entries with 3 or more:\n", .{});
+    var it = counts.iterator();
+    while (it.next()) |e| if (e.value_ptr.* >= 3) print("  tid {s}: {d}\n", .{ e.key_ptr.*, e.value_ptr.* });
 }
 
 // Referenced by xboxrecomp's nv2a_pb_replay.c (another game's frontend hooks); unused by Otogi.

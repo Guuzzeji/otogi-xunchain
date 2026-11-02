@@ -79,7 +79,9 @@
   modes sample as 2D, CopyRects downsamples by nearest.
 
 ## Playable (M4)
-- `zig build` defaults to `-Doptimize=fast`: the Debug renderer held stage 1 to ~31 fps; fast holds 60 (menus and stage).
+- Frame rate: CreateDevice (`0x159D0`) asks for `FullScreen_PresentationInterval` 0x80000002 (every second vblank,
+  at once when late) and the game steps once per frame, so Swap is held to 30 Hz on a vblank grid. Holding 60 ran
+  the game at twice its speed. `zig build` defaults to `-Doptimize=fast`: the Debug renderer could not keep up.
   `RECOMP_FPS=1` prints presents per second every 5 s.
 - Input: Sneak King's `mkb_input.c`/`.h` (P7-P9: `bind.<PAD>=` lines) copied into the toolkit. `RECOMP_MKB` is on by
   default with `RECOMP_MKB_INI=mkb.ini`; it stands in for pad 0 only when no XInput pad is connected.
@@ -100,6 +102,13 @@
   c158); NaN reads as no fog (character shaders get c158 = -inf,NaN). A pixel shader without a final combiner gets
   D3D's default one, which applies fog. `GL_EXT_depth_clamp` is on (the NV2A clamps depth rather than clipping).
 - Debug: `touch logs\drawlog` logs the next frame's draws (and clears, replays) and saves `logs\frame_N.bmp`.
-- Gaps: bump/dot-product texture modes still sample as 2D (one stage-1 shader uses one); offscreen targets have no
-  depth buffer; a pushbuffer not recorded on the host (loaded from disc) draws nothing; a second guest thread uses a
-  full core (not investigated).
+- BUMPENVMAP (texture mode 6), used by the title-to-menu ripple: the previous stage's V8U8 texel read as signed
+  (du, dv) even without COLORSIGN, turned by BUMPENVMAT and added to the coordinates (in texels for linear textures).
+- Offscreen render targets get a depth buffer while the title passes a Z surface, and none for NULL (the movie).
+- CPU: the toolkit's `nv2a_ack_thread` (`xbox_memory_layout.c`) looped on `Sleep(0)` and held a core; it now sleeps
+  1 ms (toolkit patch). Found with the sampler: `type nul > logs\sample` samples every thread for 3 s and logs the
+  hot functions with the nearest return address into the exe. System DLL functions get names; code in the exe
+  shows as its page address (SymFromAddr does not resolve it from the sampler, not yet looked into).
+- Stage 1 playtest (2026-11-01): load, fight, kill, jump, pause menu, 30 fps throughout, sound plays.
+- Gaps: a pushbuffer not recorded on the host (loaded from disc) draws nothing (none seen); BUMPENVMAP_LUM and the
+  dot-product texture modes still sample as 2D (none seen).

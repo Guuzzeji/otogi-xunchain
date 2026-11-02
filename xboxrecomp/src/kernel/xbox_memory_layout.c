@@ -1637,7 +1637,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
         *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
                                + g_memory_offset) = GetTickCount();
 
-        Sleep(0);  /* yield; the waiter is spinning on another core */
+        /* 1 ms, not Sleep(0): a yield loop held a whole core for nothing.
+         * With timeBeginPeriod(1) a waiter on GET or a busy bit loses at most
+         * that much. */
+        Sleep(1);
     }
     return 0;
 }

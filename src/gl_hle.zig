@@ -395,6 +395,7 @@ const Prog = struct {
     u_c: gl.GLint = -1,
     u_psc: gl.GLint = -1,
     u_psf: gl.GLint = -1,
+    u_bump: gl.GLint = -1,
 };
 var progs: std.ArrayList(Prog) = .empty;
 
@@ -570,7 +571,9 @@ fn genFs(k: *const Key, w: *std.Io.Writer) !void {
     try w.writeAll("uniform vec4 u_tf, u_fog, u_fogcolor, u_tscale[4];\nuniform float u_aref;\n");
     for (0..4) |st| if (k.tex[st] != 0) try w.print("uniform {s} u_tex{d};\n", .{ if (k.tex[st] == 2) "samplerCube" else "sampler2D", st });
     if (k.ps != 0) {
-        try w.writeAll("uniform vec4 u_psc[16], u_psf[2];\nout vec4 o_color;\nvoid main() {\n  vec4 cur;\n");
+        try w.writeAll("uniform vec4 u_psc[16], u_psf[2], u_bump[4];\nout vec4 o_color;\n" ++
+            "vec2 sgn8(vec2 x) { vec2 b = floor(x * 255.0 + 0.5); return max(mix(b, b - 256.0, step(128.0, b)) / 127.0, -1.0); }\n" ++
+            "void main() {\n  vec4 cur;\n");
         try genCombiners(k, &pixel_shaders.items[k.ps - 1].def, w);
         return genAlphaTest(k, w);
     }
@@ -706,11 +709,23 @@ fn genCombiners(k: *const Key, def: *const [PsDef.words]u32, w: *std.Io.Writer) 
         if (mode == 0) continue; // NONE: zero
         if (mode == 4) { // PASSTHRU: the coordinates as a colour
             try w.print("  R[{d}] = clamp(v_t{d}, 0.0, 1.0);\n", .{ reg, st });
+        } else if (mode == 6 and st > 0 and k.tex[st] == 1) {
+            // BUMPENVMAP: the previous stage's texel is a signed (du, dv), V8U8 with
+            // U in byte 0 (G here), turned by this stage's BUMPENVMAT and added to
+            // its coordinates, in texels for a linear texture.
+            try w.print("  {{ vec2 d = sgn8(R[{d}].gb); vec4 m = u_bump[{d}];\n" ++
+                "    R[{d}] = texture(u_tex{d}, (v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) + vec2(m.x * d.x + m.z * d.y, m.y * d.x + m.w * d.y)) * u_tscale[{d}].xy); }}\n", .{ reg - 1, st, reg, st, st, st, st, st });
         } else if (k.tex[st] == 2) {
             try w.print("  R[{d}] = texture(u_tex{d}, v_t{d}.xyz);\n", .{ reg, st, st });
         } else if (k.tex[st] == 1) {
             // ponytail: 3D, clip-plane, bump and dot-product modes sample as 2D
-            if (mode != 1) sayOnce("pixel shader texture mode other than 2D/cube/passthru sampled as 2D");
+            if (mode != 1) {
+                const said = struct {
+                    var mask: u32 = 0;
+                };
+                if (said.mask & (@as(u32, 1) << @intCast(mode)) == 0) std.debug.print("[GL] pixel shader texture mode 0x{X} (stage {d}) sampled as 2D\n", .{ mode, st });
+                said.mask |= @as(u32, 1) << @intCast(mode);
+            }
             try w.print("  R[{d}] = texture(u_tex{d}, v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) * u_tscale[{d}].xy);\n", .{ reg, st, st, st, st, st });
         } else {
             try w.print("  R[{d}] = vec4(1.0);\n", .{reg});
@@ -847,7 +862,7 @@ fn progGet(k: *const Key) ?*Prog {
         return null;
     }
     p.prog = prog;
-    inline for (.{ "u_wv", "u_proj", "u_texm", "u_rhw", "u_fog", "u_fogcolor", "u_tf", "u_aref", "u_tscale", "u_c", "u_psc", "u_psf" }) |u|
+    inline for (.{ "u_wv", "u_proj", "u_texm", "u_rhw", "u_fog", "u_fogcolor", "u_tf", "u_aref", "u_tscale", "u_c", "u_psc", "u_psf", "u_bump" }) |u|
         @field(p, u) = gl.glGetUniformLocation(prog, u);
     gl.glUseProgram(prog);
     for (0..4) |i| gl.glUniform1i(gl.glGetUniformLocation(prog, (std.fmt.bufPrintSentinel(&name, "u_tex{d}", .{i}, 0) catch unreachable).ptr), @intCast(i));
@@ -999,6 +1014,14 @@ fn uploadUniforms(p: *const Prog) void {
         if (p.u_psc >= 0) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
         const f = [2][4]f32{ argbVec(def[PsDef.final_c0]), argbVec(def[PsDef.final_c1]) };
         if (p.u_psf >= 0) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
+        if (p.u_bump >= 0) {
+            var m: [4][4]f32 = undefined;
+            for (0..4) |i| {
+                const s: u32 = @intCast(i);
+                m[i] = .{ @bitCast(d3d.tss(s, .bumpenvmat00)), @bitCast(d3d.tss(s, .bumpenvmat01)), @bitCast(d3d.tss(s, .bumpenvmat10)), @bitCast(d3d.tss(s, .bumpenvmat11)) };
+            }
+            gl.glUniform4fv(p.u_bump, 4, @ptrCast(&m));
+        }
     }
 }
 
@@ -1383,14 +1406,19 @@ fn nowMs() f64 {
 var last_present: f64 = 0;
 
 /// D3DDevice_Swap(Flags). On the Xbox a flip waits for vblank; nothing here
-/// does, so presents are held to 60 Hz or the title runs its frames at 1000 fps.
+/// does, so presents are held to the title's rate or it runs at 1000 fps.
+/// Otogi's CreateDevice (0x159D0) asks for FullScreen_PresentationInterval
+/// 0x80000002: every second vblank of 60 Hz, at once when late. Its game
+/// logic steps once per frame, so 30 Hz is its speed.
+const present_period = 1000.0 / 30.0;
 export fn sub_000F4D00() void {
     sub_000F4D00_gen();
     if (!ready()) return;
     var now = nowMs();
-    const due = last_present + 1000.0 / 60.0;
+    const due = last_present + present_period;
     while (last_present != 0 and now < due) : (now = nowMs()) Sleep(if (due - now >= 2) @intFromFloat(due - now - 1) else 0);
-    last_present = now;
+    // On the vblank grid while on time, so sleep overshoot does not add up.
+    last_present = if (now - due < present_period) due else now;
     present();
 }
 
@@ -1443,7 +1471,7 @@ var target_size: [2]u32 = .{ 640, 480 };
 
 /// An offscreen render target, kept on the GPU. A texture whose Data is the
 /// target's samples the host texture (texGet), so nothing is read back.
-const Rt = struct { data: u32, w: u32, h: u32, tex: gl.GLuint, fbo: gl.GLuint };
+const Rt = struct { data: u32, w: u32, h: u32, tex: gl.GLuint, fbo: gl.GLuint, depth: gl.GLuint };
 var rts: std.ArrayList(Rt) = .empty;
 
 fn rtGet(s: u32) ?*Rt {
@@ -1451,22 +1479,28 @@ fn rtGet(s: u32) ?*Rt {
     const dims = d3d.surfDims(s);
     for (rts.items) |*r| if (r.data == data and r.w == dims.w and r.h == dims.h) return r;
     const r = rts.addOne(alloc) catch return null;
-    r.* = .{ .data = data, .w = dims.w, .h = dims.h, .tex = 0, .fbo = 0 };
+    r.* = .{ .data = data, .w = dims.w, .h = dims.h, .tex = 0, .fbo = 0, .depth = 0 };
     gl.glGenTextures(1, &r.tex);
     gl.glBindTexture(gl.GL_TEXTURE_2D, r.tex);
     gl.glTexStorage2D(gl.GL_TEXTURE_2D, 1, gl.GL_RGBA8, @intCast(r.w * scale), @intCast(r.h * scale));
+    gl.glGenRenderbuffers(1, &r.depth);
+    gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, r.depth);
+    gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, @intCast(r.w * scale), @intCast(r.h * scale));
     gl.glGenFramebuffers(1, &r.fbo);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, r.fbo);
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, r.tex, 0);
-    // ponytail: no depth buffer on offscreen targets; add one when a title draws 3D into one
     std.debug.print("[GL] render target {d}x{d} format 0x{X:0>2} at 0x{X:0>8}\n", .{ r.w, r.h, (mem32(s + 0xC) >> 8) & 0xFF, data });
     return r;
 }
 
 /// D3DDevice_SetRenderTarget(pRenderTarget, pNewZStencil). D3D resets the
-/// viewport to the whole new target.
+/// viewport to the whole new target. An offscreen target gets its own depth
+/// buffer while the title passes one, and none while it passes NULL (the
+/// movie does), so depth tests then pass as they do without a Z surface.
+/// ponytail: the title's Z surface itself is not shared between targets.
 export fn sub_000F7CF0() void {
     const s = arg(0);
+    const z = arg(1);
     sub_000F7CF0_gen();
     if (back_buffer == 0) back_buffer = s;
     if (s == 0 or !ready()) return;
@@ -1476,6 +1510,8 @@ export fn sub_000F7CF0() void {
     if (s != back_buffer) if (rtGet(s)) |r| {
         target_fbo = r.fbo;
         target_size = .{ r.w, r.h };
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, r.fbo);
+        gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, if (z != 0) r.depth else 0);
     };
     vp = .{ .w = target_size[0], .h = target_size[1] };
 }
