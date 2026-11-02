@@ -5,6 +5,7 @@ const w = std.os.windows;
 
 comptime {
     _ = @import("manual.zig");
+    _ = @import("gl_hle.zig");
 }
 
 const XBE_ENTRY: u32 = 0x000E43B7;

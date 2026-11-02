@@ -19,7 +19,7 @@ fn mem32(va: u32) *volatile u32 {
 const D3D_DEVICE_PTR: u32 = 0x1051C8; // XDK 5455 D3D's global device pointer
 
 /// Extra indirect-call targets. The overrides below are listed in
-/// seeds/manual.json, so the lifter leaves their bodies out and the dispatch
+/// seeds/manual.h, so the lifter leaves their bodies out and the dispatch
 /// table already points at these exports.
 export fn recomp_lookup_manual(va: u32) ?RecompFn {
     _ = va;

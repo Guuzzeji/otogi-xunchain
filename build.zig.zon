@@ -3,5 +3,12 @@
     .version = "0.0.0",
     .fingerprint = 0x644488cb8ac62c0a,
     .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // Sneak King's ANGLE build, commit feebf60 (zip SHA-256 ca896706...c5d7).
+        .angle = .{
+            .url = "https://github.com/Guuzzeji/sneaky-whopper-recomp/releases/download/angle-feebf60/angle-feebf60-win-x64.zip",
+            .hash = "N-V-__8AAIvH-wArHOCo819CSIXEEiYqgDj9midIDT28UpUS",
+        },
+    },
     .paths = .{ "build.zig", "build.zig.zon", "src" },
 }

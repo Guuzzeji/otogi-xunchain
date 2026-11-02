@@ -19,7 +19,17 @@ pub fn build(b: *std.Build) void {
         mod.addIncludePath(b.path("xboxrecomp/src/" ++ d));
     mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-w" } });
     addGenerated(b, mod);
-    for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "xinput1_4", "dbghelp", "gdi32" }) |l|
+
+    // ANGLE (GL ES 3 on D3D11/Vulkan/GL): headers, import libs, and the 4 DLLs beside the exe.
+    const angle = b.dependency("angle", .{});
+    const gl = b.addTranslateC(.{ .root_source_file = b.path("src/gl.h"), .target = target, .optimize = optimize });
+    gl.addIncludePath(angle.path("include"));
+    mod.addImport("gl", gl.createModule());
+    mod.addObjectFile(angle.path("lib/libEGL.dll.lib"));
+    mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
+    inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
+        b.getInstallStep().dependOn(&b.addInstallBinFile(angle.path("bin/" ++ dll), dll).step);
+    for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "xinput1_4", "dbghelp", "gdi32", "user32" }) |l|
         mod.linkSystemLibrary(l, .{});
 
     const exe = b.addExecutable(.{ .name = "otogi", .root_module = mod });
@@ -35,6 +45,10 @@ pub fn build(b: *std.Build) void {
     const unpack = b.addRunArtifact(xiso);
     unpack.addPassthruArgs();
     b.step("unpack", "Unpack an Xbox ISO: zig build unpack -- <iso> <out_dir>").dependOn(&unpack.step);
+
+    const pe = b.addRunArtifact(b.addExecutable(.{ .name = "xbe_to_pe", .root_module = b.createModule(.{ .root_source_file = b.path("src/xbe_to_pe.zig"), .target = b.graph.host }) }));
+    pe.addPassthruArgs();
+    b.step("pe", "Wrap the XBE in a PE32 for REA/Ghidra: zig build pe -- <xbe> <out.exe>").dependOn(&pe.step);
 }
 
 /// Lifted C from `tools.recomp --gen-dir src/recomp/gen` (gitignored, absent on a fresh clone).

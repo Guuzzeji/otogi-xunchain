@@ -31,9 +31,9 @@
   - Real, needs an override in M2: `sub_000E88E4` does `sgdt` and a far jump (writes a GDT entry).
 
 ## Boot (M2)
-- Re-lift after changing `seeds/manual.json` (directly called overrides; their bodies are left out):
-  `recomp ../game/default.xbe --all --split 250 --gen-dir ../src/recomp/gen --manual-functions ../seeds/manual.json` (~40 s).
-  Overrides live in `src/manual.zig` as `export fn sub_XXXXXXXX`.
+- Re-lift after changing `seeds/manual.h` (replaced and wrapped functions; see its header):
+  `recomp ../game/default.xbe --all --split 250 --gen-dir ../src/recomp/gen --exclude-manual ../seeds/manual.h` (~40 s).
+  Overrides live in `src/manual.zig` and `src/gl_hle.zig` as `export fn sub_XXXXXXXX`.
 - `build.zig` sets `sanitize_c = .off`: Zig Debug enables UBSan for C, and its alignment check fires on 4-byte-aligned guest structs.
 - Log: `logs\otogi.log` (stdout and stderr). Watchdog: `RECOMP_WATCHDOG_SECS=N` prints guest regs and stack.
 - Fixes, in boot order:
@@ -52,3 +52,28 @@
   (`map\m000\map.dat`, `chr\c000.dat`); 70 s, no crash. Idle (no input) runs the title/attract loop.
 - Missing on disc too (the game probes them): `sfx\s000_00.dds` etc., `media\distortion.dds`.
 - Unhandled but harmless so far: `cli`/`sti` at `0x00171BA5`/`0x00171BB6` (XPP USB code).
+
+## Renderer (M3)
+- XDK symbols: `XbSymbolDatabaseCLI.exe game/default.xbe -e > analysis/xbsymbol/xbsymbol.txt` (CLI from the Sneak King
+  toolkit; allowed in `.claude/settings.local.json`). It names every D3D entry point and `D3D_g_RenderState` `0x104F30`,
+  `D3D_g_DeferredTextureState` `0x104D30`, `D3D_g_pDevice` `0x1051C8`. Render-state indices match XDK 5849.
+- REA: `zig build pe -- game/default.xbe analysis/rea/default_flat.exe` wraps the XBE in a PE32 that REA's Ghidra opens
+  at the XBE's own addresses (port of Sneak King's `xbe_to_pe.py`).
+- ANGLE: `build.zig.zon` pins Sneak King's `angle-feebf60` zip (SHA-256 `ca896706...c5d7`); `zig build` installs the
+  4 DLLs beside the exe. Zig unpacks it into `zig-pkg/` (gitignored).
+- `src/gl_hle.zig` (GL side) and `src/d3d.zig` (guest side) port Sneak King's `gl_hle.c`/`d3d_hle_shared.h`:
+  wrapped setters mirror state, draws/Clear/Swap are done in GL ES 3, GLSL is generated per state key.
+- Otogi-specific:
+  - Most 2D is drawn by the title itself between `BeginPush`/`EndPush`: `SET_BEGIN_END` + `INLINE_ARRAY` quads in the
+    current FVF. `EndPush` decodes them.
+  - Text and several effects use pixel shaders (register combiners); `CreatePixelShader` keeps each
+    `D3DPIXELSHADERDEF`, translated to GLSL after the toolkit's `nv2a_combiner.c`.
+  - Every menu frame `CopyRects` copies the back buffer into a 640x480 linear ARGB texture (a desaturate/tint post
+    effect draws it back). The back buffer is GPU-only, so CopyRects reads it back into guest memory.
+  - `SetViewport` passes 0x7FFFFFFF for "the whole target"; clamped to 640x480 as D3D does.
+  - Swap is held to 60 Hz: nothing else paces it, and the title otherwise runs ~1000 fps.
+  - A8 textures read RGB as 1 (as xemu); `G8B8` maps as xemu does.
+- Debug knobs: `RECOMP_SHOT=<frame>,...` writes `logs\frame_N.bmp`; `RECOMP_GL_DRAWLOG=<frame>` logs that frame's draws;
+  `RECOMP_GL_DUMP=1` prints each pixel-shader program's GLSL. `RECOMP_SCALE` (1-4, default 2), `RECOMP_GFX`.
+- Known gaps: palettes (P8 reads white), fixed-function lighting (SetLight not identified for 5455), bump/dot texture
+  modes sample as 2D, one render target, CopyRects downsamples by nearest, no keyboard from the window.

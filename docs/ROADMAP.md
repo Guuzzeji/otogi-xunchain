@@ -105,7 +105,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 - The log shows `game/chr` and `game/map` file opens.
 - There is no crash for 60 seconds.
 
-## M3: First pixels through ANGLE
+## M3: First pixels through ANGLE — DONE 2026-11-01
 1. Find Otogi's D3D8 entry points in the `D3D` section: `func_id` XDK signatures, then confirm in Ghidra. **XDK 5455 is not 5849**, so the device struct offsets and render-state tables differ from Sneak King. Re-derive them. Do not copy addresses.
 2. Port `gl_hle.c` and `d3d_hle_shared.h` to `src/gl_hle.zig`. Use `@cImport` of the EGL and GLES3 headers. Use `EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE` by default; `RECOMP_GFX` overrides it.
 3. Get ANGLE from the same pinned zip and hash that Sneak King uses. Copy the 4 DLLs next to the exe in `build.zig`.
