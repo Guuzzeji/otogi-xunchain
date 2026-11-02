@@ -154,3 +154,10 @@
 - Flicker report (2026-11-01): a probe reading nine points of the window after every shown frame (title, menus,
   stage, combat, 95 s at 120 Hz, vsync off) found no black frames except the game's own cut at stage start.
   Unexplained; vsync was added in case it was tearing.
+- Gameplay flicker (fast movement): in-between frames lost the mist. The mist is dozens of sprite draws sharing
+  shader, texture and buffer; matching them by occurrence paired the wrong sprites, and blending their constants
+  scattered them. Draws now blend only when their key (shader, textures, stream, base, first vertex, count) is unique
+  in both frames; repeated ones show the newer frame. A probe comparing each in-between frame with its neighbours
+  (32x18 downsample) found 10 bad frames in a 25 s dash run before, 0 after; about half the draws blend.
+- Mist sprites (vertex program `1D94C21`, additive, Z write off) come last in the frame; the game turns ZENABLE off
+  for about a third of them, so those draw over the ground in front.

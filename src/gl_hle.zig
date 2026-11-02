@@ -1589,34 +1589,32 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
         d.streams[s] = f.store(d3d.ptr(d3d.resData(stream_vb[s]))[(base + lo) * st .. (base + hi + 1) * st]);
     };
     var hsh = std.hash.Wyhash.init(0);
-    hsh.update(std.mem.asBytes(&[_]u32{ vshader, pshader, stage_tex[0], stream_vb[0], n, xprim, render_target }));
+    hsh.update(std.mem.asBytes(&[_]u32{ vshader, pshader, stage_tex[0], stage_tex[1], stream_vb[0], base, lo, n, xprim, render_target }));
     d.key = hsh.final();
     f.ops.append(alloc, .{ .draw = d }) catch @panic("OOM");
 }
 
-/// For each draw of `cur`, the draw of `prev` with the same key and occurrence.
+/// For each draw of `cur`, the draw of `prev` with the same key, when the key
+/// is unique in both frames. Repeated look-alike draws (mist sprites,
+/// particles) cannot be told apart, and blending them between the wrong pairs
+/// made the mist vanish from in-between frames: they show unblended.
 fn frameMatch(prev: *const Frame, cur: *Frame) void {
-    var heads: std.AutoHashMapUnmanaged(u64, u32) = .empty; // key -> next unmatched op of prev to look from
-    defer heads.deinit(alloc);
+    const Seen = struct { prev: u32 = 0, n_prev: u32 = 0, n_cur: u32 = 0 };
+    var seen: std.AutoHashMapUnmanaged(u64, Seen) = .empty;
+    defer seen.deinit(alloc);
+    for (prev.ops.items, 0..) |op, i| if (op == .draw) {
+        const g = seen.getOrPutValue(alloc, op.draw.key, .{}) catch @panic("OOM");
+        g.value_ptr.prev = @intCast(i);
+        g.value_ptr.n_prev += 1;
+    };
+    for (cur.ops.items) |op| if (op == .draw) {
+        const g = seen.getOrPutValue(alloc, op.draw.key, .{}) catch @panic("OOM");
+        g.value_ptr.n_cur += 1;
+    };
     cur.match.clearRetainingCapacity();
     for (cur.ops.items) |op| {
-        var m: ?u32 = null;
-        if (op == .draw) {
-            const k = op.draw.key;
-            const g = heads.getOrPut(alloc, k) catch @panic("OOM");
-            if (!g.found_existing) g.value_ptr.* = 0;
-            var i = g.value_ptr.*;
-            while (i < prev.ops.items.len) : (i += 1) {
-                const po = &prev.ops.items[i];
-                if (po.* == .draw and po.draw.key == k) {
-                    m = i;
-                    i += 1;
-                    break;
-                }
-            }
-            g.value_ptr.* = i;
-        }
-        cur.match.append(alloc, m) catch @panic("OOM");
+        const s = if (op == .draw) seen.get(op.draw.key).? else Seen{};
+        cur.match.append(alloc, if (s.n_prev == 1 and s.n_cur == 1) s.prev else null) catch @panic("OOM");
     }
 }
 
