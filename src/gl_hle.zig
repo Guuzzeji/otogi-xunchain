@@ -401,6 +401,7 @@ const HostVs = struct {
     nmc: usize,
     inputs: u16 = 0,
     uses_vp: bool = false,
+    hash: u32 = 0, // of the microcode: names a program across runs
     glsl: ?[]u8 = null,
 };
 var programs: std.ArrayList(HostVs) = .empty;
@@ -938,11 +939,24 @@ fn glFunc(v: u32) gl.GLenum {
     return if (v >= 0x200 and v <= 0x207) v else gl.GL_ALWAYS;
 }
 
+/// Otogi turns the depth test off for part of its ground mist (sprites of the
+/// particle program A8A1DBCD), so those patches draw over the ground in front
+/// of them. Keep it on; RECOMP_MIST_DEPTH=0 gives the original.
+fn mistDepth() bool {
+    const S = struct {
+        var on: ?bool = null;
+    };
+    if (S.on == null) S.on = if (std.c.getenv("RECOMP_MIST_DEPTH")) |e| e[0] != '0' else true;
+    if (!S.on.? or vshader & 1 == 0) return false;
+    const h = vsFind(vshader) orelse return false;
+    return h.hash == 0xA8A1DBCD;
+}
+
 fn applyRenderState() void {
     const rs = d3d.rs;
     const cull = rs(.cullmode);
     const cw = rs(.colorwriteenable);
-    setCap(gl.GL_DEPTH_TEST, rs(.zenable) != 0);
+    setCap(gl.GL_DEPTH_TEST, rs(.zenable) != 0 or mistDepth());
     gl.glDepthFunc(glFunc(rs(.zfunc)));
     gl.glDepthMask(@intFromBool(rs(.zwriteenable) != 0));
     setCap(gl.GL_BLEND, rs(.alphablendenable) != 0);
@@ -2162,6 +2176,7 @@ export fn sub_000F6EC0() void {
         if (h.decl[i] == 0xFFFFFFFF) break;
     }
     for (0..h.nmc * 4) |i| h.mc[i] = mem32(func + 4 + 4 * @as(u32, @intCast(i)));
+    h.hash = d3d.hashBytes(@ptrCast(&h.mc), @intCast(h.nmc * 16));
 }
 
 /// SetVertexShaderConstant1/4 (fastcall: ecx = register 0..191, edx = data).

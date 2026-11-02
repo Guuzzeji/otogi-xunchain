@@ -160,4 +160,6 @@
   in both frames; repeated ones show the newer frame. A probe comparing each in-between frame with its neighbours
   (32x18 downsample) found 10 bad frames in a 25 s dash run before, 0 after; about half the draws blend.
 - Mist sprites (vertex program `1D94C21`, additive, Z write off) come last in the frame; the game turns ZENABLE off
-  for about a third of them, so those draw over the ground in front.
+  for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
+  test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
+  (143) is right: StencilEnable 144 and ZBias 149 match the XbSymbol variables.
