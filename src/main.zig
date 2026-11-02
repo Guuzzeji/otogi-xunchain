@@ -154,6 +154,14 @@ fn loadSettings(init: std.process.Init) void {
 }
 
 pub fn main(init: std.process.Init) !void {
+    // game\, settings.ini and logs\ are found from the working directory. A
+    // launcher (setup's Play, a shell elsewhere) may leave another one; then
+    // use the exe's folder, which is where setup puts them.
+    std.Io.Dir.cwd().access(init.io, "game/default.xbe", .{}) catch {
+        var buf: [1024]u8 = undefined;
+        const n = std.process.executableDirPath(init.io, &buf) catch 0;
+        if (n != 0) std.process.setCurrentPath(init.io, buf[0..n]) catch {};
+    };
     openLog();
     _ = timeBeginPeriod(1);
     loadSettings(init);

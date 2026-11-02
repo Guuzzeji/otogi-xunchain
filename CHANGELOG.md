@@ -11,6 +11,10 @@ the Release workflow moves "Unreleased" into a new version section.
 - Setup's game art (title logo, Raikoh, red waves, brush stroke) is built into the
   exe, so it shows as soon as setup opens, before a disc is picked.
 
+### Fixed
+- `otogi.exe` finds `settings.ini` and `game\` in its own folder when started
+  from somewhere else (setup's Play button, a shell in another folder).
+
 ## [0.6.0] - 2026-11-01
 
 ### Added
