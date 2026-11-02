@@ -35,7 +35,7 @@
   `recomp ../game/default.xbe --all --split 250 --gen-dir ../src/recomp/gen --exclude-manual ../seeds/manual.h` (~40 s).
   Overrides live in `src/manual.zig` and `src/gl_hle.zig` as `export fn sub_XXXXXXXX`.
 - `build.zig` sets `sanitize_c = .off`: Zig Debug enables UBSan for C, and its alignment check fires on 4-byte-aligned guest structs.
-- Log: `logs\otogi.log` (stdout and stderr). Watchdog: `RECOMP_WATCHDOG_SECS=N` prints guest regs and stack.
+- Log: `otogi.log` beside the exe, i.e. in the working directory (stdout and stderr); `log = 0` in settings.ini turns it off. Watchdog: `RECOMP_WATCHDOG_SECS=N` prints guest regs and stack.
 - Fixes, in boot order:
   1. `sub_000E571D` (XAPI DVD media check) returns success. Cert+0x1D8 bit 0 asks for the security sector (READ DVD STRUCTURE), which an ISO lacks; it retried 5x and rebooted to the dashboard.
   2. `RECOMP_ASYNC_IO` on by default (`main.zig`). The stream loader `sub_0007BDD0` reads overlapped and only fills the byte count on ERROR_IO_PENDING; a synchronous completion read as 0 bytes, E_FAIL, and the disc-error loop `sub_000137D0`.
@@ -147,6 +147,12 @@
   shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency).
   CPU-written vertices (particles, 2D) do not blend. `RECOMP_FPS=1` prints game and shown frames per second.
   Tested: 30 game / 60 and 120 shown in stage 1.
+- The game reads `game\`, `settings.ini` and `logs\` from the working directory; when that has no
+  `game\default.xbe` it switches to the exe's folder first (setup's Play starts it from elsewhere).
+- Setup writes `settings.ini` beside otogi.exe: a header with the version and that version's CHANGELOG.md section,
+  then the repo's `settings.ini` as the template (a comment per setting). Values already in the player's file are kept,
+  unknown keys are carried over at the end. Settings: scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert,
+  debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
 - `RECOMP_VSYNC` (default on): `eglSwapInterval(1)`. On a 144 Hz monitor interpolation shows 120 frames a second,
@@ -169,7 +175,7 @@
   sources and backends and exposes `dcimgui.h` as module `imgui`. Backend functions are hand-declared externs.
 - `src/debug_menu.zig`: drawn at the end of `blitWindow` (so shots include it), on the GL thread, through
   `imgui_impl_opengl3` (GLES 3) and `imgui_impl_win32`. Closed, it costs nothing. `RECOMP_DEBUG_MENU=1` opens it at
-  boot. Window layout in `logs\imgui.ini`.
+  boot. Window layout in `debug_menu.ini`.
 - Render tab: renderer, settings, game/shown fps, guest work time per frame (from the end of one Swap to the start of the
   next) with a graph and a count of frames over 33.3 ms, last frame's draws/clears/CopyRects/texture uploads
   (`gl_hle.last`), host cache sizes, pause and frame step (Swap shows the held frame until resumed).

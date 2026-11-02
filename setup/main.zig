@@ -1005,9 +1005,82 @@ fn pipeline(c: *Ctx) !void {
     }
 
     try next(c, 7);
-    // settings.ini is the player's once it exists.
-    cwd.access(io, c.path("{s}\\settings.ini", .{c.out}), .{}) catch
-        try Io.Dir.copyFile(cwd, c.path("{s}\\settings.ini", .{c.work}), cwd, c.path("{s}\\settings.ini", .{c.out}), io, .{});
+    try writeSettings(c);
+}
+
+extern "kernel32" fn GetLocalTime(t: *[8]u16) callconv(.winapi) void;
+
+/// <out>\settings.ini, beside otogi.exe: a header with the version and this
+/// version's changelog notes, then the template (the repo's settings.ini, one
+/// comment per setting). Values the player already set are kept, and settings
+/// the template does not know are carried over at the end.
+fn writeSettings(c: *Ctx) !void {
+    const io = c.io;
+    const cwd = Io.Dir.cwd();
+    const dest = c.path("{s}\\settings.ini", .{c.out});
+    const tmpl = try cwd.readFileAlloc(io, c.path("{s}\\settings.ini", .{c.work}), c.gpa, .limited(64 * 1024));
+    const old_text = cwd.readFileAlloc(io, dest, c.gpa, .limited(64 * 1024)) catch "";
+    var old: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    var lines = std.mem.tokenizeAny(u8, old_text, "\r\n");
+    while (lines.next()) |line| if (setting(line)) |kv| try old.put(c.gpa, kv[0], kv[1]);
+
+    var out: std.Io.Writer.Allocating = .init(c.gpa);
+    const w = &out.writer;
+    var t: [8]u16 = undefined; // SYSTEMTIME: year, month, weekday, day, ...
+    GetLocalTime(&t);
+    try w.print("; Otogi: Myth of Demons, PC recompilation {s}\n", .{version});
+    try w.print("; Written by otogi-setup on {d}-{d:0>2}-{d:0>2}. Running setup again keeps your values.\n", .{ t[0], t[1], t[3] });
+    // This version's section of CHANGELOG.md (in the unpacked source).
+    const log = cwd.readFileAlloc(io, c.path("{s}\\CHANGELOG.md", .{c.work}), c.gpa, .limited(1 << 20)) catch "";
+    const head = "## [" ++ build_info.version ++ "]";
+    if (std.mem.indexOf(u8, log, head)) |at| {
+        const body = log[at..];
+        const end = std.mem.indexOfPos(u8, body, head.len, "\n## [") orelse body.len;
+        // "## [0.6.0] - 2026-11-01" -> "What's in v0.6.0 (2026-11-01):"
+        const heading = std.mem.trimEnd(u8, body[0 .. std.mem.indexOfScalar(u8, body, '\n') orelse body.len], "\r ");
+        const date = if (std.mem.indexOf(u8, heading, "] - ")) |d| heading[d + 4 ..] else "";
+        try w.print(";\n; What's in v{s}{s}{s}{s}:\n", .{ build_info.version, if (date.len != 0) " (" else "", date, if (date.len != 0) ")" else "" });
+        var it = std.mem.splitScalar(u8, body[0..end], '\n');
+        _ = it.next(); // the heading
+        while (it.next()) |raw| {
+            const l = std.mem.trimEnd(u8, raw, "\r ");
+            if (l.len != 0) try w.print(";   {s}\n", .{l});
+        }
+    }
+    try w.writeAll(";\n");
+
+    var known: std.StringHashMapUnmanaged(void) = .empty;
+    var tl = std.mem.splitScalar(u8, std.mem.trimEnd(u8, tmpl, "\r\n"), '\n');
+    while (tl.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (setting(line)) |kv| {
+            try known.put(c.gpa, kv[0], {});
+            if (old.get(kv[0])) |v| {
+                try w.print("{s} = {s}\n", .{ kv[0], v });
+                continue;
+            }
+        }
+        try w.print("{s}\n", .{line});
+    }
+    var first = true;
+    for (old.keys(), old.values()) |k, v| {
+        if (known.contains(k)) continue;
+        if (first) try w.writeAll("\n; Kept from your earlier settings.ini.\n");
+        first = false;
+        try w.print("{s} = {s}\n", .{ k, v });
+    }
+    try cwd.writeFile(io, .{ .sub_path = dest, .data = out.written() });
+    c.say("wrote {s} ({d} of your values kept)", .{ dest, old.count() });
+}
+
+/// `key = value` with comments (; or #) stripped, as otogi.exe reads it.
+fn setting(line: []const u8) ?[2][]const u8 {
+    const body = line[0 .. std.mem.indexOfAny(u8, line, "#;") orelse line.len];
+    const eq = std.mem.indexOfScalar(u8, body, '=') orelse return null;
+    const k = std.mem.trim(u8, body[0..eq], " \t");
+    const v = std.mem.trim(u8, body[eq + 1 ..], " \t");
+    if (k.len == 0 or v.len == 0) return null;
+    return .{ k, v };
 }
 
 /// Download into <work>\downloads (kept between runs) and check its SHA-256.

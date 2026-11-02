@@ -78,10 +78,12 @@ const SymbolInfo = extern struct {
 
 const print = std.debug.print;
 
-/// Send stdout, stderr (CRT and Win32) to logs\otogi.log, unbuffered so a crash loses nothing.
+/// Send stdout, stderr (CRT and Win32) to otogi.log beside otogi.exe (the
+/// working directory), unbuffered so a crash loses nothing. settings.ini
+/// `log = 0` (RECOMP_LOG=0) leaves them on the console.
 fn openLog() void {
-    _ = CreateDirectoryA("logs", null);
-    const h = CreateFileA("logs\\otogi.log", 0x40000000, 1, null, 2, 0, null); // GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS
+    if (std.c.getenv("RECOMP_LOG")) |e| if (e[0] == '0') return;
+    const h = CreateFileA("otogi.log", 0x40000000, 1, null, 2, 0, null); // GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS
     if (h == w.INVALID_HANDLE_VALUE) return;
     _ = SetStdHandle(@bitCast(@as(i32, -11)), h);
     _ = SetStdHandle(@bitCast(@as(i32, -12)), h);
@@ -134,8 +136,10 @@ fn vehHandler(ep: *w.EXCEPTION_POINTERS) callconv(.winapi) c_long {
 
 /// settings.ini (beside game\): each `key = value` line sets RECOMP_<KEY>
 /// unless the environment already has it. '#' and ';' start comments.
-fn loadSettings(init: std.process.Init) void {
-    const text = std.Io.Dir.cwd().readFileAlloc(init.io, "settings.ini", init.arena.allocator(), .limited(64 * 1024)) catch return;
+/// Returns what it set, for the log (which opens after, as `log` decides).
+fn loadSettings(init: std.process.Init) []const u8 {
+    var echo: std.Io.Writer.Allocating = .init(init.arena.allocator());
+    const text = std.Io.Dir.cwd().readFileAlloc(init.io, "settings.ini", init.arena.allocator(), .limited(64 * 1024)) catch return "";
     var lines = std.mem.tokenizeAny(u8, text, "\r\n");
     while (lines.next()) |raw| {
         const line = raw[0 .. std.mem.indexOfAny(u8, raw, "#;") orelse raw.len];
@@ -149,8 +153,9 @@ fn loadSettings(init: std.process.Init) void {
         if (std.c.getenv(n) != null) continue;
         var kv: [256]u8 = undefined;
         _ = _putenv(std.fmt.bufPrintSentinel(&kv, "{s}={s}", .{ n, val }, 0) catch continue);
-        print("[SETTINGS] {s}={s}\n", .{ n, val });
+        echo.writer.print("[SETTINGS] {s}={s}\n", .{ n, val }) catch {};
     }
+    return echo.written();
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -162,9 +167,10 @@ pub fn main(init: std.process.Init) !void {
         const n = std.process.executableDirPath(init.io, &buf) catch 0;
         if (n != 0) std.process.setCurrentPath(init.io, buf[0..n]) catch {};
     };
+    const settings = loadSettings(init);
     openLog();
+    print("{s}", .{settings});
     _ = timeBeginPeriod(1);
-    loadSettings(init);
     // Toolkit switches Otogi needs. The environment still wins.
     //  RECOMP_ASYNC_IO: async-opened files must return STATUS_PENDING; the
     //    stream loader only reads the byte count on that path (else disc error).

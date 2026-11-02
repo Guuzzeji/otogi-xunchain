@@ -11,3 +11,5 @@ logs/
 .vscode/
 xbox_kernel.log
 zig-pkg/
+otogi.log
+debug_menu.ini

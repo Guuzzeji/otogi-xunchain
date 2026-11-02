@@ -102,7 +102,7 @@ pub fn draw(hwnd: anytype) void {
     if (!inited) {
         _ = im.ImGui_CreateContext(null);
         const io = im.ImGui_GetIO();
-        io.*.IniFilename = "logs\\imgui.ini";
+        io.*.IniFilename = "debug_menu.ini"; // window layout, beside otogi.exe
         im.ImGui_StyleColorsDark(null);
         const style = im.ImGui_GetStyle();
         im.ImGuiStyle_ScaleAllSizes(style, 1.5);

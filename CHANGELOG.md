@@ -7,7 +7,15 @@ the Release workflow moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
+### Added
+- Setup writes `settings.ini` next to `otogi.exe`: the version you are playing and
+  what is new in it, a comment on every setting, and your own values kept when setup
+  runs again.
+- Settings `log` (write `otogi.log`, on by default), `cam_invert` and `debug_menu`.
+
 ### Changed
+- The game's log is `otogi.log` next to `otogi.exe` (was `logs\otogi.log`); the debug
+  menu's window layout is `debug_menu.ini` there too.
 - Setup's game art (title logo, Raikoh, red waves, brush stroke) is built into the
   exe, so it shows as soon as setup opens, before a disc is picked.
 
