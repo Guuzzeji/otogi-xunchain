@@ -113,7 +113,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 
 **Exit check:** the title screen and menu render correctly.
 
-## M4: Playable
+## M4: Playable — IN PROGRESS (items 1-5 working; full stage 1 run not yet verified)
 1. Input: XInput plus `mkb.ini` (reuse `xboxrecomp/src/input/mkb_input.c`).
 2. Audio: APU to XAudio2.
 3. XMV intro movie.

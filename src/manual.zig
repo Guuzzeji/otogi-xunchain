@@ -94,11 +94,11 @@ export fn recomp_unimpl(text: [*:0]const u8, va: u32) void {
     if (stop) std.process.abort();
 }
 
-/// Game's per-frame movie step (XMV): returns 1 once the movie has ended. XMV's
-/// clock only starts once its decode and audio pipeline report ready, which
-/// does not happen here yet, so it would Sleep(2) forever. Report the movie as
-/// ended. ponytail: skips every movie; M4 ("XMV intro movie") replaces this.
+/// Game's per-frame movie step (XMV): returns 1 once the movie has ended.
+/// RECOMP_NO_MOVIE=1 reports every movie as ended at once.
+extern fn sub_000C81A0_gen() void;
 export fn sub_000C81A0() void {
+    if (std.c.getenv("RECOMP_NO_MOVIE") == null) return sub_000C81A0_gen();
     g_eax = 1;
     g_esp += 4; // ret
 }

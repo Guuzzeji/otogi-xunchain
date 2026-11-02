@@ -39,11 +39,27 @@ pub fn resData(res: u32) u32 {
     return if (d < 0x80000000) d | 0x80000000 else d;
 }
 
+/// The deferred texture state and the render state are one block of guest
+/// memory (TEXTURE_STATE + 0x200 == RENDER_STATE). While a recorded pushbuffer
+/// replays, reads come from its snapshot of the block instead.
+pub const STATE_WORDS = 128 + 160;
+pub var state_snap: ?*const [STATE_WORDS]u32 = null;
+comptime {
+    std.debug.assert(RENDER_STATE == TEXTURE_STATE + 0x200);
+    for (std.enums.values(Rs)) |v| std.debug.assert(@intFromEnum(v) < STATE_WORDS - 128);
+}
+
+pub fn stateBlock(out: *[STATE_WORDS]u32) void {
+    for (out, 0..) |*v, i| v.* = mem32(TEXTURE_STATE + 4 * @as(u32, @intCast(i)));
+}
+fn stateWord(n: u32) u32 {
+    return if (state_snap) |s| s[n] else mem32(TEXTURE_STATE + 4 * n);
+}
 pub fn rs(i: Rs) u32 {
-    return mem32(RENDER_STATE + 4 * @intFromEnum(i));
+    return stateWord(128 + @intFromEnum(i));
 }
 pub fn tss(stage: u32, i: Tss) u32 {
-    return mem32(TEXTURE_STATE + 0x80 * stage + 4 * @intFromEnum(i));
+    return stateWord(32 * stage + @intFromEnum(i));
 }
 
 /// D3DRENDERSTATETYPE: the index into D3D_g_RenderState. XDK 5455 matches
@@ -167,7 +183,7 @@ pub fn surfDims(res: u32) struct { w: u32, h: u32, pitch: u32 } {
 
 // ── Texture formats ─────────────────────────────────────────────────────────
 
-pub const Kind = enum { l8, al8, a1rgb5, x1rgb5, argb4, rgb565, argb8, xrgb8, p8, dxt1, dxt3, dxt5, a8, a8l8, abgr8, g8b8 };
+pub const Kind = enum { l8, al8, a1rgb5, x1rgb5, argb4, rgb565, argb8, xrgb8, p8, dxt1, dxt3, dxt5, a8, a8l8, abgr8, g8b8, yuy2, uyvy };
 pub const Fmt = struct { bits: u8, swizzled: bool, kind: Kind };
 
 pub fn fmtFind(xf: u32) ?Fmt {
@@ -196,6 +212,8 @@ pub fn fmtFind(xf: u32) ?Fmt {
         0x1E => .{ .bits = 32, .swizzled = false, .kind = .xrgb8 },
         0x1F => .{ .bits = 8, .swizzled = false, .kind = .a8 },
         0x20 => .{ .bits = 16, .swizzled = false, .kind = .a8l8 },
+        0x24 => .{ .bits = 16, .swizzled = false, .kind = .yuy2 },
+        0x25 => .{ .bits = 16, .swizzled = false, .kind = .uyvy },
         0x28 => .{ .bits = 16, .swizzled = true, .kind = .g8b8 },
         0x3A => .{ .bits = 32, .swizzled = true, .kind = .abgr8 },
         0x3F => .{ .bits = 32, .swizzled = false, .kind = .abgr8 },
@@ -240,6 +258,31 @@ pub fn texelRgba(f: Fmt, s: [*]const u8, pal: ?[*]align(1) const u32, o: *[4]u8)
         },
         else => .{ 255, 255, 255, 255 },
     };
+}
+
+/// Texel x of a YUY2 (Y0 U Y1 V) or UYVY (U Y0 V Y1) row as RGBA: BT.601
+/// limited range, as xemu converts them.
+pub fn yuvRgba(kind: Kind, row: [*]const u8, x: usize, o: *[4]u8) void {
+    const p = row + (x & ~@as(usize, 1)) * 2;
+    const odd = x & 1;
+    const uy = kind == .uyvy;
+    const c: i32 = @as(i32, if (uy) p[1 + 2 * odd] else p[2 * odd]) - 16;
+    const d: i32 = @as(i32, if (uy) p[0] else p[1]) - 128;
+    const e: i32 = @as(i32, if (uy) p[2] else p[3]) - 128;
+    const cl = struct {
+        fn f(v: i32) u8 {
+            return @intCast(std.math.clamp((v + 128) >> 8, 0, 255));
+        }
+    }.f;
+    o.* = .{ cl(298 * c + 409 * e), cl(298 * c - 100 * d - 208 * e), cl(298 * c + 516 * d), 255 };
+}
+
+test yuvRgba {
+    var o: [4]u8 = undefined;
+    yuvRgba(.yuy2, &[_]u8{ 235, 128, 16, 128 }, 0, &o); // white
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, o);
+    yuvRgba(.uyvy, &[_]u8{ 128, 235, 128, 16 }, 1, &o); // black
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 255 }, o);
 }
 
 /// Which address bits belong to x and to y in a swizzled w x h surface.

@@ -148,6 +148,9 @@ fn ready() bool {
         return false;
     }
     _ = gl.eglSwapInterval(dpy, 0); // the game paces itself by its vblank
+    // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
+    // dome lies past the far plane.
+    if (hasExt("GL_EXT_depth_clamp")) gl.glEnable(gl.GL_DEPTH_CLAMP_EXT) else std.debug.print("[GL] no GL_EXT_depth_clamp: geometry past the far plane is clipped\n", .{});
     s3tc = hasExt("GL_EXT_texture_compression_s3tc") or
         (hasExt("GL_EXT_texture_compression_dxt1") and hasExt("GL_ANGLE_texture_compression_dxt5"));
 
@@ -170,6 +173,7 @@ fn ready() bool {
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, fbo_color, 0);
     gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, fbo_depth);
+    target_fbo = fbo;
     std.debug.print("[GL] {s}, {s}; rendering at {d}x{s}\n", .{ gl.glGetString(gl.GL_RENDERER), gl.glGetString(gl.GL_VERSION), scale, if (s3tc) "" else " (no S3TC)" });
     state = .ready;
     return true;
@@ -211,8 +215,10 @@ fn uploadLevel(f: d3d.Fmt, target: gl.GLenum, lv: i32, src0: [*]const u8, w: u32
         pitch = w * bpp;
     }
     const d = convBuf(w * h * 4);
+    const yuv = f.kind == .yuy2 or f.kind == .uyvy;
     for (0..h) |y| for (0..w) |x| {
-        d3d.texelRgba(f, src + y * pitch + x * bpp, pal, d[(y * w + x) * 4 ..][0..4]);
+        const o = d[(y * w + x) * 4 ..][0..4];
+        if (yuv) d3d.yuvRgba(f.kind, src + y * pitch, x, o) else d3d.texelRgba(f, src + y * pitch + x * bpp, pal, o);
     };
     gl.glTexImage2D(target, lv, gl.GL_RGBA8, @intCast(w), @intCast(h), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, d.ptr);
 }
@@ -259,6 +265,10 @@ fn texGet(res: u32, tlin: *[2]f32, cube: *bool) gl.GLuint {
     tlin.* = .{ 0, 0 };
     cube.* = (format >> 2) & 1 != 0;
     if (data == d3d.resData(backBuffer())) return 0; // ponytail: sampling the back buffer is not done
+    for (rts.items) |r| if (r.data == data) {
+        if (size != 0) tlin.* = .{ @floatFromInt(dims.w), @floatFromInt(dims.h) }; // linear: texel coordinates
+        return r.tex;
+    };
     const f = d3d.fmtFind(xfmt) orelse {
         const said = struct {
             var mask: u64 = 0;
@@ -304,8 +314,11 @@ var lin: [4][2]f32 = @splat(.{ 0, 0 });
 
 const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
+/// The back buffer surface: the render target the device sets first (at
+/// CreateDevice). Swap rotates its Data; the surface object stays.
+var back_buffer: u32 = 0;
 fn backBuffer() u32 {
-    return mem32(mem32(d3d.DEVICE_PTR) + 0x1A14); // ponytail: Sneak King's 5849 offset, unchecked on 5455
+    return back_buffer;
 }
 
 fn matMul(a: [16]f32, b: [16]f32) [16]f32 { // row vectors: a * b
@@ -476,9 +489,11 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
         const h = &programs.items[k.vs - 1];
         try w.writeAll("uniform vec4 u_c[192];\n");
         for (0..16) |i| if (h.inputs & (@as(u16, 1) << @intCast(i)) != 0) try w.print("in vec4 v{d};\n", .{i});
+        // oFog.x is a distance for table fog and the factor itself with FOGTABLEMODE
+        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A.
         try w.writeAll(
-            \\float nv_fog(float d) { d = abs(d); return u_fog.x == 3.0 ? (u_fog.z - d) / (u_fog.z - u_fog.y)
-            \\  : u_fog.x == 1.0 ? exp(-d * u_fog.w) : u_fog.x == 2.0 ? exp(-(d * u_fog.w) * (d * u_fog.w)) : 1.0 - d; }
+            \\float nv_fog(float f) { float d = abs(f); return u_fog.x == 3.0 ? (u_fog.z - d) / (u_fog.z - u_fog.y)
+            \\  : u_fog.x == 1.0 ? exp(-d * u_fog.w) : u_fog.x == 2.0 ? exp(-(d * u_fog.w) * (d * u_fog.w)) : f; }
             \\float rcc(float x) { float f = 1.0 / x; float m = clamp(abs(f), 5.42101e-20, 1.884467e19); return f < 0.0 ? -m : m; }
             \\vec4 nv_log(float x) { float a = abs(x); float e = floor(log2(a)); return a == 0.0 ? vec4(-1e38, 1.0, -1e38, 1.0) : vec4(e, a / exp2(e), log2(a), 1.0); }
             \\vec4 nv_lit(vec4 c) { float p = clamp(c.w, -127.9961, 127.9961); return vec4(1.0, max(c.x, 0.0), c.x > 0.0 ? pow(max(c.y, 0.0), p) : 0.0, 1.0); }
@@ -494,7 +509,7 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
         try w.print("  vec4 p = {s};\n", .{if (h.uses_vp) "vec4(R12.xyz * R12.w, R12.w)" else "R12"});
         try w.writeAll(
             \\  gl_Position = vec4(p.x, -p.y, 2.0 * p.z - p.w, p.w);
-            \\  v_d0 = clamp(oD0, 0.0, 1.0); v_d1 = clamp(oD1, 0.0, 1.0); v_fog = clamp(nv_fog(oFog.x), 0.0, 1.0); v_eyez = 0.0;
+            \\  v_d0 = clamp(oD0, 0.0, 1.0); v_d1 = clamp(oD1, 0.0, 1.0); v_fog = nv_fog(oFog.x); v_fog = isnan(v_fog) ? 1.0 : clamp(v_fog, 0.0, 1.0); v_eyez = 0.0;
             \\  v_t0 = oT0; v_t1 = oT1; v_t2 = oT2; v_t3 = oT3;
             \\}
             \\
@@ -770,7 +785,8 @@ fn genCombiners(k: *const Key, def: *const [PsDef.words]u32, w: *std.Io.Writer) 
         try psIn(w, (f1 >> 8) & 0xFF, true);
         try w.writeAll("; }\n");
     } else {
-        try w.writeAll("  cur = R[12];\n");
+        // No final combiner: D3D supplies one, which fogs r0 when FOGENABLE is set.
+        try w.writeAll(if (k.fog != 0) "  cur = vec4(mix(R[3].rgb, R[12].rgb, R[3].a), R[12].a);\n" else "  cur = R[12];\n");
     }
     try w.writeAll("  cur = clamp(cur, 0.0, 1.0);\n");
 }
@@ -802,6 +818,7 @@ fn progGet(k: *const Key) ?*Prog {
     p.* = .{ .key = k.*, .prog = 0 };
     var w: std.Io.Writer = .fixed(&src_buf);
     genVs(k, &w) catch return null;
+    if (std.c.getenv("RECOMP_GL_DUMP") != null and k.vs != 0) std.debug.print("[GL] program {d}, vertex shader {X}:\n{s}\n", .{ progs.items.len, programs.items[k.vs - 1].handle, w.buffered() });
     const vs = compile(gl.GL_VERTEX_SHADER, w.buffered());
     w = .fixed(&src_buf);
     genFs(k, &w) catch return null;
@@ -1095,7 +1112,7 @@ fn prepareDraw() ?*Prog {
         const i = psFind(pshader) orelse return null;
         k.ps = @intCast(i + 1);
     }
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target_fbo);
     gl.glViewport(@intCast(vp.x * scale), @intCast(vp.y * scale), @intCast(vp.w * scale), @intCast(vp.h * scale));
     keyVertex(&k);
     applyRenderState();
@@ -1107,15 +1124,24 @@ fn prepareDraw() ?*Prog {
     k.alpha_test = @intFromBool(rs(.alphatestenable) != 0);
     k.alpha_func = if (k.alpha_test != 0) @truncate(rs(.alphafunc) -% 0x200) else 0;
     k.flat = @intFromBool(rs(.shademode) == 0x1D00);
-    const p = progGet(&k) orelse return null;
-    if (std.c.getenv("RECOMP_GL_DRAWLOG")) |e| if ((std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0) == frame + 1) {
+    const p = progGet(&k) orelse {
+        if (drawlog_frame == frame + 1) std.debug.print("[DRAW] no program: vs={X} ps={X}\n", .{ vshader, pshader });
+        return null;
+    };
+    if (drawlog_frame == frame + 1) {
         const t0 = stage_tex[0];
-        std.debug.print("[DRAW] vs={X} ps={X} tex0={X} fmt0={X} c0={d}:{X},{X} a0={d}:{X},{X} c1={d} blend={d} {X}/{X} atest={d} {X}\n", .{
-            vshader, pshader, t0, if (t0 != 0) (mem32(t0 + 0xC) >> 8) & 0xFF else 0,
+        std.debug.print("[DRAW] rt={d} vs={X} ps={X} tex0={X} fmt0={X} c0={d}:{X},{X} a0={d}:{X},{X} c1={d} blend={d} {X}/{X} atest={d} {X}\n", .{
+            target_fbo, vshader, pshader, t0, if (t0 != 0) (mem32(t0 + 0xC) >> 8) & 0xFF else 0,
             k.colorop[0], k.colorarg[0][1], k.colorarg[0][2], k.alphaop[0], k.alphaarg[0][1], k.alphaarg[0][2], k.colorop[1],
             rs(.alphablendenable), rs(.srcblend), rs(.destblend), rs(.alphatestenable), rs(.alpharef),
         });
-    };
+        std.debug.print("       fog={d} table={d} {d}..{d} dens={d} col={X} zen={d} zw={d} cull={X}", .{ rs(.fogenable), rs(.fogtablemode), @as(f32, @bitCast(rs(.fogstart))), @as(f32, @bitCast(rs(.fogend))), @as(f32, @bitCast(rs(.fogdensity))), rs(.fogcolor), rs(.zenable), rs(.zwriteenable), rs(.cullmode) });
+        if (k.ps != 0) {
+            const def = &pixel_shaders.items[k.ps - 1].def;
+            std.debug.print(" modes={X} n={X} fin={X:0>8} {X:0>8}", .{ def[PsDef.texture_modes], def[PsDef.combiner_count], def[PsDef.final_abcd], def[PsDef.final_efg] });
+        }
+        std.debug.print("\n", .{});
+    }
     gl.glUseProgram(p.prog);
     uploadUniforms(p);
     return p;
@@ -1127,6 +1153,10 @@ var idx_buf: std.ArrayList(u16) = .empty;
 /// vertex `base`; idx == null draws [0, n). Xbox primitive types are NV2A's.
 fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_stride: u32, base: u32) void {
     if (n == 0) return;
+    if (rec_cur) |ri| {
+        if (up != null) return sayOnce("DrawVerticesUP inside a recorded pushbuffer skipped");
+        return recordDraw(ri, xprim, n, idx, base);
+    }
     const p = prepareDraw() orelse return;
     var lo: u32 = 0;
     var hi: u32 = n - 1;
@@ -1199,8 +1229,30 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
 
 var frame: u32 = 0;
 
+/// Frame whose draws are logged: RECOMP_GL_DRAWLOG=<frame>, or the frame after
+/// logs\drawlog appears (deleted at once; also takes a RECOMP_SHOT-style shot).
+var drawlog_frame: u32 = 0;
+extern "kernel32" fn DeleteFileA([*:0]const u8) callconv(.winapi) i32;
+
 fn present() void {
     frame += 1;
+    if (frame == 1) if (std.c.getenv("RECOMP_GL_DRAWLOG")) |e| {
+        drawlog_frame = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
+    };
+    if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
+    // RECOMP_FPS=1: presents per second, every 5 s.
+    if (frame % 64 == 0 and std.c.getenv("RECOMP_FPS") != null) {
+        const s = struct {
+            var t0: f64 = 0;
+            var f0: u32 = 0;
+        };
+        const now = nowMs();
+        if (now - s.t0 >= 5000) {
+            if (s.t0 != 0) std.debug.print("[GL] {d:.1} fps\n", .{@as(f64, @floatFromInt(frame - s.f0)) * 1000 / (now - s.t0)});
+            s.t0 = now;
+            s.f0 = frame;
+        }
+    }
     const sz = clientSize();
     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
@@ -1215,7 +1267,7 @@ fn present() void {
     const y = @divTrunc(sz[1] - h, 2);
     gl.glBlitFramebuffer(0, 0, @intCast(640 * scale), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
-    maybeShot();
+    if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
     _ = gl.eglSwapBuffers(dpy, surf);
     pumpMessages();
 }
@@ -1312,6 +1364,9 @@ extern fn sub_000FA0B0_gen() void;
 extern fn sub_000F7CF0_gen() void;
 extern fn sub_000F7FC0_gen() void;
 extern fn sub_000F9570_gen() void;
+extern fn sub_000FA990_gen() void;
+extern fn sub_000FAA00_gen() void;
+extern fn sub_000FA6F0_gen() void;
 
 extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) i32;
 extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) i32;
@@ -1348,9 +1403,10 @@ export fn sub_000F4EB0() void {
     const c = argbVec(arg(3));
     const z: f32 = @bitCast(arg(4));
     const stencil = arg(5);
+    if (drawlog_frame == frame + 1) std.debug.print("[DRAW] clear flags={X} color={X} rects={d} rt={d}\n", .{ flags, arg(3), count, target_fbo });
     sub_000F4EB0_gen();
     if (!ready()) return;
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target_fbo);
     var mask: gl.GLbitfield = 0;
     if (flags & 0xF0 != 0) mask |= gl.GL_COLOR_BUFFER_BIT;
     if (flags & 1 != 0) mask |= gl.GL_DEPTH_BUFFER_BIT;
@@ -1382,11 +1438,52 @@ export fn sub_000F4EB0() void {
 }
 
 var render_target: u32 = 0;
+var target_fbo: gl.GLuint = 0; // the back buffer's fbo, or an offscreen target's
+var target_size: [2]u32 = .{ 640, 480 };
 
-/// D3DDevice_SetRenderTarget(pRenderTarget, pNewZStencil)
+/// An offscreen render target, kept on the GPU. A texture whose Data is the
+/// target's samples the host texture (texGet), so nothing is read back.
+const Rt = struct { data: u32, w: u32, h: u32, tex: gl.GLuint, fbo: gl.GLuint };
+var rts: std.ArrayList(Rt) = .empty;
+
+fn rtGet(s: u32) ?*Rt {
+    const data = d3d.resData(s);
+    const dims = d3d.surfDims(s);
+    for (rts.items) |*r| if (r.data == data and r.w == dims.w and r.h == dims.h) return r;
+    const r = rts.addOne(alloc) catch return null;
+    r.* = .{ .data = data, .w = dims.w, .h = dims.h, .tex = 0, .fbo = 0 };
+    gl.glGenTextures(1, &r.tex);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, r.tex);
+    gl.glTexStorage2D(gl.GL_TEXTURE_2D, 1, gl.GL_RGBA8, @intCast(r.w * scale), @intCast(r.h * scale));
+    gl.glGenFramebuffers(1, &r.fbo);
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, r.fbo);
+    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, r.tex, 0);
+    // ponytail: no depth buffer on offscreen targets; add one when a title draws 3D into one
+    std.debug.print("[GL] render target {d}x{d} format 0x{X:0>2} at 0x{X:0>8}\n", .{ r.w, r.h, (mem32(s + 0xC) >> 8) & 0xFF, data });
+    return r;
+}
+
+/// D3DDevice_SetRenderTarget(pRenderTarget, pNewZStencil). D3D resets the
+/// viewport to the whole new target.
 export fn sub_000F7CF0() void {
-    if (arg(0) != 0) render_target = arg(0);
+    const s = arg(0);
     sub_000F7CF0_gen();
+    if (back_buffer == 0) back_buffer = s;
+    if (s == 0 or !ready()) return;
+    render_target = s;
+    target_fbo = fbo;
+    target_size = .{ 640, 480 };
+    if (s != back_buffer) if (rtGet(s)) |r| {
+        target_fbo = r.fbo;
+        target_size = .{ r.w, r.h };
+    };
+    vp = .{ .w = target_size[0], .h = target_size[1] };
+}
+
+/// D3DDevice_DrawVerticesUP(PrimitiveType, VertexCount, pVertexStreamZeroData, VertexStreamZeroStride): replaced.
+export fn sub_000F8F80() void {
+    if (arg(2) != 0) draw(arg(0), arg(1), null, d3d.ptr(arg(2)), arg(3), 0);
+    d3d.stdcallRet(4, 0);
 }
 
 /// D3DDevice_CopyRects(pSrc, pSrcRects, cRects, pDst, pDstPoints). The title
@@ -1407,7 +1504,7 @@ export fn sub_000F7FC0() void {
     const dd = d3d.surfDims(dst);
     const masks = d3d.swizzleMasks(dd.w, dd.h);
     const out = d3d.ptr(d3d.resData(dst));
-    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo);
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, target_fbo);
     for (0..@max(n, 1)) |i| {
         const ri: u32 = @intCast(i);
         var x1: u32 = 0;
@@ -1445,9 +1542,9 @@ export fn sub_000F8330() void {
     const p = arg(0);
     // D3D clamps to the render target; the title passes 0x7FFFFFFF for "all of it".
     if (p != 0) {
-        const x = @min(mem32(p), 640);
-        const y = @min(mem32(p + 4), 480);
-        vp = .{ .x = x, .y = y, .w = @min(mem32(p + 8), 640 - x), .h = @min(mem32(p + 12), 480 - y) };
+        const x = @min(mem32(p), target_size[0]);
+        const y = @min(mem32(p + 4), target_size[1]);
+        vp = .{ .x = x, .y = y, .w = @min(mem32(p + 8), target_size[0] - x), .h = @min(mem32(p + 12), target_size[1] - y) };
     }
     sub_000F8330_gen();
 }
@@ -1537,22 +1634,108 @@ export fn sub_000F6EC0() void {
 }
 
 /// SetVertexShaderConstant1/4 (fastcall: ecx = register 0..191, edx = data).
-fn vscMirror(n: u32) void {
-    const reg: i32 = @bitCast(g_ecx);
-    const p = g_edx;
-    if (p == 0) return;
+fn vscCopy(reg: i32, n: u32, p: u32) void {
     for (0..n) |k| {
         const r = reg + @as(i32, @intCast(k));
         if (r >= 0 and r < 192) @memcpy(std.mem.asBytes(&vsc[@intCast(r)]), d3d.ptr(p + 16 * @as(u32, @intCast(k)))[0..16]);
     }
 }
+fn vscMirror(n: u32, gen: *const fn () callconv(.c) void) void {
+    const reg: i32 = @bitCast(g_ecx);
+    const p = g_edx;
+    if (p != 0) vscCopy(reg, n, p);
+    gen();
+    // Recording: the constants were just written to the pushbuffer, ending at
+    // the device's put pointer (device+0). Fixups rewrite them there.
+    const ri = rec_cur orelse return;
+    if (p == 0) return;
+    const va = d3d.mem32(d3d.mem32(d3d.DEVICE_PTR)) -% 16 * n;
+    if (!std.mem.eql(u8, d3d.ptr(va)[0 .. 16 * n], d3d.ptr(p)[0 .. 16 * n])) return sayOnce("recorded vertex shader constants not found in the pushbuffer");
+    pb_recs.items[ri].ops.append(alloc, .{ .vsc = .{ .reg = reg, .n = n, .va = va } }) catch {};
+}
 export fn sub_000F7020() void {
-    vscMirror(1);
-    sub_000F7020_gen();
+    vscMirror(1, sub_000F7020_gen);
 }
 export fn sub_000F7080() void {
-    vscMirror(4);
-    sub_000F7080_gen();
+    vscMirror(4, sub_000F7080_gen);
+}
+
+// ── Recorded pushbuffers ────────────────────────────────────────────────────
+// The title records each map mesh once (BeginPushBuffer, setters, draws,
+// EndPushBuffer) and plays it every frame with RunPushBuffer, a fixup
+// rewriting its per-object constants. Draws are replaced here, so the guest
+// pushbuffer holds no draws; record the calls on the host instead and replay
+// them. A replayed draw sees the state as recorded where the recording
+// changed it (against the state at BeginPushBuffer), the live state elsewhere.
+
+const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, state: [d3d.STATE_WORDS]u32 };
+const PbOp = union(enum) { vsc: struct { reg: i32, n: u32, va: u32 }, draw: PbDraw };
+const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp) };
+var pb_recs: std.ArrayList(PbRec) = .empty;
+var rec_cur: ?usize = null;
+
+fn pbFind(pb: u32) ?usize {
+    for (pb_recs.items, 0..) |r, i| if (r.pb == pb) return i;
+    return null;
+}
+
+fn recordDraw(ri: usize, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32) void {
+    const op = pb_recs.items[ri].ops.addOne(alloc) catch return;
+    op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = idx, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .state = undefined } };
+    d3d.stateBlock(&op.draw.state);
+}
+
+fn replay(r: *const PbRec) void {
+    const saved = .{ stage_tex, vshader, pshader, stream_vb, stream_stride };
+    var live: [d3d.STATE_WORDS]u32 = undefined;
+    var eff: [d3d.STATE_WORDS]u32 = undefined;
+    d3d.stateBlock(&live);
+    if (drawlog_frame == frame + 1) std.debug.print("[DRAW] replay pushbuffer {X}, {d} ops\n", .{ r.pb, r.ops.items.len });
+    for (r.ops.items) |*op| switch (op.*) {
+        .vsc => |c| vscCopy(c.reg, c.n, c.va),
+        .draw => |*d| {
+            for (&eff, live, d.state, r.base) |*e, l, s, b| e.* = if (s != b) s else l;
+            d3d.state_snap = &eff;
+            stage_tex = d.tex;
+            vshader = d.vs;
+            pshader = d.ps;
+            stream_vb[0..4].* = d.vb;
+            stream_stride[0..4].* = d.stride;
+            draw(d.prim, d.n, d.idx, null, 0, d.base);
+        },
+    };
+    d3d.state_snap = null;
+    stage_tex, vshader, pshader, stream_vb, stream_stride = saved;
+}
+
+/// D3DDevice_BeginPushBuffer(pPushBuffer)
+export fn sub_000FA990() void {
+    const pb = arg(0);
+    sub_000FA990_gen();
+    const i = pbFind(pb) orelse blk: {
+        pb_recs.append(alloc, .{ .pb = pb, .base = undefined, .ops = .empty }) catch return;
+        break :blk pb_recs.items.len - 1;
+    };
+    pb_recs.items[i].ops.clearRetainingCapacity();
+    d3d.stateBlock(&pb_recs.items[i].base);
+    rec_cur = i;
+}
+
+/// D3DDevice_EndPushBuffer()
+export fn sub_000FAA00() void {
+    sub_000FAA00_gen();
+    rec_cur = null;
+}
+
+/// D3DDevice_RunPushBuffer(pPushBuffer, pFixup): the lifted body applies the
+/// fixup to the pushbuffer, then the recording replays.
+/// ponytail: a pushbuffer the title did not record here (loaded from disc)
+/// draws nothing; decode its NV2A methods if a title uses those.
+export fn sub_000FA6F0() void {
+    const pb = arg(0);
+    sub_000FA6F0_gen();
+    if (!ready()) return;
+    if (pbFind(pb)) |i| replay(&pb_recs.items[i]) else sayOnce("RunPushBuffer of a pushbuffer not recorded here skipped");
 }
 
 /// D3DDevice_BeginPush(Count) -> pointer the title writes methods to

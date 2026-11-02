@@ -76,4 +76,30 @@
 - Debug knobs: `RECOMP_SHOT=<frame>,...` writes `logs\frame_N.bmp`; `RECOMP_GL_DRAWLOG=<frame>` logs that frame's draws;
   `RECOMP_GL_DUMP=1` prints each pixel-shader program's GLSL. `RECOMP_SCALE` (1-4, default 2), `RECOMP_GFX`.
 - Known gaps: palettes (P8 reads white), fixed-function lighting (SetLight not identified for 5455), bump/dot texture
-  modes sample as 2D, one render target, CopyRects downsamples by nearest, no keyboard from the window.
+  modes sample as 2D, CopyRects downsamples by nearest.
+
+## Playable (M4)
+- `zig build` defaults to `-Doptimize=fast`: the Debug renderer held stage 1 to ~31 fps; fast holds 60 (menus and stage).
+  `RECOMP_FPS=1` prints presents per second every 5 s.
+- Input: Sneak King's `mkb_input.c`/`.h` (P7-P9: `bind.<PAD>=` lines) copied into the toolkit. `RECOMP_MKB` is on by
+  default with `RECOMP_MKB_INI=mkb.ini`; it stands in for pad 0 only when no XInput pad is connected.
+- Audio: already worked through the emulated APU and XAudio2 (`RECOMP_AC97_READY`); title music and movie sound play.
+- Saves: `xbox_path_init("game", "%LOCALAPPDATA%\Otogi")`. Create, list (with thumbnail) and load were tested.
+- Movie: `otogi_us_promo.xmv` is the attract-mode trailer (title idle ~25 s), not an intro. `sub_000C81A0` now runs the
+  lifted body (`RECOMP_NO_MOVIE=1` skips). It decodes to a YUY2 texture and draws it with `DrawVerticesUP` into an
+  X8R8G8B8 render target, then draws that target to the screen. Needed:
+  - `DrawVerticesUP` (`0xF8F80`) replaced; YUY2/UYVY textures decoded (BT.601, as xemu).
+  - Offscreen render targets: each is a GL texture + FBO keyed by its Data; a texture with the same Data samples it.
+    The back buffer is the surface the device sets first (`0x1067D4`; Swap rotates its Data). The old device+0x1A14
+    read was garbage on 5455.
+- Map meshes are recorded once at load (`BeginPushBuffer`, setters, `DrawIndexedVertices`, `EndPushBuffer`) and played
+  every frame with `RunPushBuffer(pb, fixup)` (`0x254E0`). Draws are replaced, so the guest pushbuffer has no draws.
+  `gl_hle.zig` records the calls on the host (state snapshot per draw; constants as pushbuffer addresses, which the
+  fixup rewrites) and replays them in `RunPushBuffer`. This brought back the ground, cliffs and sky.
+- Fog: with `FOGTABLEMODE` NONE the vertex program's `oFog.x` is the factor itself (Otogi writes `1 - z/70000` from
+  c158); NaN reads as no fog (character shaders get c158 = -inf,NaN). A pixel shader without a final combiner gets
+  D3D's default one, which applies fog. `GL_EXT_depth_clamp` is on (the NV2A clamps depth rather than clipping).
+- Debug: `touch logs\drawlog` logs the next frame's draws (and clears, replays) and saves `logs\frame_N.bmp`.
+- Gaps: bump/dot-product texture modes still sample as 2D (one stage-1 shader uses one); offscreen targets have no
+  depth buffer; a pushbuffer not recorded on the host (loaded from disc) draws nothing; a second guest thread uses a
+  full core (not investigated).

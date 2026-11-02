@@ -2,7 +2,8 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
-    const optimize = b.standardOptimizeOption(.{});
+    // ReleaseFast by default: the Debug renderer cannot hold the game's frame rate.
+    const optimize = b.option(std.builtin.Optimize, "optimize", "Optimization mode (default fast)") orelse .fast;
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -38,8 +39,11 @@ pub fn build(b: *std.Build) void {
     run.step.dependOn(b.getInstallStep());
     b.step("run", "Run the game").dependOn(&run.step);
 
-    const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = b.graph.host }) });
-    b.step("test", "Run tests").dependOn(&b.addRunArtifact(t).step);
+    const test_step = b.step("test", "Run tests");
+    inline for (.{ "src/xiso.zig", "src/d3d.zig" }) |f| {
+        const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host }) });
+        test_step.dependOn(&b.addRunArtifact(t).step);
+    }
 
     const xiso = b.addExecutable(.{ .name = "xiso", .root_module = b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = b.graph.host, .optimize = .ReleaseFast }) });
     const unpack = b.addRunArtifact(xiso);

@@ -139,9 +139,12 @@ pub fn main(init: std.process.Init) !void {
     //  RECOMP_VBLANK: vblank interrupts, so D3D and the game get frame ticks.
     //  RECOMP_AC97_READY: the emulated APU. Without DirectSound the game never
     //    starts its sound-stream worker, and the main menu waits on it forever.
-    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY" }) |v| {
+    //  RECOMP_MKB: keyboard and mouse as pad 0 when no XInput pad is plugged in,
+    //    bound in mkb.ini.
+    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_MKB" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
+    if (std.c.getenv("RECOMP_MKB_INI") == null) _ = _putenv("RECOMP_MKB_INI=mkb.ini");
     print("=== Otogi: Myth of Demons - static recompilation ===\n", .{});
 
     // Symbols up front: SymInitialize allocates, which is unsafe inside the handler.
@@ -160,7 +163,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     xbox_kernel_init();
-    xbox_path_init("game", null); // D:\ -> game\, saves under SaveData\
+    // D:\ -> game\; saves (U:, T:, Z:) under %LOCALAPPDATA%\Otogi.
+    var save_buf: [512]u8 = undefined;
+    const save_dir = std.fmt.bufPrintSentinel(&save_buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}, 0) catch "SaveData";
+    xbox_path_init("game", save_dir);
     xbox_kernel_bridge_init();
     g_esp = g_xbox_stack_base + g_xbox_stack_size - 16; // XBOX_STACK_TOP
 

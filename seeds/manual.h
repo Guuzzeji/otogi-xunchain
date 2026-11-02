@@ -6,7 +6,7 @@
 /* src/manual.zig: boot */
 void sub_000E571D(void) {}  /* XAPI DVD media check */
 void sub_000FA2A0(void) {}  /* D3D_BlockOnTime */
-void sub_000C81A0(void) {}  /* game: XMV movie step */
+extern void sub_000C81A0_gen(void);  /* game: XMV movie step (RECOMP_NO_MOVIE skips) */
 
 /* src/manual.zig: XAPI input */
 void sub_0016E924(void) {}  /* XInitDevices */
@@ -35,6 +35,10 @@ extern void sub_000FA090_gen(void);  /* D3DDevice_BeginPush */
 extern void sub_000FA0B0_gen(void);  /* D3DDevice_EndPush */
 void sub_000F90F0(void) {}           /* D3DDevice_DrawVertices: replaced */
 void sub_000F9190(void) {}           /* D3DDevice_DrawIndexedVertices: replaced */
+void sub_000F8F80(void) {}           /* D3DDevice_DrawVerticesUP: replaced */
 extern void sub_000F7CF0_gen(void);  /* D3DDevice_SetRenderTarget */
 extern void sub_000F7FC0_gen(void);  /* D3DDevice_CopyRects */
 extern void sub_000F9570_gen(void);  /* D3DDevice_CreatePixelShader */
+extern void sub_000FA990_gen(void);  /* D3DDevice_BeginPushBuffer */
+extern void sub_000FAA00_gen(void);  /* D3DDevice_EndPushBuffer */
+extern void sub_000FA6F0_gen(void);  /* D3DDevice_RunPushBuffer */
