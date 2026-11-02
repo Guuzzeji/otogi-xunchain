@@ -116,3 +116,25 @@
 - Stage 1 playtest (2026-11-01): load, fight, kill, jump, pause menu, 30 fps throughout, sound plays.
 - Gaps: a pushbuffer not recorded on the host (loaded from disc) draws nothing (none seen); BUMPENVMAP_LUM and the
   dot-product texture modes still sample as 2D (none seen).
+
+## Enhancements (M5)
+- `RECOMP_SCALE` (1-4, default 2) was already done in M3: back buffer, offscreen targets, viewport and clear rects scale.
+- Widescreen (hor+, 16:9, default on; `RECOMP_WIDESCREEN=0` gives the original 4:3 image):
+  - `sub_000E983E` is `D3DXMatrixPerspectiveFovLH(out, fovy, aspect, zn, zf)`. `manual.zig` widens a 4:3 aspect by 4/3
+    and stamps `gl_hle.wide_frame`. The title screen's caller (`0xD09BF`) is left alone: its 3D logo belongs to a 4:3
+    composition. Other callers: stage camera `0x1B86B`, `0x428FE`, `0x83F48`, `0x846A3`; `0xD4048` (aspect 1) stays.
+  - The back buffer is 853x480 (times scale). 3D stretches across it only while a widened projection is in use
+    (`wideNow`, in stages); otherwise 3D and narrow 2D (HUD, text) keep their 4:3 place in the middle.
+  - 2D touching a screen edge (backgrounds, banners, tiled pictures, fades, letterbox bars, the SEGA white screen) is extended,
+    not stretched (`extend2d`): its edge vertices move out to the buffer's edges with texture coordinates extrapolated,
+    so tiled patterns carry on and a picture inside a full-screen layer (the title logo) keeps its shape. A
+    picture with faded edges (the stage menu's bamboo preview) stays 4:3 with the pattern beneath it at the sides.
+    Banner tiles (edge quads 16-256 px wide, a power of two; the menus draw their bands as 128 px tiles with clamped
+    textures) repeat outward instead, as extrapolating a clamped tile only smears its edge texels.
+  - A full-width `CopyRects` of the back buffer squeezes the whole wide buffer into its 640 columns. A full-width draw
+    of such a copy (pause blur, menu desaturate) stretches back; a draw kept in the middle (the title logo's
+    refraction) samples it remapped to its 4:3 position (`uploadTscale`, `u_tscale.zw` offset).
+  - Known: in the pause menu a full-width overlay's clamped texture edge darkens the left pillar a little. Cutscene
+    letterbox bars are handled by the full-width rule but were not seen in a test run.
+- Pad script that reaches stage 1 from boot: `RECOMP_PAD_SCRIPT=15000:start,18000:start,21000:a,23000:a,...,61000:a`
+  (A every 2 s); add `70000:start` for the pause menu. `RECOMP_SHOT` frames ~1800 are in the stage.

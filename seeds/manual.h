@@ -7,6 +7,7 @@
 void sub_000E571D(void) {}  /* XAPI DVD media check */
 void sub_000FA2A0(void) {}  /* D3D_BlockOnTime */
 extern void sub_000C81A0_gen(void);  /* game: XMV movie step (RECOMP_NO_MOVIE skips) */
+extern void sub_000E983E_gen(void);  /* D3DXMatrixPerspectiveFovLH: widescreen aspect */
 
 /* src/manual.zig: XAPI input */
 void sub_0016E924(void) {}  /* XInitDevices */

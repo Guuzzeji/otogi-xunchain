@@ -103,6 +103,21 @@ export fn sub_000C81A0() void {
     g_esp += 4; // ret
 }
 
+/// D3DXMatrixPerspectiveFovLH(pOut, fovy, aspect, zn, zf). Widescreen is hor+:
+/// the screen's 4:3 aspect widens to the back buffer's; other aspects stay.
+/// The title screen's (called from 0xD09BF) stays 4:3: its 3D logo is part of
+/// a 4:3 composition that copies the back buffer onto itself.
+extern fn sub_000E983E_gen() void;
+export fn sub_000E983E() void {
+    const aspect: *volatile f32 = @ptrCast(mem32(g_esp + 12));
+    if (@abs(aspect.* - 4.0 / 3.0) < 0.01 and mem32(g_esp).* != 0xD09BF) {
+        const gl_hle = @import("gl_hle.zig");
+        aspect.* *= gl_hle.wide();
+        gl_hle.wide_frame = gl_hle.frame;
+    }
+    sub_000E983E_gen();
+}
+
 // ── XAPI input (XPP section) ────────────────────────────────────────────────
 // The title talks to its pad through XAPI's USB stack, which hangs and then
 // crashes on the toolkit's OHCI model. Replace the eight entry points it calls

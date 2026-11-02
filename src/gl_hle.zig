@@ -87,6 +87,46 @@ fn clientSize() [2]i32 {
 
 /// Render scale: the back buffer is 640x480 times this. RECOMP_SCALE (1-4).
 var scale: u32 = 2;
+
+/// Widescreen (hor+) widens the back buffer to 16:9 by this factor;
+/// RECOMP_WIDESCREEN=0 keeps 4:3. 3D stretches across it (manual.zig widens
+/// the projection's aspect to match) and pre-transformed 2D stays 4:3 in the middle.
+pub fn wide() f32 {
+    const S = struct {
+        var v: f32 = 0;
+    };
+    if (S.v == 0) S.v = if (std.c.getenv("RECOMP_WIDESCREEN")) |e| (if (e[0] == '0') 1 else 4.0 / 3.0) else 4.0 / 3.0;
+    return S.v;
+}
+
+/// Frame of the last widened projection (manual.zig). 3D stretches across the
+/// wide back buffer only while the title projects through one (in a stage);
+/// the title and menu screens' own 3D stays 4:3 in the middle.
+pub var wide_frame: u32 = 0xFFFF_0000;
+
+fn wideNow() bool {
+    return frame -% wide_frame <= 2;
+}
+
+/// Back buffer width in guest pixels.
+fn bbw() u32 {
+    return @intFromFloat(@round(640 * wide()));
+}
+
+/// A guest x span on the back buffer to host pixels: full width stretches
+/// across, anything else keeps its 4:3 place in the middle.
+fn bbSpan(x1: u32, x2: u32) [2]u32 {
+    if (x1 == 0 and x2 >= 640) return .{ 0, bbw() };
+    const off = (bbw() - 640) / 2;
+    return .{ x1 + off, x2 + off };
+}
+
+/// The current draw stretches across the wide back buffer (setViewport).
+var draw_stretch = false;
+/// Data of recent full-width back buffer copies (CopyRects).
+var bb_copies: [8]u32 = @splat(0);
+var bb_copy_next: usize = 0;
+
 var hwnd: ?HWND = null;
 var dpy: gl.EGLDisplay = null;
 var surf: gl.EGLSurface = null;
@@ -119,7 +159,7 @@ fn ready() bool {
     if (std.c.getenv("RECOMP_SCALE")) |s| scale = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(s), 10) catch 2, 1, 4);
     const class = std.unicode.utf8ToUtf16LeStringLiteral("OtogiRecomp");
     _ = RegisterClassExW(&.{ .lpfnWndProc = wndProc, .lpszClassName = class });
-    var r: RECT = .{ .right = @intCast(640 * scale), .bottom = @intCast(480 * scale) };
+    var r: RECT = .{ .right = @intCast(bbw() * scale), .bottom = @intCast(480 * scale) };
     _ = AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, 0);
     hwnd = CreateWindowExW(0, class, std.unicode.utf8ToUtf16LeStringLiteral("Otogi: Myth of Demons"), WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, r.right - r.left, r.bottom - r.top, null, null, null, null) orelse return false;
 
@@ -167,9 +207,9 @@ fn ready() bool {
     gl.glGenTextures(1, &fbo_color);
     gl.glGenRenderbuffers(1, &fbo_depth);
     gl.glBindTexture(gl.GL_TEXTURE_2D, fbo_color);
-    gl.glTexStorage2D(gl.GL_TEXTURE_2D, 1, gl.GL_RGBA8, @intCast(640 * scale), @intCast(480 * scale));
+    gl.glTexStorage2D(gl.GL_TEXTURE_2D, 1, gl.GL_RGBA8, @intCast(bbw() * scale), @intCast(480 * scale));
     gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, fbo_depth);
-    gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, @intCast(640 * scale), @intCast(480 * scale));
+    gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH24_STENCIL8, @intCast(bbw() * scale), @intCast(480 * scale));
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, fbo_color, 0);
     gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, fbo_depth);
@@ -587,9 +627,9 @@ fn genFs(k: *const Key, w: *std.Io.Writer) !void {
                 2 => 'y',
                 else => 'w',
             };
-            try w.print("  vec4 tx{d} = texture(u_tex{d}, v_t{d}.xy / v_t{d}.{c} * u_tscale[{d}].xy);\n", .{ st, st, st, st, q, st });
+            try w.print("  vec4 tx{d} = texture(u_tex{d}, v_t{d}.xy / v_t{d}.{c} * u_tscale[{d}].xy + u_tscale[{d}].zw);\n", .{ st, st, st, st, q, st, st });
         } else if (k.tex[st] != 0) {
-            try w.print("  vec4 tx{d} = texture(u_tex{d}, v_t{d}.xy * u_tscale[{d}].xy);\n", .{ st, st, st, st });
+            try w.print("  vec4 tx{d} = texture(u_tex{d}, v_t{d}.xy * u_tscale[{d}].xy + u_tscale[{d}].zw);\n", .{ st, st, st, st, st });
         } else {
             try w.print("  vec4 tx{d} = vec4(1.0);\n", .{st});
         }
@@ -714,7 +754,7 @@ fn genCombiners(k: *const Key, def: *const [PsDef.words]u32, w: *std.Io.Writer) 
             // U in byte 0 (G here), turned by this stage's BUMPENVMAT and added to
             // its coordinates, in texels for a linear texture.
             try w.print("  {{ vec2 d = sgn8(R[{d}].gb); vec4 m = u_bump[{d}];\n" ++
-                "    R[{d}] = texture(u_tex{d}, (v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) + vec2(m.x * d.x + m.z * d.y, m.y * d.x + m.w * d.y)) * u_tscale[{d}].xy); }}\n", .{ reg - 1, st, reg, st, st, st, st, st });
+                "    R[{d}] = texture(u_tex{d}, (v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) + vec2(m.x * d.x + m.z * d.y, m.y * d.x + m.w * d.y)) * u_tscale[{d}].xy + u_tscale[{d}].zw); }}\n", .{ reg - 1, st, reg, st, st, st, st, st, st });
         } else if (k.tex[st] == 2) {
             try w.print("  R[{d}] = texture(u_tex{d}, v_t{d}.xyz);\n", .{ reg, st, st });
         } else if (k.tex[st] == 1) {
@@ -726,7 +766,7 @@ fn genCombiners(k: *const Key, def: *const [PsDef.words]u32, w: *std.Io.Writer) 
                 if (said.mask & (@as(u32, 1) << @intCast(mode)) == 0) std.debug.print("[GL] pixel shader texture mode 0x{X} (stage {d}) sampled as 2D\n", .{ mode, st });
                 said.mask |= @as(u32, 1) << @intCast(mode);
             }
-            try w.print("  R[{d}] = texture(u_tex{d}, v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) * u_tscale[{d}].xy);\n", .{ reg, st, st, st, st, st });
+            try w.print("  R[{d}] = texture(u_tex{d}, v_t{d}.xy / (v_t{d}.w != 0.0 ? v_t{d}.w : 1.0) * u_tscale[{d}].xy + u_tscale[{d}].zw);\n", .{ reg, st, st, st, st, st, st });
         } else {
             try w.print("  R[{d}] = vec4(1.0);\n", .{reg});
         }
@@ -976,6 +1016,25 @@ fn keyVertex(k: *Key) void {
     }
 }
 
+/// Texture coordinate scale (linear textures address in texels) and offset.
+/// A back buffer copy holds the whole wide back buffer; a draw kept in the 4:3
+/// middle (the title logo's refraction) samples it at its 4:3 screen position.
+fn uploadTscale(p: *const Prog) void {
+    if (p.u_tscale < 0) return;
+    var v: [4][4]f32 = undefined;
+    for (0..4) |i| {
+        v[i] = .{ if (lin[i][0] != 0) 1 / lin[i][0] else 1, if (lin[i][1] != 0) 1 / lin[i][1] else 1, 0, 0 };
+        if (target_fbo == fbo and !draw_stretch and stage_tex[i] != 0 and
+            std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(stage_tex[i])) != null)
+        {
+            const bw: f32 = @floatFromInt(bbw());
+            v[i][0] *= 640 / bw;
+            v[i][2] = @as(f32, @floatFromInt((bbw() - 640) / 2)) / bw;
+        }
+    }
+    gl.glUniform4fv(p.u_tscale, 4, @ptrCast(&v));
+}
+
 fn uploadUniforms(p: *const Prog) void {
     const rs = d3d.rs;
     if (p.u_wv >= 0) gl.glUniformMatrix4fv(p.u_wv, 1, gl.GL_FALSE, &matMul(xf[6], xf[0])); // world0 * view
@@ -993,11 +1052,7 @@ fn uploadUniforms(p: *const Prog) void {
     if (p.u_fogcolor >= 0) gl.glUniform4fv(p.u_fogcolor, 1, &argbVec(rs(.fogcolor)));
     if (p.u_tf >= 0) gl.glUniform4fv(p.u_tf, 1, &argbVec(rs(.texturefactor)));
     if (p.u_aref >= 0) gl.glUniform1f(p.u_aref, @floatFromInt(rs(.alpharef) & 0xFF));
-    if (p.u_tscale >= 0) {
-        var v: [4][4]f32 = undefined;
-        for (0..4) |i| v[i] = .{ if (lin[i][0] != 0) 1 / lin[i][0] else 1, if (lin[i][1] != 0) 1 / lin[i][1] else 1, 1, 1 };
-        gl.glUniform4fv(p.u_tscale, 4, @ptrCast(&v));
-    }
+    uploadTscale(p);
     if (p.u_c >= 0) {
         // c[58]/c[59] identity: the translated program undoes D3D's divide.
         vsc[58] = .{ 1, 1, 1, 1 };
@@ -1119,6 +1174,104 @@ fn vsVertices(h: *HostVs, base: u32, lo: u32, hi: u32, up: ?[*]const u8, up_stri
     return stride;
 }
 
+/// GL viewport for the guest viewport. On the wide back buffer it stretches
+/// across, or keeps its 4:3 place in the middle.
+fn setViewport(stretch: bool) void {
+    draw_stretch = stretch;
+    var x: f32 = @floatFromInt(vp.x);
+    var w: f32 = @floatFromInt(vp.w);
+    if (target_fbo == fbo) {
+        if (stretch) {
+            x *= wide();
+            w *= wide();
+        } else x = @floatFromInt(bbSpan(vp.x, vp.x + 1)[0]);
+    }
+    const s: f32 = @floatFromInt(scale);
+    gl.glViewport(@intFromFloat(@round(x * s)), @intCast(vp.y * scale), @intFromFloat(@round(w * s)), @intCast(vp.h * scale));
+}
+
+/// x range of pre-transformed vertices.
+fn xSpan(verts: [*]const u8, stride: u32, n: u32) [2]f32 {
+    var r: [2]f32 = .{ 1e9, -1e9 };
+    for (0..n) |i| {
+        const x = std.mem.bytesToValue(f32, verts[i * stride ..][0..4]);
+        r = .{ @min(r[0], x), @max(r[1], x) };
+    }
+    return r;
+}
+
+var ext_buf: std.ArrayList(u8) = .empty;
+var ext_tail: std.ArrayList(u8) = .empty;
+
+/// A pre-transformed draw at a screen edge (backgrounds, banners, tiles,
+/// fades, letterbox bars) reaches the wide back buffer's edge. A banner tile
+/// (a quad 16-256 pixels wide, a power of two) repeats outward, so a band of
+/// clamped tiles carries its pattern on. Otherwise the edge vertices move out
+/// with their texture coordinates extrapolated: a tiled pattern carries on, a
+/// picture's clamped border repeats, and a picture inside a full-screen layer
+/// (the title logo) keeps its shape. Returns the edited vertices, or null
+/// when the draw is not such a quad.
+fn extend2d(verts: [*]const u8, stride: u32, n: u32, xprim: u32) ?[]const u8 {
+    const group: u32 = if (xprim == 8) 4 else if (n <= 6) n else return null;
+    var tc: u32 = 16; // XYZRHW, then point size, diffuse, specular
+    for ([_]u32{ 0x020, 0x040, 0x080 }) |b| tc += if (vshader & b != 0) 4 else 0;
+    const ntc = @min((stride -| tc) / 4, 16);
+    ext_buf.clearRetainingCapacity();
+    ext_tail.clearRetainingCapacity();
+    ext_buf.appendSlice(alloc, verts[0 .. n * stride]) catch return null;
+    const v = ext_buf.items;
+    const off: f32 = @floatFromInt((bbw() - 640) / 2);
+    const f = struct {
+        fn at(b: []u8, i: usize) *align(1) f32 {
+            return @ptrCast(b[i..][0..4]);
+        }
+    }.at;
+    var g: u32 = 0;
+    while (g + group <= n) : (g += group) {
+        var lo: f32 = 1e9;
+        var hi: f32 = -1e9;
+        for (g..g + group) |i| {
+            lo = @min(lo, f(v, i * stride).*);
+            hi = @max(hi, f(v, i * stride).*);
+        }
+        if (lo > 0.5 and hi < 639) continue;
+        const w = hi - lo;
+        const tile = xprim == 8 and w >= 15.5 and w <= 256.5 and @abs(w - std.math.exp2(@round(std.math.log2(w)))) < 0.5;
+        if (tile) {
+            const dir: f32 = if (lo <= 0.5) -1 else 1;
+            var k: f32 = 1;
+            while ((k - 1) * w < off) : (k += 1) {
+                const at = ext_tail.items.len;
+                ext_tail.appendSlice(alloc, v[g * stride .. (g + group) * stride]) catch return null;
+                for (0..group) |i| f(ext_tail.items, at + i * stride).* += dir * k * w;
+            }
+            continue;
+        }
+        // Gradient along x: two vertices on one row.
+        var a: ?u32 = null;
+        var b: u32 = 0;
+        for (g..g + group) |i| for (i + 1..g + group) |j| {
+            const dx = f(v, j * stride).* - f(v, i * stride).*;
+            if (a == null and @abs(dx) > 1 and @abs(f(v, j * stride + 4).* - f(v, i * stride + 4).*) < 0.5) {
+                a = @intCast(i);
+                b = @intCast(j);
+            }
+        };
+        const ai = a orelse return null;
+        const dx = f(v, b * stride).* - f(v, ai * stride).*;
+        var grad: [16]f32 = undefined;
+        for (0..ntc) |c| grad[c] = (f(v, b * stride + tc + 4 * c).* - f(v, ai * stride + tc + 4 * c).*) / dx;
+        for (g..g + group) |i| {
+            const x = f(v, i * stride);
+            const d: f32 = if (x.* <= 0.5) -off else if (x.* >= 639) off else continue;
+            x.* += d;
+            for (0..ntc) |c| f(v, i * stride + tc + 4 * c).* += d * grad[c];
+        }
+    }
+    ext_buf.appendSlice(alloc, ext_tail.items) catch return null;
+    return ext_buf.items;
+}
+
 fn prepareDraw() ?*Prog {
     if (!ready()) return null;
     var k: Key = .{};
@@ -1136,8 +1289,9 @@ fn prepareDraw() ?*Prog {
         k.ps = @intCast(i + 1);
     }
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target_fbo);
-    gl.glViewport(@intCast(vp.x * scale), @intCast(vp.y * scale), @intCast(vp.w * scale), @intCast(vp.h * scale));
     keyVertex(&k);
+    // On the wide back buffer, 3D stretches across and pre-transformed 2D keeps its 4:3 place.
+    setViewport(k.rhw == 0 and wideNow());
     applyRenderState();
     applyStages(&k);
     const rs = d3d.rs;
@@ -1158,7 +1312,7 @@ fn prepareDraw() ?*Prog {
             k.colorop[0], k.colorarg[0][1], k.colorarg[0][2], k.alphaop[0], k.alphaarg[0][1], k.alphaarg[0][2], k.colorop[1],
             rs(.alphablendenable), rs(.srcblend), rs(.destblend), rs(.alphatestenable), rs(.alpharef),
         });
-        std.debug.print("       fog={d} table={d} {d}..{d} dens={d} col={X} zen={d} zw={d} cull={X}", .{ rs(.fogenable), rs(.fogtablemode), @as(f32, @bitCast(rs(.fogstart))), @as(f32, @bitCast(rs(.fogend))), @as(f32, @bitCast(rs(.fogdensity))), rs(.fogcolor), rs(.zenable), rs(.zwriteenable), rs(.cullmode) });
+        std.debug.print("       vp={d},{d} {d}x{d} rhw={d} wide={d} fog={d} table={d} {d}..{d} dens={d} col={X} zen={d} zw={d} cull={X}", .{ vp.x, vp.y, vp.w, vp.h, k.rhw, frame -% wide_frame, rs(.fogenable), rs(.fogtablemode), @as(f32, @bitCast(rs(.fogstart))), @as(f32, @bitCast(rs(.fogend))), @as(f32, @bitCast(rs(.fogdensity))), rs(.fogcolor), rs(.zenable), rs(.zwriteenable), rs(.cullmode) });
         if (k.ps != 0) {
             const def = &pixel_shaders.items[k.ps - 1].def;
             std.debug.print(" modes={X} n={X} fin={X:0>8} {X:0>8}", .{ def[PsDef.texture_modes], def[PsDef.combiner_count], def[PsDef.final_abcd], def[PsDef.final_efg] });
@@ -1183,6 +1337,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     const p = prepareDraw() orelse return;
     var lo: u32 = 0;
     var hi: u32 = n - 1;
+    var nv = n; // vertices drawn: extend2d may add banner tiles
     if (idx) |ix| {
         lo = 0xFFFF;
         hi = 0;
@@ -1211,8 +1366,32 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         if (stride == 0) stride = fvfStride(vshader);
         const verts = if (up) |u| u else if (stream_vb[0] != 0) d3d.ptr(d3d.resData(stream_vb[0])) + base * stride else return;
         if (stride == 0) return;
+        var src = verts + lo * stride;
+        var bytes = (hi - lo + 1) * stride;
+        const xs = if (p.key.rhw != 0) xSpan(src, stride, hi - lo + 1) else [2]f32{ 1, 1 };
+        if (drawlog_frame == frame + 1 and p.key.rhw != 0) std.debug.print("       x={d:.1}..{d:.1} n={d} prim={d} idx={}\n", .{ xs[0], xs[1], n, xprim, idx != null });
+        // 2D at a screen edge reaches the wide buffer's edge (backgrounds, banners, tiled
+        // pictures, fades, letterbox bars); one spanning the width that extend2d cannot
+        // edit, or that draws a back buffer copy back (it holds the whole buffer), stretches.
+        if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639)) {
+            const copy = for (stage_tex) |t| {
+                if (t != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(t)) != null) break true;
+            } else false;
+            const ext = if (!copy and idx == null and vp.x == 0 and vp.w == 640) extend2d(src, stride, n, xprim) else null;
+            if (drawlog_frame == frame + 1) std.debug.print("       edge: copy={} ext={}\n", .{ copy, ext != null });
+            if (ext) |e| {
+                src = e.ptr;
+                bytes = @intCast(e.len);
+                nv = bytes / stride;
+                gl.glViewport(0, @intCast(vp.y * scale), @intCast(bbw() * scale), @intCast(vp.h * scale));
+                gl.glUniform4f(p.u_rhw, -@as(f32, @floatFromInt((bbw() - 640) / 2)), @floatFromInt(vp.y), @floatFromInt(bbw()), @floatFromInt(@max(vp.h, 1)));
+            } else if (xs[0] <= 0.5 and xs[1] >= 639) {
+                setViewport(true);
+                uploadTscale(p);
+            }
+        }
         // One glBufferData per draw: a mapped ring is slower on ANGLE's D3D11 (Sneak King P10).
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast((hi - lo + 1) * stride), verts + lo * stride, gl.GL_STREAM_DRAW);
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(bytes), src, gl.GL_STREAM_DRAW);
         fvfAttribs(vshader, stride);
     }
     // Indices are rebased onto lo. Quads have no GL primitive: split them.
@@ -1220,7 +1399,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     var mode: gl.GLenum = gl.GL_TRIANGLES;
     if (xprim == 8) {
         var q: u32 = 0;
-        while (q + 4 <= n) : (q += 4) {
+        while (q + 4 <= nv) : (q += 4) {
             var v: [4]u16 = undefined;
             for (0..4) |i| v[i] = @intCast((if (idx) |ix| ix[q + i] else q + @as(u32, @intCast(i))) - lo);
             idx_buf.appendSlice(alloc, &.{ v[0], v[1], v[2], v[0], v[2], v[3] }) catch return;
@@ -1250,7 +1429,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
 
 // ── Present ─────────────────────────────────────────────────────────────────
 
-var frame: u32 = 0;
+pub var frame: u32 = 0;
 
 /// Frame whose draws are logged: RECOMP_GL_DRAWLOG=<frame>, or the frame after
 /// logs\drawlog appears (deleted at once; also takes a RECOMP_SHOT-style shot).
@@ -1283,12 +1462,13 @@ fn present() void {
     gl.glColorMask(1, 1, 1, 1);
     gl.glClearColor(0, 0, 0, 1);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-    // Letterboxed to 4:3, flipped: the back buffer keeps the guest's row order.
-    const w: i32 = @min(sz[0], @divTrunc(sz[1] * 4, 3));
-    const h: i32 = @divTrunc(w * 3, 4);
+    // Letterboxed to the back buffer's aspect, flipped: the back buffer keeps the guest's row order.
+    const bw: i32 = @intCast(bbw());
+    const w: i32 = @min(sz[0], @divTrunc(sz[1] * bw, 480));
+    const h: i32 = @divTrunc(w * 480, bw);
     const x = @divTrunc(sz[0] - w, 2);
     const y = @divTrunc(sz[1] - h, 2);
-    gl.glBlitFramebuffer(0, 0, @intCast(640 * scale), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
+    gl.glBlitFramebuffer(0, 0, bw * @as(i32, @intCast(scale)), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
     if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
     _ = gl.eglSwapBuffers(dpy, surf);
@@ -1450,10 +1630,15 @@ export fn sub_000F4EB0() void {
         gl.glEnable(gl.GL_SCISSOR_TEST);
         for (0..count) |i| {
             const r: u32 = rects + 16 * @as(u32, @intCast(i));
-            const x1: i32 = @bitCast(mem32(r));
+            var x1: i32 = @bitCast(mem32(r));
             const y1: i32 = @bitCast(mem32(r + 4));
-            const x2: i32 = @bitCast(mem32(r + 8));
+            var x2: i32 = @bitCast(mem32(r + 8));
             const y2: i32 = @bitCast(mem32(r + 12));
+            if (target_fbo == fbo and x1 >= 0 and x2 > x1) {
+                const sp = bbSpan(@intCast(x1), @intCast(x2));
+                x1 = @intCast(sp[0]);
+                x2 = @intCast(sp[1]);
+            }
             const s: i32 = @intCast(scale);
             gl.glScissor(x1 * s, y1 * s, (x2 - x1) * s, (y2 - y1) * s);
             gl.glClear(mask);
@@ -1533,6 +1718,7 @@ export fn sub_000F7FC0() void {
     const dst = arg(3);
     const points = arg(4);
     sub_000F7FC0_gen();
+    if (drawlog_frame == frame + 1) std.debug.print("[DRAW] copyrects src={X} dst={X} n={d} rect0={d},{d}-{d},{d} rt={d}\n", .{ src, dst, n, if (rects != 0) mem32(rects) else 0, if (rects != 0) mem32(rects + 4) else 0, if (rects != 0) mem32(rects + 8) else 0, if (rects != 0) mem32(rects + 12) else 0, target_fbo });
     if (src == 0 or src != render_target or dst == 0 or !ready()) return;
     const fmt = (mem32(dst + 0xC) >> 8) & 0xFF;
     const f = d3d.fmtFind(fmt) orelse return sayOnce("CopyRects into an unknown format skipped");
@@ -1558,14 +1744,26 @@ export fn sub_000F7FC0() void {
         if (x2 <= x1 or y2 <= y1 or x2 > 640 or y2 > 480) continue;
         const w = x2 - x1;
         const h = y2 - y1;
+        // A full-width copy of the wide back buffer squeezes all of it into the 640 columns
+        // (post effects draw it back across the whole screen; uploadTscale remaps draws kept
+        // in the 4:3 middle); a narrower one keeps its 4:3 place.
+        const sp = if (target_fbo == fbo) bbSpan(x1, x2) else [2]u32{ x1, x2 };
+        if (target_fbo == fbo and sp[1] - sp[0] > w) {
+            const data = d3d.resData(dst);
+            if (std.mem.indexOfScalar(u32, &bb_copies, data) == null) {
+                bb_copies[bb_copy_next] = data;
+                bb_copy_next = (bb_copy_next + 1) % bb_copies.len;
+            }
+        }
+        const hw = (sp[1] - sp[0]) * scale;
         // ponytail: nearest sample of the scaled back buffer, not a filtered downscale
-        const px = convBuf(w * h * scale * scale * 4);
-        gl.glReadPixels(@intCast(x1 * scale), @intCast(y1 * scale), @intCast(w * scale), @intCast(h * scale), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, px.ptr);
+        const px = convBuf(hw * h * scale * 4);
+        gl.glReadPixels(@intCast(sp[0] * scale), @intCast(y1 * scale), @intCast(hw), @intCast(h * scale), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, px.ptr);
         for (0..h) |y| for (0..w) |x| {
             const tx: u32 = dx + @as(u32, @intCast(x));
             const ty: u32 = dy + @as(u32, @intCast(y));
             if (tx >= dd.w or ty >= dd.h) continue;
-            const s = px[((y * scale) * w * scale + x * scale) * 4 ..][0..4];
+            const s = px[((y * scale) * hw + x * hw / w) * 4 ..][0..4];
             const at: u32 = if (f.swizzled) d3d.swizzleIndex(tx, ty, masks) * 4 else ty * (if (dd.pitch != 0) dd.pitch else dd.w * 4) + tx * 4;
             const o = out[at..][0..4];
             o.* = if (f.kind == .abgr8) .{ s[0], s[1], s[2], s[3] } else .{ s[2], s[1], s[0], s[3] }; // to ARGB in memory (B, G, R, A)
