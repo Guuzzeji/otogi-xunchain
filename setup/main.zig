@@ -28,8 +28,9 @@ extern "kernel32" fn GetFileAttributesA(path: [*:0]const u8) callconv(.winapi) u
 /// Release-time `git archive` of the repo (build.zig), and its commit.
 const source_zip = @embedFile("source.zip");
 const build_info = @import("build_info");
+const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 /// "v0.6.0 (abc1234)": the version in build.zig.zon and the commit built.
-const version = "v" ++ build_info.version ++ " (" ++ build_info.commit ++ ")";
+const version = "v" ++ build_info.version ++ " (" ++ commit ++ ")";
 
 const xbe_sha1 = "abf12bb66fcbd9f694c223419a2309c1a5f72293";
 /// <exe dir>\otogi-setup-iso.txt: the path of the last disc image that checked out.

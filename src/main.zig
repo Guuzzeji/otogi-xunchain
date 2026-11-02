@@ -3,6 +3,7 @@
 const std = @import("std");
 const w = std.os.windows;
 const build_info = @import("build_info");
+const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 
 comptime {
     _ = @import("manual.zig");
@@ -165,7 +166,7 @@ pub fn main(init: std.process.Init) !void {
     inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
-    print("=== Otogi: Myth of Demons - static recompilation v{s} ({s}) ===\n", .{ build_info.version, build_info.commit });
+    print("=== Otogi: Myth of Demons - static recompilation v{s} ({s}) ===\n", .{ build_info.version, commit });
 
     // Symbols up front: SymInitialize allocates, which is unsafe inside the handler.
     _ = SymSetOptions(0x4 | 0x2); // SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME

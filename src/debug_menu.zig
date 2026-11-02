@@ -7,6 +7,7 @@ const gl_hle = @import("gl_hle.zig");
 const d3d = @import("d3d.zig");
 const cheats = @import("cheats.zig");
 const build_info = @import("build_info");
+const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 
 extern fn cImGui_ImplWin32_InitForOpenGL(hwnd: *anyopaque) bool;
 extern fn cImGui_ImplWin32_NewFrame() void;
@@ -138,7 +139,7 @@ pub fn draw(hwnd: anytype) void {
 }
 
 fn renderTab() void {
-    text("Otogi recomp v{s} ({s})", .{ build_info.version, build_info.commit });
+    text("Otogi recomp v{s} ({s})", .{ build_info.version, commit });
     text("{s}", .{gl_hle.renderer_name});
     text("scale {s}, widescreen {s}, framerate {s}, vsync {s}", .{ env("RECOMP_SCALE"), env("RECOMP_WIDESCREEN"), env("RECOMP_FRAMERATE"), env("RECOMP_VSYNC") });
     im.ImGui_SeparatorText("Frame rate");

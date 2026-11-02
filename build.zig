@@ -4,7 +4,11 @@ pub fn build(b: *std.Build) void {
     // The release version is build.zig.zon's; CHANGELOG.md has a section for it.
     const info = b.addOptions();
     info.addOption([]const u8, "version", @import("build.zig.zon").version);
-    info.addOption([]const u8, "commit", std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "--short", "HEAD" }), " \r\n"));
+    // The commit, asked at build time: Zig caches the configure run, so a
+    // b.run here would keep an old HEAD. Modules @embedFile("commit.txt").
+    const rev = b.addSystemCommand(&.{ "git", "rev-parse", "--short", "HEAD" });
+    rev.has_side_effects = true;
+    const commit_txt = rev.captureStdOut(.{});
 
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
     // ReleaseFast by default: the Debug renderer cannot hold the game's frame rate.
@@ -18,6 +22,7 @@ pub fn build(b: *std.Build) void {
         .sanitize_c = .off, // guest structs are 4-byte aligned; UBSan alignment checks fire on every one
     });
     mod.addOptions("build_info", info);
+    mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
     mod.addCMacro("WIN32_LEAN_AND_MEAN", "");
     mod.addCMacro("NOMINMAX", "");
     mod.addIncludePath(b.path("xboxrecomp/include"));
@@ -58,6 +63,7 @@ pub fn build(b: *std.Build) void {
     archive.has_side_effects = true;
     setup_mod.addAnonymousImport("source.zip", .{ .root_source_file = source_zip });
     setup_mod.addOptions("build_info", info);
+    setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
     for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32" }) |l| setup_mod.linkSystemLibrary(l, .{});
     const setup = b.addExecutable(.{ .name = "otogi-setup", .root_module = setup_mod });
     setup.subsystem = .windows;
