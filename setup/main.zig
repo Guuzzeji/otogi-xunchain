@@ -1138,6 +1138,16 @@ fn unzipFile(c: *Ctx, zip: []const u8, dest: []const u8) !void {
     defer f.close(c.io);
     var buf: [64 * 1024]u8 = undefined;
     var r = f.reader(c.io, &buf);
+    // std.zip will not overwrite, and a step stopped part-way leaves files
+    // behind: delete the zip's own files first (nothing else in dest).
+    {
+        var it = try std.zip.Iterator.init(&r);
+        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        while (try it.next()) |e| {
+            const name = try e.getFilename(&r, &name_buf, .{ .allow_backslashes = true });
+            if (name.len != 0 and name[name.len - 1] != '/') d.deleteFile(c.io, name) catch {};
+        }
+    }
     try std.zip.extract(d, &r, .{ .allow_backslashes = true });
 }
 
