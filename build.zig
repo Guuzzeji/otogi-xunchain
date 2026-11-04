@@ -6,9 +6,12 @@ pub fn build(b: *std.Build) void {
     info.addOption([]const u8, "version", @import("build.zig.zon").version);
     // The commit, asked at build time: Zig caches the configure run, so a
     // b.run here would keep an old HEAD. Modules @embedFile("commit.txt").
-    const rev = b.addSystemCommand(&.{ "git", "rev-parse", "--short", "HEAD" });
-    rev.has_side_effects = true;
-    const commit_txt = rev.captureStdOut(.{});
+    // Setup's copy of the source has no .git (nor git); it writes commit.txt.
+    const commit_txt = if (b.root.access(b.graph.io, "commit.txt", .{})) |_| b.path("commit.txt") else |_| blk: {
+        const rev = b.addSystemCommand(&.{ "git", "rev-parse", "--short", "HEAD" });
+        rev.has_side_effects = true;
+        break :blk rev.captureStdOut(.{});
+    };
 
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
     // ReleaseFast by default: the Debug renderer cannot hold the game's frame rate.

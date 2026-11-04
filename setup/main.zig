@@ -962,6 +962,8 @@ fn pipeline(c: *Ctx) !void {
         try unzipBytes(c, source_zip, c.work);
         c.stamp("source");
     }
+    // The source has no .git: build.zig takes the commit from here instead.
+    try cwd.writeFile(c.io, .{ .sub_path = c.path("{s}\\commit.txt", .{c.work}), .data = commit });
 
     try next(c, 3);
     const zig = c.path("{s}\\tools\\zig-x86_64-windows-0.17.0\\zig.exe", .{c.work});
