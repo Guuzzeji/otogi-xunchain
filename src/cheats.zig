@@ -46,8 +46,52 @@ var god = false;
 var inf_magic = false;
 var warp_index: c_int = 0;
 
+extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
+extern "c" fn fread([*]u8, usize, usize, *anyopaque) usize;
+extern "c" fn fclose(*anyopaque) c_int;
+extern "c" fn remove([*:0]const u8) c_int;
+
+/// logs\cheat, for scripted testing: read and deleted when it appears, one
+/// command per line: warp <stage id>, god, ungod, magic, kill, all, clear,
+/// give, status. Results go to the log.
+fn liveCommands() void {
+    const f = fopen("logs\\cheat", "rb") orelse return;
+    var buf: [512]u8 = undefined;
+    const n = fread(&buf, 1, buf.len, f);
+    _ = fclose(f);
+    _ = remove("logs\\cheat");
+    var lines = std.mem.tokenizeAny(u8, buf[0..n], "\r\n");
+    while (lines.next()) |line| {
+        var it = std.mem.tokenizeScalar(u8, line, ' ');
+        const cmd = it.next() orelse continue;
+        if (std.mem.eql(u8, cmd, "warp")) {
+            const id = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
+            warp_index = for (0..29) |i| {
+                if (p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).* == id) break @intCast(i);
+            } else continue;
+            warp();
+        } else if (std.mem.eql(u8, cmd, "god")) god = true
+        else if (std.mem.eql(u8, cmd, "ungod")) god = false
+        else if (std.mem.eql(u8, cmd, "magic")) inf_magic = true
+        else if (std.mem.eql(u8, cmd, "kill")) {
+            god = false;
+            pf(HP).* = 0;
+        } else if (std.mem.eql(u8, cmd, "all")) p32(ALL_STAGES).* = 1
+        else if (std.mem.eql(u8, cmd, "clear")) {
+            for (0..29) |i| p32(STAGE_RECORDS + @as(u32, @intCast(i)) * 0x3C + 0x18).* |= 1;
+        } else if (std.mem.eql(u8, cmd, "give")) {
+            for (tables, table_max) |t, max| for (0..@min(p32(t.count).*, max)) |i| {
+                const e = p32(t.at + @as(u32, @intCast(i)) * 16 + 8);
+                e.* = @max(e.*, t.own);
+            };
+        }
+        std.debug.print("[CHEAT] {s}: stage m{d:0>3}, exit {d}, HP {d:.0}/{d}, god {}\n", .{ line, p32(STAGE).*, @as(i32, @bitCast(p32(EXIT_REQUEST).*)), pf(HP).*, p32(HP_MAX).*, god });
+    }
+}
+
 /// Every shown frame, menu open or not.
 pub fn tick() void {
+    liveCommands();
     if (god and p32(HP_MAX).* > 0) {
         const max: f32 = @floatFromInt(p32(HP_MAX).*);
         pf(HP).* = max;

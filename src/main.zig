@@ -182,7 +182,10 @@ pub fn main(init: std.process.Init) !void {
     //  RECOMP_VBLANK: vblank interrupts, so D3D and the game get frame ticks.
     //  RECOMP_AC97_READY: the emulated APU. Without DirectSound the game never
     //    starts its sound-stream worker, and the main menu waits on it forever.
-    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY" }) |v| {
+    //  RECOMP_HEAP_RECLAIM: freed memory is reused. Off, each stage load leaks
+    //    its textures and the second one runs the 64 MB contiguous arena dry
+    //    (menus then draw white: their textures fail to load).
+    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_HEAP_RECLAIM" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
     print("=== Otogi: Myth of Demons - static recompilation v{s} ({s}) ===\n", .{ build_info.version, commit });

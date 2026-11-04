@@ -2258,8 +2258,22 @@ export fn sub_000F9570() void {
         pixel_shaders.append(alloc, .{ .handle = mem32(ph), .def = undefined }) catch return;
         break :blk pixel_shaders.items.len - 1;
     };
-    // ponytail: a recreated handle keeps any program cached on the old definition
+    // A freed shader's memory is reused (RECOMP_HEAP_RECLAIM), so a handle
+    // comes back with another definition: drop programs built on the old one.
+    const old = pixel_shaders.items[i].def;
     for (0..PsDef.words) |j| pixel_shaders.items[i].def[j] = mem32(def + 4 * @as(u32, @intCast(j)));
+    if (!std.mem.eql(u32, &old, &pixel_shaders.items[i].def)) dropProgs(.ps, @intCast(i + 1));
+}
+
+/// Forget compiled programs whose key names shader table entry `idx`.
+fn dropProgs(comptime field: enum { vs, ps }, idx: u32) void {
+    var i: usize = 0;
+    while (i < progs.items.len) {
+        if (@field(progs.items[i].key, @tagName(field)) == idx) {
+            if (progs.items[i].prog != 0) gl.glDeleteProgram(progs.items[i].prog);
+            _ = progs.swapRemove(i);
+        } else i += 1;
+    }
 }
 
 /// D3DDevice_SetPixelShader(Handle)
@@ -2287,8 +2301,8 @@ export fn sub_000F6EC0() void {
     const ph = arg(2);
     sub_000F6EC0_gen();
     if (ph == 0 or mem32(ph) == 0 or func == 0) return;
-    const h = vsFind(mem32(ph)) orelse programs.addOne(alloc) catch return;
-    // ponytail: a recreated handle keeps any program cached on the old microcode
+    const found = vsFind(mem32(ph));
+    const h = found orelse programs.addOne(alloc) catch return;
     h.* = .{ .handle = mem32(ph), .decl = @splat(0xFFFFFFFF), .mc = @splat(0), .nmc = @min(mem32(func) >> 16, 136) };
     for (0..95) |i| {
         h.decl[i] = if (decl != 0) mem32(decl + 4 * @as(u32, @intCast(i))) else 0xFFFFFFFF;
@@ -2296,6 +2310,8 @@ export fn sub_000F6EC0() void {
     }
     for (0..h.nmc * 4) |i| h.mc[i] = mem32(func + 4 + 4 * @as(u32, @intCast(i)));
     h.hash = d3d.hashBytes(@ptrCast(&h.mc), @intCast(h.nmc * 16));
+    // A reused handle (see CreatePixelShader): programs on the old microcode go.
+    if (found != null) dropProgs(.vs, @intCast(h - programs.items.ptr + 1));
 }
 
 /// SetVertexShaderConstant1/4 (fastcall: ecx = register 0..191, edx = data).
