@@ -2055,7 +2055,14 @@ fn clearGl(c: *const Clear) void {
     if (c.flags & 2 != 0) mask |= gl.GL_STENCIL_BUFFER_BIT;
     if (mask == 0) return;
     const col = argbVec(c.color);
-    gl.glColorMask(1, 1, 1, 1);
+    // D3DCLEAR_TARGET_R/G/B/A (0x10/20/40/80) each clear one channel: the glow
+    // effect (m014, m019) clears only alpha and keeps the scene under it.
+    const ch = struct {
+        fn on(f: u32, bit: u32) gl.GLboolean {
+            return @intFromBool(f & bit != 0);
+        }
+    };
+    gl.glColorMask(ch.on(c.flags, 0x10), ch.on(c.flags, 0x20), ch.on(c.flags, 0x40), ch.on(c.flags, 0x80));
     gl.glDepthMask(1);
     gl.glStencilMask(0xFF);
     gl.glClearColor(col[0], col[1], col[2], col[3]);
@@ -2361,9 +2368,16 @@ fn pbFind(pb: u32) ?usize {
     return null;
 }
 
+/// Indices go into the pushbuffer on the console, so the title may free its
+/// copy once recorded (and memory is reused): keep our own.
 fn recordDraw(ri: usize, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32) void {
+    const own: ?[*]align(1) const u16 = if (idx) |ix| blk: {
+        const c = alloc.alloc(u16, n) catch return;
+        for (c, 0..) |*v, i| v.* = ix[i];
+        break :blk c.ptr;
+    } else null;
     const op = pb_recs.items[ri].ops.addOne(alloc) catch return;
-    op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = idx, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .state = undefined } };
+    op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = own, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .state = undefined } };
     d3d.stateBlock(&op.draw.state);
 }
 
@@ -2398,6 +2412,7 @@ export fn sub_000FA990() void {
         pb_recs.append(alloc, .{ .pb = pb, .base = undefined, .ops = .empty }) catch return;
         break :blk pb_recs.items.len - 1;
     };
+    for (pb_recs.items[i].ops.items) |op| if (op == .draw) if (op.draw.idx) |ix| alloc.free(@as([*]u16, @ptrCast(@alignCast(@constCast(ix))))[0..op.draw.n]);
     pb_recs.items[i].ops.clearRetainingCapacity();
     d3d.stateBlock(&pb_recs.items[i].base);
     rec_cur = i;

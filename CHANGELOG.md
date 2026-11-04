@@ -28,6 +28,11 @@ the Release workflow moves "Unreleased" into a new version section.
   from somewhere else (setup's Play button, a shell in another folder).
 - Sharp picture on scaled displays (125%, 150%, ...): the game is DPI aware, so
   Windows no longer renders it small and stretches it.
+- Menus, the HUD and the game-over screen no longer turn white after the second
+  stage played in a session: freed memory is now reused, so the game's textures
+  keep loading.
+- Stages with the glow effect (Sea of Fire, Inner Sanctum) no longer draw the world
+  black: a clear of only the alpha channel cleared the whole picture.
 
 ## [0.6.0] - 2026-11-01
 

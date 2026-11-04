@@ -52,8 +52,8 @@ extern "c" fn fclose(*anyopaque) c_int;
 extern "c" fn remove([*:0]const u8) c_int;
 
 /// logs\cheat, for scripted testing: read and deleted when it appears, one
-/// command per line: warp <stage id>, god, ungod, magic, kill, all, clear,
-/// give, status. Results go to the log.
+/// command per line: warp <stage id>, stage <id> (the story stage only), god,
+/// ungod, magic, kill, all, clear, give, status. Results go to the log.
 fn liveCommands() void {
     const f = fopen("logs\\cheat", "rb") orelse return;
     var buf: [512]u8 = undefined;
@@ -70,6 +70,8 @@ fn liveCommands() void {
                 if (p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).* == id) break @intCast(i);
             } else continue;
             warp();
+        } else if (std.mem.eql(u8, cmd, "stage")) {
+            p32(STAGE).* = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
         } else if (std.mem.eql(u8, cmd, "god")) god = true
         else if (std.mem.eql(u8, cmd, "ungod")) god = false
         else if (std.mem.eql(u8, cmd, "magic")) inf_magic = true
