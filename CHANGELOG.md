@@ -15,7 +15,7 @@ the Release workflow moves "Unreleased" into a new version section.
 - `window` setting: window, borderless or fullscreen (`resolution` sets the screen
   mode for fullscreen). Alt+Enter switches between a window and fullscreen.
   Borderless is the new default.
-- README with install steps, settings and controls; MIT license.
+- README with screenshots, install steps, settings, controls and known issues; MIT license.
 
 ### Changed
 - The game's log is `otogi.log` next to `otogi.exe` (was `logs\otogi.log`); the debug
@@ -37,6 +37,9 @@ the Release workflow moves "Unreleased" into a new version section.
   instead of sitting off to the left with smeared stripes and a black gap.
 - No line of the scene along the top and left screen edges above letterbox bars and
   menu frames at 2x and higher.
+- Setup's "Compile the game" step no longer fails on PCs without git.
+- Running setup again after it was stopped while unpacking no longer fails with
+  `PathAlreadyExists`.
 
 ## [0.6.0] - 2026-11-01
 
