@@ -637,7 +637,7 @@ fn progress(busy: bool) void {
         if (button("Play")) openOut("otogi.exe");
         im.ImGui_SameLine();
         if (button("Open folder")) openOut("");
-        colored(muted, "settings.ini in that folder sets resolution, widescreen and frame rate. In game, F1 opens the debug menu.");
+        colored(muted, "settings.ini in that folder sets window or fullscreen, resolution, widescreen and frame rate. In game, F1 opens the debug menu.");
     }
     if (result == .failed) {
         im.ImGui_Dummy(.{ .x = 0, .y = px(2) });

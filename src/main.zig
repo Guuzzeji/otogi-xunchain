@@ -49,6 +49,7 @@ extern "kernel32" fn CreateDirectoryA(path: [*:0]const u8, sa: ?*anyopaque) call
 extern "kernel32" fn CreateFileA(name: [*:0]const u8, access: u32, share: u32, sa: ?*anyopaque, disp: u32, flags: u32, tmpl: ?w.HANDLE) callconv(.winapi) w.HANDLE;
 extern "kernel32" fn SetStdHandle(which: u32, h: w.HANDLE) callconv(.winapi) c_int;
 extern "winmm" fn timeBeginPeriod(ms: u32) callconv(.winapi) u32;
+extern "user32" fn SetProcessDpiAwarenessContext(ctx: isize) callconv(.winapi) c_int;
 extern "dbghelp" fn SymSetOptions(opts: u32) callconv(.winapi) u32;
 extern "dbghelp" fn SymInitialize(process: w.HANDLE, search: ?[*:0]const u8, invade: c_int) callconv(.winapi) c_int;
 extern "dbghelp" fn SymFromAddr(process: w.HANDLE, addr: u64, disp: *u64, sym: *SymbolInfo) callconv(.winapi) c_int;
@@ -159,6 +160,9 @@ fn loadSettings(init: std.process.Init) []const u8 {
 }
 
 pub fn main(init: std.process.Init) !void {
+    // Real pixels: otherwise Windows' display scaling renders small and
+    // stretches it. Before any window, which audio and input open too.
+    const dpi = SetProcessDpiAwarenessContext(-4); // PER_MONITOR_AWARE_V2
     // game\, settings.ini and logs\ are found from the working directory. A
     // launcher (setup's Play, a shell elsewhere) may leave another one; then
     // use the exe's folder, which is where setup puts them.
@@ -170,6 +174,7 @@ pub fn main(init: std.process.Init) !void {
     const settings = loadSettings(init);
     openLog();
     print("{s}", .{settings});
+    if (dpi == 0) print("[MAIN] DPI awareness not set\n", .{});
     _ = timeBeginPeriod(1);
     // Toolkit switches Otogi needs. The environment still wins.
     //  RECOMP_ASYNC_IO: async-opened files must return STATUS_PENDING; the

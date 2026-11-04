@@ -59,13 +59,99 @@ extern "user32" fn DispatchMessageW(*const MSG) callconv(.winapi) isize;
 extern "user32" fn AdjustWindowRect(*RECT, u32, i32) callconv(.winapi) i32;
 extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) i32;
 extern "kernel32" fn ExitProcess(u32) callconv(.winapi) noreturn;
+extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) i32;
+extern "user32" fn SetWindowLongPtrW(HWND, i32, isize) callconv(.winapi) isize;
+extern "user32" fn SetWindowPos(HWND, isize, i32, i32, i32, i32, u32) callconv(.winapi) i32;
+extern "user32" fn ShowWindow(HWND, i32) callconv(.winapi) i32;
+extern "user32" fn MonitorFromWindow(HWND, u32) callconv(.winapi) ?*anyopaque;
+extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.winapi) i32;
+extern "user32" fn ChangeDisplaySettingsW(?*const DEVMODEW, u32) callconv(.winapi) i32;
+const MONITORINFO = extern struct { cbSize: u32 = @sizeOf(MONITORINFO), rcMonitor: RECT = .{}, rcWork: RECT = .{}, dwFlags: u32 = 0 };
+const DEVMODEW = extern struct {
+    dmDeviceName: [32]u16 = @splat(0),
+    dmSpecVersion: u16 = 0,
+    dmDriverVersion: u16 = 0,
+    dmSize: u16 = @sizeOf(DEVMODEW),
+    dmDriverExtra: u16 = 0,
+    dmFields: u32 = 0,
+    _pos: [16]u8 = @splat(0),
+    _print: [5]i16 = @splat(0),
+    dmFormName: [32]u16 = @splat(0),
+    dmLogPixels: u16 = 0,
+    dmBitsPerPel: u32 = 0,
+    dmPelsWidth: u32 = 0,
+    dmPelsHeight: u32 = 0,
+    _rest: [10]u32 = @splat(0),
+};
+comptime {
+    std.debug.assert(@sizeOf(DEVMODEW) == 220);
+}
 
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
+const WS_POPUP: u32 = 0x80000000;
 const WS_VISIBLE: u32 = 0x10000000;
 const WM_CLOSE: u32 = 0x0010;
+const WM_ACTIVATEAPP: u32 = 0x001C;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSCHAR: u32 = 0x0106;
+
+/// RECOMP_WINDOW: 0 = a window, 1 = borderless (a window covering the
+/// monitor), 2 = fullscreen (on top of everything, minimized when switched
+/// away from, at RECOMP_RESOLUTION such as 1920x1080 when set). Alt+Enter
+/// switches between a window and fullscreen (borderless when started windowed).
+var window_mode: u8 = 0;
+var full = false;
+var windowed_rect: RECT = .{};
+
+fn setFull(on: bool) void {
+    const h = hwnd.?;
+    const exclusive = window_mode == 2;
+    if (on and !full) _ = GetWindowRect(h, &windowed_rect);
+    full = on;
+    if (!on) {
+        if (exclusive) _ = ChangeDisplaySettingsW(null, 0);
+        _ = SetWindowLongPtrW(h, -16, WS_OVERLAPPEDWINDOW | WS_VISIBLE); // GWL_STYLE
+        const r = windowed_rect;
+        _ = SetWindowPos(h, -2, r.left, r.top, r.right - r.left, r.bottom - r.top, 0x0020); // HWND_NOTOPMOST, SWP_FRAMECHANGED
+        return;
+    }
+    if (exclusive) setResolution();
+    var mi: MONITORINFO = .{};
+    _ = GetMonitorInfoW(MonitorFromWindow(h, 2), &mi); // MONITOR_DEFAULTTONEAREST
+    const r = mi.rcMonitor;
+    _ = SetWindowLongPtrW(h, -16, WS_POPUP | WS_VISIBLE);
+    // HWND_TOPMOST for fullscreen, HWND_TOP for borderless; SWP_FRAMECHANGED | SWP_SHOWWINDOW
+    _ = SetWindowPos(h, if (exclusive) -1 else 0, r.left, r.top, r.right - r.left, r.bottom - r.top, 0x0060);
+}
+
+/// RECOMP_RESOLUTION=WxH for fullscreen; Windows puts the desktop back when
+/// the game ends (CDS_FULLSCREEN).
+fn setResolution() void {
+    const s = std.mem.span(std.c.getenv("RECOMP_RESOLUTION") orelse return);
+    var it = std.mem.tokenizeAny(u8, s, "x* ");
+    const w = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
+    const ht = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
+    const dm: DEVMODEW = .{ .dmFields = 0x80000 | 0x100000, .dmPelsWidth = w, .dmPelsHeight = ht }; // DM_PELSWIDTH | DM_PELSHEIGHT
+    const rc = ChangeDisplaySettingsW(&dm, 4); // CDS_FULLSCREEN
+    if (rc != 0) std.debug.print("[GL] resolution {d}x{d} failed ({d}); keeping the desktop's\n", .{ w, ht, rc });
+}
 
 fn wndProc(wnd: HWND, msg: u32, wp: usize, lp: isize) callconv(.winapi) isize {
     if (msg == WM_CLOSE) ExitProcess(0); // closing the window ends the game
+    // Alt+Enter, not auto-repeat; its WM_SYSCHAR would beep.
+    if (msg == WM_SYSKEYDOWN and wp == 0x0D and (lp & (1 << 29)) != 0 and (lp & (1 << 30)) == 0) {
+        if (window_mode == 0) window_mode = 1;
+        setFull(!full);
+        return 0;
+    }
+    if (msg == WM_SYSCHAR and wp == 0x0D) return 0;
+    // Fullscreen gives the desktop back while another app is in front.
+    if (msg == WM_ACTIVATEAPP and full and window_mode == 2) {
+        if (wp == 0) {
+            _ = ChangeDisplaySettingsW(null, 0);
+            _ = ShowWindow(wnd, 6); // SW_MINIMIZE
+        } else setFull(true);
+    }
     if (debug_menu.wndProc(wnd, msg, wp, lp)) return 1;
     return DefWindowProcW(wnd, msg, wp, lp);
 }
@@ -175,6 +261,8 @@ fn ready() bool {
     var r: RECT = .{ .right = @intCast(bbw() * scale), .bottom = @intCast(480 * scale) };
     _ = AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, 0);
     hwnd = CreateWindowExW(0, class, std.unicode.utf8ToUtf16LeStringLiteral("Otogi: Myth of Demons"), WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, r.right - r.left, r.bottom - r.top, null, null, null, null) orelse return false;
+    if (std.c.getenv("RECOMP_WINDOW")) |m| window_mode = std.math.clamp(m[0] -| '0', 0, 2);
+    if (window_mode != 0) setFull(true);
 
     var platform: gl.EGLAttrib = gl.EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE;
     if (std.c.getenv("RECOMP_GFX")) |g| {

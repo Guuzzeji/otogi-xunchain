@@ -12,6 +12,10 @@ the Release workflow moves "Unreleased" into a new version section.
   what is new in it, a comment on every setting, and your own values kept when setup
   runs again.
 - Settings `log` (write `otogi.log`, on by default), `cam_invert` and `debug_menu`.
+- `window` setting: window, borderless or fullscreen (`resolution` sets the screen
+  mode for fullscreen). Alt+Enter switches between a window and fullscreen.
+  Borderless is the new default.
+- README with install steps, settings and controls; MIT license.
 
 ### Changed
 - The game's log is `otogi.log` next to `otogi.exe` (was `logs\otogi.log`); the debug
@@ -22,6 +26,8 @@ the Release workflow moves "Unreleased" into a new version section.
 ### Fixed
 - `otogi.exe` finds `settings.ini` and `game\` in its own folder when started
   from somewhere else (setup's Play button, a shell in another folder).
+- Sharp picture on scaled displays (125%, 150%, ...): the game is DPI aware, so
+  Windows no longer renders it small and stretches it.
 
 ## [0.6.0] - 2026-11-01
 

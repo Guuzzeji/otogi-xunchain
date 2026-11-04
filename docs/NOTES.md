@@ -151,7 +151,7 @@
   `game\default.xbe` it switches to the exe's folder first (setup's Play starts it from elsewhere).
 - Setup writes `settings.ini` beside otogi.exe: a header with the version and that version's CHANGELOG.md section,
   then the repo's `settings.ini` as the template (a comment per setting). Values already in the player's file are kept,
-  unknown keys are carried over at the end. Settings: scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert,
+  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert,
   debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
