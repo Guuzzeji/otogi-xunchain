@@ -33,6 +33,10 @@ the Release workflow moves "Unreleased" into a new version section.
   keep loading.
 - Stages with the glow effect (Sea of Fire, Inner Sanctum) no longer draw the world
   black: a clear of only the alpha channel cleared the whole picture.
+- Game-over menu in widescreen: the still of the stage behind it fills the screen
+  instead of sitting off to the left with smeared stripes and a black gap.
+- No line of the scene along the top and left screen edges above letterbox bars and
+  menu frames at 2x and higher.
 
 ## [0.6.0] - 2026-11-01
 

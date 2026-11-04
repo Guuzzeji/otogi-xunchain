@@ -215,6 +215,12 @@ var draw_stretch = false;
 /// whole wide back buffer.
 var bb_copies: [8]u32 = @splat(0);
 var bb_copy_next: usize = 0;
+/// Frame of the last full-width back buffer copy (CopyRects).
+var last_wide_copy: u32 = 0xFFFF_0000;
+/// Textures made just after one (maybe screen stills, see texGet); a full-screen
+/// draw of one stretches like a copy. Others made then (fonts) are left alone.
+var stills: [8]u32 = @splat(0);
+var still_next: usize = 0;
 
 fn isCopy(tex: u32) bool {
     return tex != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(tex)) != null;
@@ -452,6 +458,13 @@ fn texGet(res: u32, tlin: *[2]f32, cube: *bool) gl.GLuint {
         e.checked = frame;
         return e.tex;
     };
+    // The game-over and pause menus keep a still of the screen: the title reads a
+    // full-width copy back and compresses it into a screen-sized texture itself.
+    // It holds the whole wide buffer like any copy, so drawn full screen it stretches.
+    if (dims.w >= 640 and dims.h >= 480 and frame -% last_wide_copy <= 60) {
+        stills[still_next] = data;
+        still_next = (still_next + 1) % stills.len;
+    }
     const e = t orelse textures.addOne(alloc) catch return 0;
     if (t != null) gl.glDeleteTextures(1, &e.tex);
     e.* = .{ .data = data, .format = format, .size = size, .palette = 0, .hash = hash, .checked = frame, .tex = 0 };
@@ -687,14 +700,17 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
     try w.writeAll("void main() {\n");
     try w.print("  vec4 dif_in = {s}, spe_in = {s};\n", .{ if (k.diffuse != 0) "a_diffuse.zyxw" else "vec4(1.0)", if (k.specular != 0) "a_specular.zyxw" else "vec4(0.0)" });
     if (k.rhw != 0) {
-        // Pre-transformed: guest pixels (centres on integers) to clip space.
-        try w.writeAll(
+        // Pre-transformed: guest pixels (centres on integers) to clip space. The
+        // half-pixel shift is half a guest pixel at 1x; scaled up it is half a host
+        // pixel, or a quad from x/y 0 (letterbox bars, menu frames) misses the
+        // first row and column and shows a line of the scene at the screen edge.
+        try w.print(
             \\  float w = a_pos.w != 0.0 ? 1.0 / a_pos.w : 1.0;
-            \\  vec2 ndc = (a_pos.xy + 0.5 - u_rhw.xy) / u_rhw.zw * 2.0 - 1.0;
+            \\  vec2 ndc = (a_pos.xy + {d} - u_rhw.xy) / u_rhw.zw * 2.0 - 1.0;
             \\  gl_Position = vec4(ndc * w, (2.0 * a_pos.z - 1.0) * w, w);
             \\  v_eyez = w;
             \\
-        );
+        , .{0.5 / @as(f32, @floatFromInt(scale))});
     } else {
         // ponytail: fixed-function lighting is not done (SetLight is not identified in this XDK build).
         try w.writeAll(
@@ -1512,7 +1528,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         // edit, or that draws a back buffer copy back (it holds the whole buffer), stretches.
         if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639)) {
             const copy = for (stage_tex) |t| {
-                if (isCopy(t)) break true;
+                if (isCopy(t) or (t != 0 and xs[0] <= 0.5 and xs[1] >= 639 and std.mem.indexOfScalar(u32, &stills, d3d.resData(t)) != null)) break true;
             } else false;
             const ext = if (!copy and idx == null and vp.x == 0 and vp.w == 640) extend2d(src, stride, n, xprim) else null;
             if (drawlog_frame == frame + 1) std.debug.print("       edge: copy={} ext={}\n", .{ copy, ext != null });
@@ -2190,6 +2206,7 @@ export fn sub_000F7FC0() void {
         const sp = if (target_fbo == fbo) bbSpan(x1, x2) else [2]u32{ x1, x2 };
         if (target_fbo == fbo and sp[1] - sp[0] > w) {
             addCopy(d3d.resData(dst));
+            last_wide_copy = frame;
         }
         const hw = (sp[1] - sp[0]) * scale;
         // ponytail: nearest sample of the scaled back buffer, not a filtered downscale
