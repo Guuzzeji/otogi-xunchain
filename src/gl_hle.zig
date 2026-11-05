@@ -211,8 +211,8 @@ fn bbSpan(x1: u32, x2: u32) [2]u32 {
 /// The current draw stretches across the wide back buffer (setViewport).
 var draw_stretch = false;
 /// Data of recent full-width back buffer copies (CopyRects), and of offscreen
-/// targets drawn from one (the pause blur downsamples a copy): each holds the
-/// whole wide back buffer.
+/// targets drawn from one (the pause blur downsamples a copy) or with widened 3D,
+/// and of copies of those: each holds the whole wide view.
 var bb_copies: [8]u32 = @splat(0);
 var bb_copy_next: usize = 0;
 /// Frame of the last full-width back buffer copy (CopyRects).
@@ -442,7 +442,9 @@ fn texGet(res: u32, tlin: *[2]f32, cube: *bool) gl.GLuint {
         said.mask |= @as(u64, 1) << @intCast(xfmt & 63);
         return 0;
     };
-    // ponytail: palettes (P8) read as white; mirror SetPalette when a title uses them
+    // ponytail: palettes (P8) read as white; mirror SetPalette when a title uses them.
+    // Otogi has none: its 3219 DDS textures on the disc are DXT1/3/5 and A8R8G8B8.
+    if (f.kind == .p8) sayOnce("paletted (P8) texture drawn white");
     if (!f.swizzled and !d3d.isDxt(f)) tlin.* = .{ @floatFromInt(dims.w), @floatFromInt(dims.h) };
     var t: ?*HostTex = null;
     for (textures.items) |*e| {
@@ -572,6 +574,7 @@ const Prog = struct {
     u_psc: gl.GLint = -1,
     u_psf: gl.GLint = -1,
     u_bump: gl.GLint = -1,
+    u_flow: gl.GLint = -1,
 };
 var progs: std.ArrayList(Prog) = .empty;
 
@@ -688,9 +691,11 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
             \\  gl_Position = vec4(p.x, -p.y, 2.0 * p.z - p.w, p.w);
             \\  v_d0 = clamp(oD0, 0.0, 1.0); v_d1 = clamp(oD1, 0.0, 1.0); v_fog = nv_fog(oFog.x); v_fog = isnan(v_fog) ? 1.0 : clamp(v_fog, 0.0, 1.0); v_eyez = 0.0;
             \\  v_t0 = oT0; v_t1 = oT1; v_t2 = oT2; v_t3 = oT3;
-            \\}
             \\
         );
+        // The waterfall's layer mesh runs v 0 (top edge) down; genFs fades it in from there.
+        if (k.fog == 2) try w.writeAll(if (h.inputs & 8 != 0) "  v_eyez = v3.y;\n" else "  v_eyez = 1.0;\n");
+        try w.writeAll("}\n");
         return;
     }
     try w.writeAll("uniform mat4 u_wv, u_proj, u_texm[4];\nuniform vec4 u_rhw;\nin vec4 a_pos;\n");
@@ -712,7 +717,6 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
             \\
         , .{0.5 / @as(f32, @floatFromInt(scale))});
     } else {
-        // ponytail: fixed-function lighting is not done (SetLight is not identified in this XDK build).
         try w.writeAll(
             \\  vec4 eye = u_wv * vec4(a_pos.xyz, 1.0);
             \\  vec4 p = u_proj * eye;
@@ -747,7 +751,7 @@ fn genFs(k: *const Key, w: *std.Io.Writer) !void {
     const fl = if (k.flat != 0) "flat " else "";
     try w.writeAll(common);
     try w.print("{s}in vec4 v_d0;\n{s}in vec4 v_d1;\nin vec4 v_t0, v_t1, v_t2, v_t3;\nin float v_fog, v_eyez;\n", .{ fl, fl });
-    try w.writeAll("uniform vec4 u_tf, u_fog, u_fogcolor, u_tscale[4];\nuniform float u_aref;\n");
+    try w.writeAll("uniform vec4 u_tf, u_fog, u_fogcolor, u_tscale[4];\nuniform vec2 u_flow;\nuniform float u_aref;\n");
     for (0..4) |st| if (k.tex[st] != 0) try w.print("uniform {s} u_tex{d};\n", .{ if (k.tex[st] == 2) "samplerCube" else "sampler2D", st });
     if (k.ps != 0) {
         try w.writeAll("uniform vec4 u_psc[16], u_psf[2], u_bump[4];\nout vec4 o_color;\n" ++
@@ -805,7 +809,25 @@ fn genFs(k: *const Key, w: *std.Io.Writer) !void {
             \\
         else
             "  float f = v_fog;\n");
-        try w.writeAll("  cur.rgb = mix(u_fogcolor.rgb, cur.rgb, clamp(f, 0.0, 1.0));\n");
+        // ponytail: Tower of Water's waterfall (fog 2, see prepareDraw) is our own shader, tuned by
+        // eye against Xbox footage, not the game's maths (additive layers fogged to a light colour
+        // stack to flat white). v_eyez is the strip's v, 0 at its top edge, 1 at the bottom. Two
+        // layers of the ripple texture flow down (u_flow), stretched as falling water speeds up
+        // (sqrt of the drop); whole-number u scales keep the wrap round the tower seamless. Solid
+        // white near the top, breaking into streaks with gaps lower down; faded in at the top
+        // edge and out towards the bottom. The same at any distance.
+        try w.writeAll(if (k.fog == 2)
+            "  vec3 L = vec3(0.299, 0.587, 0.114);\n" ++
+            "  float fall = sqrt(max(v_eyez, 0.0));\n" ++
+            "  vec2 uv1 = vec2(v_t0.x, fall - u_flow.x);\n" ++
+            "  vec2 uv2 = vec2(v_t0.x * 2.0 + 0.31, fall * 0.8 - u_flow.y + 0.47);\n" ++
+            "  float lum = 0.5 * (dot(texture(u_tex0, uv1).rgb, L) + dot(texture(u_tex0, uv2).rgb, L));\n" ++
+            "  float edge = smoothstep(0.0, 0.15, v_eyez) * (1.0 - smoothstep(0.4, 1.0, v_eyez));\n" ++
+            "  float st = smoothstep(0.15, 0.85, v_eyez);\n" ++
+            "  float a = smoothstep(mix(-1.5, 0.0, st), mix(0.2, 0.8, st), lum) * edge;\n" ++
+            "  cur = vec4(mix(u_fogcolor.rgb, vec3(1.0), 0.9) * mix(mix(0.75, 0.4, st), 1.0, lum) * a, a);\n"
+        else
+            "  cur.rgb = mix(u_fogcolor.rgb, cur.rgb, clamp(f, 0.0, 1.0));\n");
     }
     return genAlphaTest(k, w);
 }
@@ -1041,7 +1063,7 @@ fn progGet(k: *const Key) ?*Prog {
         return null;
     }
     p.prog = prog;
-    inline for (.{ "u_wv", "u_proj", "u_texm", "u_rhw", "u_fog", "u_fogcolor", "u_tf", "u_aref", "u_tscale", "u_c", "u_psc", "u_psf", "u_bump" }) |u|
+    inline for (.{ "u_wv", "u_proj", "u_texm", "u_rhw", "u_fog", "u_fogcolor", "u_tf", "u_aref", "u_tscale", "u_c", "u_psc", "u_psf", "u_bump", "u_flow" }) |u|
         @field(p, u) = gl.glGetUniformLocation(prog, u);
     gl.glUseProgram(prog);
     for (0..4) |i| gl.glUniform1i(gl.glGetUniformLocation(prog, (std.fmt.bufPrintSentinel(&name, "u_tex{d}", .{i}, 0) catch unreachable).ptr), @intCast(i));
@@ -1200,6 +1222,12 @@ fn uploadUniforms(p: *const Prog) void {
     if (p.u_rhw >= 0) gl.glUniform4f(p.u_rhw, @floatFromInt(vp.x), @floatFromInt(vp.y), @floatFromInt(@max(vp.w, 1)), @floatFromInt(@max(vp.h, 1)));
     if (p.u_fog >= 0) gl.glUniform4f(p.u_fog, @floatFromInt(rs(.fogtablemode)), @bitCast(rs(.fogstart)), @bitCast(rs(.fogend)), @bitCast(rs(.fogdensity)));
     if (p.u_fogcolor >= 0) gl.glUniform4fv(p.u_fogcolor, 1, &argbVec(rs(.fogcolor)));
+    if (p.u_flow >= 0) {
+        // The waterfall's flow (genFs): game frames at 30 a second, 0.35 texture lengths a second,
+        // wrapped here in f64 so the phase never jumps (the game's own scroll wraps at 1).
+        const t = @as(f64, @floatFromInt(frame)) / 30.0 * 0.35;
+        gl.glUniform2f(p.u_flow, @floatCast(@mod(t, 1.0)), @floatCast(@mod(t * 0.73, 1.0)));
+    }
     if (p.u_tf >= 0) gl.glUniform4fv(p.u_tf, 1, &argbVec(rs(.texturefactor)));
     if (p.u_aref >= 0) gl.glUniform1f(p.u_aref, @floatFromInt(rs(.alpharef) & 0xFF));
     uploadTscale(p);
@@ -1447,10 +1475,21 @@ fn prepareDraw() ?*Prog {
     const rs = d3d.rs;
     k.spec_add = @intFromBool(rs(.specularenable) != 0);
     k.fog = @intFromBool(rs(.fogenable) != 0);
+    // Fog 2: Tower of Water's waterfall, the stage's only fogged layer added on top (m007 is
+    // story stage 7). Its strips wind both ways, so culling dropped half of them (the shards);
+    // drawn from both sides as alpha-blended sheets (premultiplied, see genFs).
+    if (k.fog != 0 and rs(.alphablendenable) != 0 and rs(.destblend) == gl.GL_ONE and mem32(0x13DAC08) == 7) {
+        k.fog = 2;
+        gl.glDisable(gl.GL_CULL_FACE);
+        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+    }
     k.fog_table = @intFromBool(k.fog != 0 and rs(.fogtablemode) != 0 and k.vs == 0);
     k.alpha_test = @intFromBool(rs(.alphatestenable) != 0);
     k.alpha_func = if (k.alpha_test != 0) @truncate(rs(.alphafunc) -% 0x200) else 0;
     k.flat = @intFromBool(rs(.shademode) == 0x1D00);
+    // ponytail: fixed-function lighting is not done; Otogi lights in its vertex programs and
+    // draws FVF geometry pre-transformed (unlit), so this has not been seen.
+    if (k.vs == 0 and k.rhw == 0 and rs(.lighting) != 0) sayOnce("fixed-function lighting requested; drawn unlit");
     const p = progGet(&k) orelse {
         if (drawlog_frame == frame + 1) std.debug.print("[DRAW] no program: vs={X} ps={X}\n", .{ vshader, pshader });
         return null;
@@ -1487,7 +1526,11 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     if (fr_on and !fr_replaying) frameDraw(xprim, n, idx, up, up_stride, base);
     if (!fr_replaying) stats.draws += 1;
     const p = prepareDraw() orelse return;
-    if (target_fbo != fbo) for (stage_tex) |t| if (isCopy(t)) addCopy(d3d.resData(render_target));
+    // An offscreen target holds the whole wide view like a back buffer copy when
+    // it is drawn from one, or when widened 3D is drawn into it (m027's after-images).
+    if (target_fbo != fbo and (p.key.rhw == 0 and wideNow() or for (stage_tex) |t| {
+        if (isCopy(t)) break true;
+    } else false)) addCopy(d3d.resData(render_target));
     var lo: u32 = 0;
     var hi: u32 = n - 1;
     var nv = n; // vertices drawn: extend2d may add banner tiles
@@ -1846,6 +1889,7 @@ pub var frame: u32 = 0;
 var drawlog_frame: u32 = 0;
 extern "kernel32" fn DeleteFileA([*:0]const u8) callconv(.winapi) i32;
 
+
 fn present() void {
     frame += 1;
     if (frame == 1) if (std.c.getenv("RECOMP_GL_DRAWLOG")) |e| {
@@ -2175,14 +2219,20 @@ export fn sub_000F7FC0() void {
     stats.copies += 1;
     sub_000F7FC0_gen();
     if (drawlog_frame == frame + 1) std.debug.print("[DRAW] copyrects src={X} dst={X} n={d} rect0={d},{d}-{d},{d} rt={d}\n", .{ src, dst, n, if (rects != 0) mem32(rects) else 0, if (rects != 0) mem32(rects + 4) else 0, if (rects != 0) mem32(rects + 8) else 0, if (rects != 0) mem32(rects + 12) else 0, target_fbo });
-    if (src == 0 or src != render_target or dst == 0 or !ready()) return;
+    if (src == 0 or dst == 0 or !ready()) return;
+    // The source need not be the current target: m027's after-image pass copies its
+    // offscreen target after switching back to the back buffer.
+    const sd = d3d.resData(src);
+    const src_fbo = if (src == render_target) target_fbo else if (back_buffer != 0 and sd == d3d.resData(back_buffer)) fbo else for (rts.items) |r| {
+        if (r.data == sd) break r.fbo;
+    } else return sayOnce("CopyRects from a surface never rendered to skipped");
     const fmt = (mem32(dst + 0xC) >> 8) & 0xFF;
     const f = d3d.fmtFind(fmt) orelse return sayOnce("CopyRects into an unknown format skipped");
     if (f.bits != 32 or d3d.isDxt(f)) return sayOnce("CopyRects into a non-32-bit surface skipped");
     const dd = d3d.surfDims(dst);
     const masks = d3d.swizzleMasks(dd.w, dd.h);
     const out = d3d.ptr(d3d.resData(dst));
-    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, target_fbo);
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, src_fbo);
     for (0..@max(n, 1)) |i| {
         const ri: u32 = @intCast(i);
         var x1: u32 = 0;
@@ -2203,11 +2253,11 @@ export fn sub_000F7FC0() void {
         // A full-width copy of the wide back buffer squeezes all of it into the 640 columns
         // (post effects draw it back across the whole screen; uploadTscale remaps draws kept
         // in the 4:3 middle); a narrower one keeps its 4:3 place.
-        const sp = if (target_fbo == fbo) bbSpan(x1, x2) else [2]u32{ x1, x2 };
-        if (target_fbo == fbo and sp[1] - sp[0] > w) {
+        const sp = if (src_fbo == fbo) bbSpan(x1, x2) else [2]u32{ x1, x2 };
+        if (src_fbo == fbo and sp[1] - sp[0] > w) {
             addCopy(d3d.resData(dst));
             last_wide_copy = frame;
-        }
+        } else if (src_fbo != fbo and isCopy(src)) addCopy(d3d.resData(dst));
         const hw = (sp[1] - sp[0]) * scale;
         // ponytail: nearest sample of the scaled back buffer, not a filtered downscale
         const px = convBuf(hw * h * scale * 4);

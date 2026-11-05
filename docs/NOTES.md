@@ -76,7 +76,9 @@
 - Debug knobs: `RECOMP_SHOT=<frame>,...` writes `logs\frame_N.bmp`; `RECOMP_GL_DRAWLOG=<frame>` logs that frame's draws;
   `RECOMP_GL_DUMP=1` prints each pixel-shader program's GLSL. `RECOMP_SCALE` (1-4, default 2), `RECOMP_GFX`.
 - Known gaps: palettes (P8 reads white), fixed-function lighting (SetLight not identified for 5455), bump/dot texture
-  modes sample as 2D, CopyRects downsamples by nearest.
+  modes sample as 2D, CopyRects downsamples by nearest. Neither palettes nor fixed-function lighting is used by Otogi:
+  the disc's 3219 DDS textures are DXT1/3/5 and A8R8G8B8 (its DDS loader `0x41D90` is the only palette path), and all
+  FVF draws are pre-transformed (lighting is done in vertex programs). Each logs a line once if it ever shows up.
 
 ## Playable (M4)
 - Frame rate: CreateDevice (`0x159D0`) asks for `FullScreen_PresentationInterval` 0x80000002 (every second vblank,
@@ -169,6 +171,25 @@
   for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
   test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
   (143) is right: StencilEnable 144 and ZBias 149 match the XbSymbol variables.
+
+## Stage fixes (after M6)
+- In the Heavens (m027) white-out: the character after-image pass draws characters into a 640x480 target (fades it with a
+  translucent quad each frame), switches back to the back buffer, then `CopyRects` that target into a linear texture and
+  draws it over the screen blended and added. CopyRects only read the current target, so the copy was skipped and the
+  texture kept last frame's full scene (the glow's back buffer copy uses the same texture); adding it back each frame ran
+  away to white. CopyRects now reads any surface that has a host target. A target that widened 3D is drawn into counts
+  as a wide copy, so its copy stretches across the 16:9 screen instead of being extended.
+- Tower of Water (m007) waterfall: vertex program 0x1D93961 with fixed-function stage 0 (ripple texture x diffuse),
+  added (SRCALPHA, ONE) as stacked strip layers, vertex fog: c158 = (-4e-6, 1), fog colour FFBCC7D7 (`0x18170`, table
+  `0x20A3D8`); D3D's fog setup (`0xFC220`) for FOGTABLEMODE NONE is LINEAR (1, 1), and the final combiner
+  (0x130C0300) lerps to the fog colour. The strips (triangle strips, 720 vertices, v 0 at each strip's top edge) wind
+  both ways and the game leaves CULLMODE on, so culling here dropped about half of them: the shards. Drawn faithfully
+  (cull off, the game's fog), the layers stack to flat white, unlike Xbox footage. So the draw (m007 is story stage 7,
+  the stage's only fogged additive layer: fog key 2) gets our own shader instead, tuned by eye against that footage:
+  cull off, premultiplied alpha blend, two layers of the ripple texture flowing down on a clock of our own (the game's
+  scroll wraps at 1 and jumps if rescaled), v mapped through sqrt for falling water, whole-number u scales so the wrap
+  round the tower is seamless; solid near the top of each strip, streaky with gaps lower, faded in over the top 15%
+  and out over the lower 60%; no distance terms, so it looks the same close up.
 
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the

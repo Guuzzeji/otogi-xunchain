@@ -40,6 +40,13 @@ the Release workflow moves "Unreleased" into a new version section.
 - Setup's "Compile the game" step no longer fails on PCs without git.
 - Running setup again after it was stopped while unpacking no longer fails with
   `PathAlreadyExists`.
+- In the Heavens (the last stage) no longer turns white when the camera faces
+  certain directions: the character after-image effect copies its own offscreen
+  picture, which was skipped, so the previous frame was added back every frame.
+- Tower of Water's waterfall no longer draws as white shards. Half its strips
+  were culled; it is now drawn from both sides with a waterfall shader of our
+  own, tuned by eye against footage of the Xbox version: solid white at the top
+  of each fall, breaking into flowing streaks that fade out lower down.
 
 ## [0.6.0] - 2026-11-01
 

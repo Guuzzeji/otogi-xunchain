@@ -97,9 +97,6 @@ All 29 stages load and play: menus, intro cutscenes, combat, magic, death and re
 
 Known issues:
 
-- **In the Heavens** (the last stage): the screen can turn white when the camera faces certain directions.
-- **Tower of Water:** the waterfall around the tower draws as white shards in the stage's intro cutscene.
-- Fixed-function lighting and paletted textures are not done; a few effects may look flatter than on the Xbox.
 - Only the USA disc is supported.
 
 If something breaks, [open an issue](../../issues) and attach `otogi.log` from the game folder (and `setup.log` if setup failed). The log has your GPU and Windows version at the top.
