@@ -1,6 +1,6 @@
 .{
     .name = .otogi,
-    .version = "0.6.0",
+    .version = "0.7.0",
     .fingerprint = 0x644488cb8ac62c0a,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{

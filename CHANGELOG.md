@@ -7,6 +7,8 @@ the Release workflow moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
 ### Added
 - Setup writes `settings.ini` next to `otogi.exe`: the version you are playing and
   what is new in it, a comment on every setting, and your own values kept when setup
