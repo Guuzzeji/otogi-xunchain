@@ -139,7 +139,7 @@ pub fn draw(hwnd: anytype) void {
 }
 
 fn renderTab() void {
-    text("Otogi recomp v{s} ({s})", .{ build_info.version, commit });
+    text("Otogi XUnchain v{s} ({s})", .{ build_info.version, commit });
     text("{s}", .{gl_hle.renderer_name});
     text("scale {s}, widescreen {s}, framerate {s}, vsync {s}", .{ env("RECOMP_SCALE"), env("RECOMP_WIDESCREEN"), env("RECOMP_FRAMERATE"), env("RECOMP_VSYNC") });
     im.ImGui_SeparatorText("Frame rate");

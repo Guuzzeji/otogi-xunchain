@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     run.step.dependOn(b.getInstallStep());
     b.step("run", "Run the game").dependOn(&run.step);
 
-    // otogi-setup.exe: builds the game from the player's ISO. It embeds a
+    // otogi-xunchain-setup.exe: builds the game from the player's ISO. It embeds a
     // `git archive` of HEAD, so commit before `zig build setup`.
     const setup_mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
     addImgui(b, setup_mod, target, .ReleaseSmall, &.{ "win32", "dx11" });
@@ -68,9 +68,9 @@ pub fn build(b: *std.Build) void {
     setup_mod.addOptions("build_info", info);
     setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
     for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| setup_mod.linkSystemLibrary(l, .{});
-    const setup = b.addExecutable(.{ .name = "otogi-setup", .root_module = setup_mod });
+    const setup = b.addExecutable(.{ .name = "otogi-xunchain-setup", .root_module = setup_mod });
     setup.subsystem = .windows;
-    b.step("setup", "Build otogi-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);
+    b.step("setup", "Build otogi-xunchain-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);
 
     const test_step = b.step("test", "Run tests");
     inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig" }) |f| {

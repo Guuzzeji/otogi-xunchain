@@ -1,4 +1,4 @@
-# Otogi recomp roadmap: Zig + xboxrecomp + ANGLE (Windows only)
+# Otogi XUnchain roadmap: Zig + xboxrecomp + ANGLE (Windows only)
 
 ## Context
 User owns Otogi: Myth of Demons (USA) and has a full dump at `C:\repos\otogi-one-recomp\Otogi-usa-xbox-dump-10-31-2026.iso`. Goal: native Windows recompilation, following the pattern of the user's Sneak King project (`Guuzzeji/sneaky-whopper-recomp`). Differences from Sneak King:
@@ -51,7 +51,7 @@ settings.ini, mkb.ini        copied pattern from Sneak King
 third_party/angle/, game/    gitignored
 ```
 Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `third_party/angle/`, `zig-out/`, `.zig-cache/`. Never commit game data, lifted C, or the XBE. That content is derived from copyrighted material, so it is why the player's own ISO is required.
-  Exception (owner's choice, 2026-11-01): four menu textures ripped from the disc are bundled in otogi-setup.exe
+  Exception (owner's choice, 2026-11-01): four menu textures ripped from the disc are bundled in otogi-xunchain-setup.exe
   for its look (`setup/assets/art/`).
 
 ---
@@ -133,7 +133,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 - 2560x1440 at 16:9 renders with an undistorted HUD.
 - `RECOMP_SCALE=1` and `RECOMP_WIDESCREEN=0` give the original image.
 
-## M6: Setup GUI (`otogi-setup.exe`) — built 2026-11-01; full run from ISO verified on the dev machine, clean-VM exit check not run
+## M6: Setup GUI (`otogi-xunchain-setup.exe`) — built 2026-11-01; full run from ISO verified on the dev machine, clean-VM exit check not run
 1. **Window:** Dear ImGui using `imgui_impl_win32` and `imgui_impl_dx11`. These need only system DLLs, so the result is one exe with no extra files. Build the ImGui C++ with `zig c++`. Call it from Zig through dear_bindings `dcimgui.h` with `@cImport`.
 2. **Screen:** ISO picker (Win32 `GetOpenFileName`), output folder, a Build button, a progress bar, and a scrolling log.
 3. **Steps.** Each step is resumable through stamp files, as in Sneak King's `analysis/.stamps`.
@@ -146,7 +146,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 4. **Source:** `@embedFile` a zip of the repo source (game Zig code, toolkit and seeds) built at release time. Unpack it with `std.zip`.
 5. **Warning:** show a RAM warning when the machine has less than 16 GB. If needed, drop the build to `-j1`.
 
-**Exit check:** on a clean Windows VM with no VS, Python or zig installed, ISO plus `otogi-setup.exe` produce a playable `dist/Otogi/`.
+**Exit check:** on a clean Windows VM with no VS, Python or zig installed, ISO plus `otogi-xunchain-setup.exe` produce a playable `dist/Otogi/`.
 
 ---
 

@@ -1,4 +1,4 @@
-//! otogi-setup.exe: builds the game from the player's own disc image.
+//! otogi-xunchain-setup.exe: builds the game from the player's own disc image.
 //! Checks the ISO, extracts game\, fetches pinned Zig and Python (+ Capstone),
 //! lifts the XBE to C, builds, and leaves a playable folder:
 //!   <out>\otogi.exe, the ANGLE DLLs, settings.ini, game\
@@ -264,13 +264,13 @@ pub fn main(init: std.process.Init) !void {
     const n = std.process.executableDirPath(io, &exe_dir) catch 0;
     _ = std.fmt.bufPrintSentinel(&out_buf, "{s}\\Otogi", .{exe_dir[0..n]}, 0) catch {};
     remembered = std.fmt.bufPrint(&remembered_buf, "{s}\\otogi-setup-iso.txt", .{exe_dir[0..n]}) catch remembered;
-    if (!win_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi: Myth of Demons - Setup v" ++ build_info.version), 1240, 960)) return error.NoWindow;
+    if (!win_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi XUnchain Setup v" ++ build_info.version), 1240, 960)) return error.NoWindow;
     dpi = im.ImGui_GetStyle().*.FontScaleDpi;
     makeJob();
     loadArt();
 
     var u: Ui = .{ .io = io, .gpa = gpa };
-    // otogi-setup.exe <iso> <output folder>: start building at once.
+    // otogi-xunchain-setup.exe <iso> <output folder>: start building at once.
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 3) {
         _ = try std.fmt.bufPrintSentinel(&iso_buf, "{s}", .{args[1]}, 0);
@@ -920,7 +920,7 @@ fn systemInfo(c: *Ctx) void {
     _ = RegGetValueA(0x80000002, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", 0x2, null, &cpu, &cpu_len); // HKLM, RRF_RT_REG_SZ
     const iso = std.mem.sliceTo(&iso_buf, 0);
     const iso_size = if (Io.Dir.cwd().statFile(c.io, iso, .{})) |st| st.size else |_| 0;
-    c.say("Otogi setup {s}", .{version});
+    c.say("Otogi XUnchain setup {s}", .{version});
     c.say("Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.sliceTo(&cpu, 0), ram_gb, std.mem.span(win_gpu_name()) });
     c.say("disc image {s} ({d} bytes)", .{ iso, iso_size });
     c.say("install folder {s} ({?d} GB free)", .{ c.out, freeGb() });
@@ -1030,8 +1030,8 @@ fn writeSettings(c: *Ctx) !void {
     const w = &out.writer;
     var t: [8]u16 = undefined; // SYSTEMTIME: year, month, weekday, day, ...
     GetLocalTime(&t);
-    try w.print("; Otogi: Myth of Demons, PC recompilation {s}\n", .{version});
-    try w.print("; Written by otogi-setup on {d}-{d:0>2}-{d:0>2}. Running setup again keeps your values.\n", .{ t[0], t[1], t[3] });
+    try w.print("; Otogi XUnchain {s}: Otogi: Myth of Demons, PC recompilation\n", .{version});
+    try w.print("; Written by otogi-xunchain-setup on {d}-{d:0>2}-{d:0>2}. Running setup again keeps your values.\n", .{ t[0], t[1], t[3] });
     // This version's section of CHANGELOG.md (in the unpacked source).
     const log = cwd.readFileAlloc(io, c.path("{s}\\CHANGELOG.md", .{c.work}), c.gpa, .limited(1 << 20)) catch "";
     const head = "## [" ++ build_info.version ++ "]";

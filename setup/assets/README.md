@@ -1,6 +1,6 @@
 # Setup art
 
-Bundled in otogi-setup.exe:
+Bundled in otogi-xunchain-setup.exe:
 
 - `ShipporiMinchoB1-Bold.ttf`: Shippori Mincho B1 Bold by FONTDASU (https://github.com/fontdasu/ShipporiMincho),
   SIL Open Font License 1.1 (`OFL-ShipporiMinchoB1.txt`). Subset to Latin-1 plus 御伽 with

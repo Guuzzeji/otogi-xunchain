@@ -18,6 +18,8 @@ the Release workflow moves "Unreleased" into a new version section.
 - README with screenshots, install steps, settings, controls and known issues; MIT license.
 
 ### Changed
+- The project is now **Otogi XUnchain** (github.com/Guuzzeji/otogi-xunchain), and setup
+  is `otogi-xunchain-setup.exe`. The game exe, install folder and saves are unchanged.
 - The game's log is `otogi.log` next to `otogi.exe` (was `logs\otogi.log`); the debug
   menu's window layout is `debug_menu.ini` there too.
 - Setup's game art (title logo, Raikoh, red waves, brush stroke) is built into the

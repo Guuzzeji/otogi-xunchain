@@ -1,6 +1,6 @@
 # Every push and pull request: the version has a changelog section, setup builds,
 # the tests pass. The game itself needs the lifted C (from a disc), so CI builds
-# only otogi-setup.exe, which is what players download.
+# only otogi-xunchain-setup.exe, which is what players download.
 name: CI
 
 on:
@@ -29,5 +29,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: otogi-setup
-          path: zig-out/bin/otogi-setup.exe
+          name: otogi-xunchain-setup
+          path: zig-out/bin/otogi-xunchain-setup.exe

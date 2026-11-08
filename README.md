@@ -1,10 +1,10 @@
-# Otogi: Myth of Demons, natively recompiled for PC
+<p align="center"><img src="docs/img/banner.jpg" alt="The Otogi logo on red brocade fading into Raikoh under a lightning strike in the Floating Tomb" width="100%"></p>
 
-<p align="center"><img src="docs/img/hero.jpg" alt="Raikoh in the Floating Tomb under a lightning strike, 16:9 at 2x resolution" width="100%"></p>
+# Otogi XUnchain: Otogi: Myth of Demons on PC, natively recompiled from the Xbox
 
-*Otogi: Myth of Demons* (FromSoftware, 2003) was an original Xbox exclusive that never left the console. This project statically recompiles it into a native Windows game. **No emulator:** every function in the game's `default.xbe` is translated from x86 to C and compiled for your PC, with a small model of the Xbox around it. The game's Direct3D 8 calls are redrawn through OpenGL ES 3 ([ANGLE](https://chromium.googlesource.com/angle/angle) on Direct3D 11, Vulkan or OpenGL).
+*Otogi: Myth of Demons* (FromSoftware, 2003) was an original Xbox exclusive that never left the console. **Otogi XUnchain** is a PC port made by static recompilation: it turns the game into a native Windows exe with widescreen, high frame rates and up to 4x resolution. **No emulator:** every function in the game's `default.xbe` is translated from x86 to C and compiled for your PC, with a small model of the Xbox around it. The game's Direct3D 8 calls are redrawn through OpenGL ES 3 ([ANGLE](https://chromium.googlesource.com/angle/angle) on Direct3D 11, Vulkan or OpenGL).
 
-**This repo and its download contain no game code.** You build the game from a dump of your own disc, and `otogi-setup.exe` does all of it for you. The only game content shipped is four menu images that setup uses for its own look.
+**This repo and its download contain no game code.** You build the game from a dump of your own disc, and `otogi-xunchain-setup.exe` does all of it for you. The only game content shipped is four menu images that setup uses for its own look.
 
 ## Features
 
@@ -46,11 +46,11 @@ You need:
 
 Then:
 
-1. Download `otogi-setup.exe` from [Releases](../../releases/latest). Putting it in the same folder as your `.iso` lets setup find the disc on its own.
+1. Download `otogi-xunchain-setup.exe` from [Releases](https://github.com/Guuzzeji/otogi-xunchain/releases/latest). Putting it in the same folder as your `.iso` lets setup find the disc on its own.
 2. Run it and press **Build the game**. It takes about 10 minutes.
 3. Press **Play**, or start `otogi.exe` in the install folder.
 
-<p align="center"><img src="docs/img/setup-building.png" alt="otogi-setup.exe translating the game code to C" width="49%"> <img src="docs/img/setup.png" alt="otogi-setup.exe done: Otogi is ready, with Play and Open folder buttons" width="49%"></p>
+<p align="center"><img src="docs/img/setup-building.png" alt="otogi-xunchain-setup.exe translating the game code to C" width="49%"> <img src="docs/img/setup.png" alt="otogi-xunchain-setup.exe done: Otogi is ready, with Play and Open folder buttons" width="49%"></p>
 
 Setup checks your disc and extracts the game files. It then downloads its tools (Zig, Python and Capstone, each checked against a pinned hash), translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, run setup again and it carries on from where it stopped.
 
@@ -98,8 +98,9 @@ All 29 stages load and play: menus, intro cutscenes, combat, magic, death and re
 Known issues:
 
 - Only the USA disc is supported.
+- *Otogi 2: Immortal Warriors* is a different game and is not supported.
 
-If something breaks, [open an issue](../../issues) and attach `otogi.log` from the game folder (and `setup.log` if setup failed). The log has your GPU and Windows version at the top.
+The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. If you hit a crash, a graphics glitch, broken sound or anything that plays differently from the Xbox, please [open an issue](../../issues) and attach `otogi.log` from the game folder (and `setup.log` if setup failed). The log has your GPU and Windows version at the top. Every report helps make the recomp better.
 
 ## How it works
 
@@ -116,15 +117,23 @@ Needs Zig 0.17.0 and Python 3 with `capstone`, plus a disc image. See `docs/NOTE
 
 ```
 zig build          # otogi.exe (needs the lifted C in src/recomp/gen)
-zig build setup    # otogi-setup.exe
+zig build setup    # otogi-xunchain-setup.exe
 zig build test
 ```
 
 A sibling project: [Sneak King recomp](https://github.com/Guuzzeji/sneaky-whopper-recomp).
 
-## AI tools
+## How AI was used
 
-Built with [Claude Code](https://claude.com/claude-code).
+To be upfront: this recomp was made with heavy use of AI. [Claude Code](https://claude.com/claude-code) wrote most of the project's own code (the Zig host, the graphics layer, the function overrides, widescreen, input and setup) and did much of the reverse engineering and debugging, working from logs, traces and screenshots of the running game. A human directed the work, played the game, checked the results and decided what shipped.
+
+AI makes mistakes that look right, and a recomp has thousands of places for one to hide. The game has been playtested, but expect bugs. If you find one, [open an issue](../../issues): that is the best way to make this recomp better.
+
+## Thank you
+
+This project would not exist without [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) by Ned Heller ([@sp00nznet](https://github.com/sp00nznet)) and its [contributors](xboxrecomp/CONTRIBUTORS.md). The toolkit does the hard part: parsing the XBE, lifting thousands of x86 functions to C, and standing in for the Xbox kernel, audio and controllers. Building on it put a full native port within reach of a small fan project, and fixes made for one game help every other game recompiled with it.
+
+If you enjoy playing Otogi on PC, please support xboxrecomp: star the repo, report toolkit bugs there, contribute fixes, or join the [sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu).
 
 ## License
 

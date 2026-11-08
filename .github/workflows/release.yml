@@ -1,6 +1,6 @@
 # Actions > Release > Run workflow. Bumps the version in build.zig.zon, turns the
 # changelog's "Unreleased" section into that version, commits and tags it, builds
-# otogi-setup.exe and publishes a GitHub release with the changelog section as notes.
+# otogi-xunchain-setup.exe and publishes a GitHub release with the changelog section as notes.
 # "none" releases the current version as it is (its section must already exist).
 name: Release
 
@@ -70,5 +70,5 @@ jobs:
         run: |
           v="v${{ steps.version.outputs.version }}"
           git push origin HEAD "$v"
-          gh release create "$v" zig-out/bin/otogi-setup.exe setup/assets/OFL-ShipporiMinchoB1.txt \
-            --title "Otogi recomp $v" --notes-file notes.md
+          gh release create "$v" zig-out/bin/otogi-xunchain-setup.exe setup/assets/OFL-ShipporiMinchoB1.txt \
+            --title "Otogi XUnchain $v" --notes-file notes.md

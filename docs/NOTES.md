@@ -214,9 +214,9 @@
   the window is topmost.
 
 ## Setup (M6)
-- `zig build setup` makes `zig-out\bin\otogi-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
+- `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
   zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in
-  `setup/main.zig`. `otogi-setup.exe <iso> <out>` starts at once (for tests).
+  `setup/main.zig`. `otogi-xunchain-setup.exe <iso> <out>` starts at once (for tests).
 - Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` SHA-1 in the
   ISO (`src/xiso.zig`), extract to `<out>\game`, unpack the source to `<out>\build`, download Zig 0.17.0, Python
   3.14.7 embeddable and the Capstone 5.0.9 wheel (SHA-256 pinned in `setup/main.zig`, kept in
@@ -256,6 +256,6 @@
   - `ci.yml` on push to main and on pull requests: changelog has a section for the current version, `zig build setup`,
     `zig build test`, setup exe as an artifact. The game itself is not built (it needs the lifted C from a disc).
   - `release.yml`, run by hand with a bump (patch, minor, major, none): bumps the version, moves Unreleased into a dated
-    section, commits "Release vX.Y.Z", tags, builds setup, pushes, and publishes a release with `otogi-setup.exe`, the
+    section, commits "Release vX.Y.Z", tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the
     font's OFL text, and that changelog section as notes. "none" releases the current version (for 0.6.0).
   - The bump and changelog shell was dry-run locally on a scratch repo.

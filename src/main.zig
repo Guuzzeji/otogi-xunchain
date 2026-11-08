@@ -188,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
     inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_HEAP_RECLAIM" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
-    print("=== Otogi: Myth of Demons - static recompilation v{s} ({s}) ===\n", .{ build_info.version, commit });
+    print("=== Otogi XUnchain v{s} ({s}): Otogi: Myth of Demons static recompilation ===\n", .{ build_info.version, commit });
 
     // Symbols up front: SymInitialize allocates, which is unsafe inside the handler.
     _ = SymSetOptions(0x4 | 0x2); // SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME
