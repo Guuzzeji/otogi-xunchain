@@ -252,10 +252,12 @@
 - The version is `build.zig.zon`'s `.version` (semver; 0.6.0 = M6). `build.zig` passes it and the short commit to both
   exes as module `build_info`: the game log's first line, the debug menu, setup's window title and `setup.log`.
 - `CHANGELOG.md` (Keep a Changelog): add entries under `## [Unreleased]` as work lands.
-- GitHub Actions (need a GitHub remote; none yet):
+- GitHub Actions (github.com/Guuzzeji/otogi-xunchain):
   - `ci.yml` on push to main and on pull requests: changelog has a section for the current version, `zig build setup`,
     `zig build test`, setup exe as an artifact. The game itself is not built (it needs the lifted C from a disc).
   - `release.yml`, run by hand with a bump (patch, minor, major, none): bumps the version, moves Unreleased into a dated
     section, commits "Release vX.Y.Z", tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the
-    font's OFL text, and that changelog section as notes. "none" releases the current version (for 0.6.0).
+    font's OFL text, and that changelog section as notes. "none" releases the current version.
+  - It also runs on its own when a push to main sets a new `.version` in `build.zig.zon` (the commit needs that
+    version's changelog section; CI checks it). That push releases the version as it is; an already tagged one is skipped.
   - The bump and changelog shell was dry-run locally on a scratch repo.

@@ -16,6 +16,7 @@ the Release workflow moves "Unreleased" into a new version section.
   mode for fullscreen). Alt+Enter switches between a window and fullscreen.
   Borderless is the new default.
 - README with screenshots, install steps, settings, controls and known issues; MIT license.
+- Releases publish on their own when a push to main sets a new version in `build.zig.zon`.
 
 ### Changed
 - The project is now **Otogi XUnchain** (github.com/Guuzzeji/otogi-xunchain), and setup

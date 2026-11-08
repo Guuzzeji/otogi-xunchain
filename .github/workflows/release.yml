@@ -1,10 +1,15 @@
-# Actions > Release > Run workflow. Bumps the version in build.zig.zon, turns the
-# changelog's "Unreleased" section into that version, commits and tags it, builds
-# otogi-xunchain-setup.exe and publishes a GitHub release with the changelog section as notes.
+# Releases otogi-xunchain-setup.exe on GitHub, with the changelog section as notes.
+# Automatic: a push to main that sets a new .version in build.zig.zon (with its own
+# CHANGELOG.md section) releases that version as it is.
+# By hand: Actions > Release > Run workflow bumps the version, turns the changelog's
+# "Unreleased" section into that version, commits and tags it, then releases.
 # "none" releases the current version as it is (its section must already exist).
 name: Release
 
 on:
+  push:
+    branches: [main]
+    paths: [build.zig.zon]
   workflow_dispatch:
     inputs:
       bump:
@@ -34,13 +39,15 @@ jobs:
         run: |
           cur=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
           IFS=. read -r major minor patch <<< "$cur"
-          case "${{ inputs.bump }}" in
+          case "${{ inputs.bump || 'none' }}" in
             major) new="$((major + 1)).0.0" ;;
             minor) new="$major.$((minor + 1)).0" ;;
             patch) new="$major.$minor.$((patch + 1))" ;;
             none)  new="$cur" ;;
           esac
           if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            # A push that touched build.zig.zon without a new version: nothing to release.
+            [ "${{ github.event_name }}" = push ] && { echo "v$new is already released"; exit 0; }
             echo "::error::v$new is already released"; exit 1
           fi
           if [ "$new" != "$cur" ]; then
@@ -60,10 +67,13 @@ jobs:
           echo "version=$new" >> "$GITHUB_OUTPUT"
 
       # After the commit: setup embeds `git archive HEAD` and the new version.
-      - run: zig build setup
-      - run: zig build test
+      - if: steps.version.outputs.version
+        run: zig build setup
+      - if: steps.version.outputs.version
+        run: zig build test
 
       - name: Push and publish
+        if: steps.version.outputs.version
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
