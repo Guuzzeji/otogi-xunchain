@@ -7,6 +7,13 @@ the Release workflow moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
+### Fixed
+- Judder with `framerate` above 30: the scenery moved unevenly while the character
+  looked fine. In-between frames are now drawn for the moment they are shown at,
+  and when the PC cannot make them all in time it shows fewer, evenly spaced.
+- `framerate = 0` follows the refresh rate of the monitor the game is on, exactly
+  (a 144 Hz monitor shows 144 frames a second, was 120).
+
 ## [0.7.0] - 2026-11-08
 
 ### Added

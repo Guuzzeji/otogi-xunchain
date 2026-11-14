@@ -142,7 +142,7 @@
   (A every 2 s); add `70000:start` for the pause menu. `RECOMP_SHOT` frames ~1800 are in the stage.
 - Pause blur: it copies the back buffer, downsamples the copy into a 320x240 target and draws that back. A target drawn
   from a back buffer copy counts as one (`addCopy`), so the blur stretches across instead of extending its edge.
-- Frame interpolation (`RECOMP_FRAMERATE`, default the monitor's refresh rate, rounded down to a multiple of 30; 30 is off):
+- Frame interpolation (`RECOMP_FRAMERATE`, default the refresh rate of the window's monitor; 30 is off):
   the logic still steps once per 30 Hz frame. Each frame's draws and clears are recorded (state block, textures,
   shaders, vertex/index copies, vertex shader constants, transforms); Swap then draws the frame again at in-between
   times inside its slot with constants and transforms blended from the previous frame's matching draw (same
@@ -157,8 +157,17 @@
   debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
-- `RECOMP_VSYNC` (default on): `eglSwapInterval(1)`. On a 144 Hz monitor interpolation shows 120 frames a second,
-  which judders against the refresh; a 60/120 Hz refresh or `framerate = 60` paces evenly.
+- `RECOMP_VSYNC` (default on): `eglSwapInterval(1)`.
+- Judder report (issue #1, 120 shown on an ultrawide, vsync off): in-betweens were due on an even grid of
+  `30 * n` frames a second and blended for their place on it, but Swap only starts after the game's work, so the
+  first one showed late (or not at all) with the picture for an earlier time; and a 144 Hz monitor got 120.
+  Now each in-between is blended for the time it is shown at (`swapInterp`), at the monitor's own rate.
+  Nothing can show while the game thread does its own work, so in-betweens show every second (third...) refresh
+  when the work plus one replay takes longer than one: fewer frames, evenly spaced. Measured on the dev machine
+  (RX 6700 XT, vsync off, `framerate = 120`, stage 1): work 22 ms, one replay 8 ms (1,440 draws). Before: 56 shown
+  a second with 40 ms gaps (an in-between at 30 ms into the slot, the real frame 3 ms later). After: 30 shown,
+  34 ms gaps, as nothing fits; menus (work 7 ms) show 60. `RECOMP_FPS=1` prints the longest gap and the work time.
+  More frames in a stage need less work a frame, or the replays on a second thread while the game runs.
 - Flicker report (2026-11-01): a probe reading nine points of the window after every shown frame (title, menus,
   stage, combat, 95 s at 120 Hz, vsync off) found no black frames except the game's own cut at stage start.
   Unexplained; vsync was added in case it was tearing.
