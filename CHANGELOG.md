@@ -7,6 +7,11 @@ the Release workflow moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
+### Changed
+- Busy scenes cost about half the CPU time they did: the second stage's 2,600-draw
+  opening went from about 30 ms of work a frame to about 16 on the development PC.
+  Slower laptops that dropped below 30 fps there should hold up better (issue #2).
+
 ### Fixed
 - Setup downloads everything it needs (the ANGLE and Dear ImGui libraries too) before
   translating the game, and tries a failed download three times. A network hiccup no
