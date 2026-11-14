@@ -52,7 +52,7 @@ Then:
 
 <p align="center"><img src="docs/img/setup-building.png" alt="otogi-xunchain-setup.exe translating the game code to C" width="49%"> <img src="docs/img/setup.png" alt="otogi-xunchain-setup.exe done: Otogi is ready, with Play and Open folder buttons" width="49%"></p>
 
-Setup checks your disc and extracts the game files. It then downloads its tools (Zig, Python and Capstone, each checked against a pinned hash), translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, run setup again and it carries on from where it stopped.
+Setup checks your disc and extracts the game files. It then downloads everything the build needs (Zig, Python and Capstone, plus the ANGLE and Dear ImGui libraries, each checked against a pinned hash), and only then translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, run setup again and it carries on from where it stopped.
 
 Saves go to `%LOCALAPPDATA%\Otogi`.
 
