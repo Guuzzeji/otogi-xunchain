@@ -9,6 +9,8 @@ extern var g_icall_trace_idx: u32;
 extern var g_icall_count: u64;
 
 extern threadlocal var g_eax: u32;
+extern threadlocal var g_ecx: u32;
+extern threadlocal var g_edx: u32;
 extern threadlocal var g_esp: u32;
 extern var g_xbox_mem_offset: isize;
 
@@ -48,6 +50,24 @@ export fn sub_000FA2A0() void {
     mem32(dev + 0x30).* = dev + 0x2C;
     g_eax = mem32(dev + 0x2C).*;
     g_esp += 12; // ret 8
+}
+
+/// D3D pushbuffer kick (ecx = device). The original sets the PFB flush bit and
+/// spins until the GPU clears it, then writes PUT. Here the nv2a-ack thread
+/// clears it once per millisecond, and the ring fills several times a frame:
+/// 17% of the guest thread in a 2,400-draw scene. Nothing executes the
+/// pushbuffer, so write PUT and return, leaving the registers as the original
+/// does. The recording (0x2000) and wait-for-idle paths keep the original body.
+extern fn sub_000FA0C0_gen() void;
+export fn sub_000FA0C0() void {
+    const dev = g_ecx;
+    const flags = mem32(dev + 8).*;
+    if (flags & 0x2000 != 0 or mem32(0x104D20).* != 0) return sub_000FA0C0_gen();
+    g_edx = mem32(if (flags & 4 != 0) dev + 0x358 else dev).* & 0x0FFFFFFF;
+    g_ecx = mem32(dev + 0x1800).*;
+    mem32(g_ecx + 0x40).* = g_edx;
+    g_eax = 0;
+    g_esp += 4; // ret
 }
 
 /// RECOMP_ICALL could not resolve a target.
