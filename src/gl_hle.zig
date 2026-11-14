@@ -1132,6 +1132,9 @@ fn glWrap(v: u32) gl.GLint {
 
 fn applyStages(k: *Key) void {
     const tss = d3d.tss;
+    const S = struct {
+        var set: [4][7]u32 = @splat(@splat(0xFFFFFFFF));
+    };
     for (0..4) |st| {
         const s: u32 = @intCast(st);
         var cube = false;
@@ -1140,23 +1143,32 @@ fn applyStages(k: *Key) void {
             break :blk 0;
         };
         k.tex[st] = if (t == 0) 0 else if (cube) 2 else 1;
-        gl.glActiveTexture(@as(gl.GLenum, gl.GL_TEXTURE0) + s);
-        gl.glBindTexture(if (cube) gl.GL_TEXTURE_CUBE_MAP else gl.GL_TEXTURE_2D, t);
-        const smp = samplers[st];
-        gl.glBindSampler(s, smp);
-        gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_S, glWrap(tss(s, .addressu)));
-        gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_T, glWrap(tss(s, .addressv)));
-        gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_R, glWrap(tss(s, .addressw)));
-        const mag = tss(s, .magfilter);
-        const min = tss(s, .minfilter);
-        const mip = tss(s, .mipfilter);
-        gl.glSamplerParameteri(smp, gl.GL_TEXTURE_MAG_FILTER, if (mag == 1) gl.GL_NEAREST else gl.GL_LINEAR);
-        gl.glSamplerParameteri(smp, gl.GL_TEXTURE_MIN_FILTER, switch (mip) {
-            0 => if (min == 1) gl.GL_NEAREST else gl.GL_LINEAR,
-            1 => if (min == 1) gl.GL_NEAREST_MIPMAP_NEAREST else gl.GL_LINEAR_MIPMAP_NEAREST,
-            else => if (min == 1) gl.GL_NEAREST_MIPMAP_LINEAR else gl.GL_LINEAR_MIPMAP_LINEAR,
-        });
-        gl.glSamplerParameterf(smp, gl.GL_TEXTURE_MIN_LOD, @floatFromInt(tss(s, .maxmiplevel)));
+        // A stage with no texture is not sampled (genFs): its unit and sampler stay as they are.
+        if (t != 0) {
+            gl.glActiveTexture(@as(gl.GLenum, gl.GL_TEXTURE0) + s);
+            gl.glBindTexture(if (cube) gl.GL_TEXTURE_CUBE_MAP else gl.GL_TEXTURE_2D, t);
+            const smp = samplers[st];
+            gl.glBindSampler(s, smp);
+            const mag = tss(s, .magfilter);
+            const min = tss(s, .minfilter);
+            const mip = tss(s, .mipfilter);
+            // Only this writes the samplers, so values equal to the last ones set are skipped:
+            // most draws change none, and a changed sampler costs again at the draw.
+            const sv = [7]u32{ tss(s, .addressu), tss(s, .addressv), tss(s, .addressw), mag, min, mip, tss(s, .maxmiplevel) };
+            if (!std.mem.eql(u32, &sv, &S.set[st])) {
+                S.set[st] = sv;
+                gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_S, glWrap(sv[0]));
+                gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_T, glWrap(sv[1]));
+                gl.glSamplerParameteri(smp, gl.GL_TEXTURE_WRAP_R, glWrap(sv[2]));
+                gl.glSamplerParameteri(smp, gl.GL_TEXTURE_MAG_FILTER, if (mag == 1) gl.GL_NEAREST else gl.GL_LINEAR);
+                gl.glSamplerParameteri(smp, gl.GL_TEXTURE_MIN_FILTER, switch (mip) {
+                    0 => if (min == 1) gl.GL_NEAREST else gl.GL_LINEAR,
+                    1 => if (min == 1) gl.GL_NEAREST_MIPMAP_NEAREST else gl.GL_LINEAR_MIPMAP_NEAREST,
+                    else => if (min == 1) gl.GL_NEAREST_MIPMAP_LINEAR else gl.GL_LINEAR_MIPMAP_LINEAR,
+                });
+                gl.glSamplerParameterf(smp, gl.GL_TEXTURE_MIN_LOD, @floatFromInt(sv[6]));
+            }
+        }
         k.colorop[st] = @truncate(tss(s, .colorop));
         k.alphaop[st] = @truncate(tss(s, .alphaop));
         k.colorarg[st] = .{ @truncate(tss(s, .colorarg0)), @truncate(tss(s, .colorarg1)), @truncate(tss(s, .colorarg2)) };
