@@ -1357,11 +1357,61 @@ fn vsVertices(h: *HostVs, base: u32, lo: u32, hi: u32, up: ?[*]const u8, up_stri
         const o = out + (v - lo) * ns;
         for (0..ns) |s| o[s] = .{ 0, 0, 0, 1 };
         for (in[0..n]) |e| {
-            const src: [*]const u8, const sstride = if (e.stream == 0 and up != null) .{ up.?, up_stride } else if (stream_host[e.stream]) |hp| .{ hp, stream_stride[e.stream] } else if (stream_vb[e.stream] != 0) .{ d3d.ptr(d3d.resData(stream_vb[e.stream])), stream_stride[e.stream] } else continue;
+            const src: [*]const u8, const sstride = streamSrc(e.stream, up, up_stride) orelse continue;
             d3d.vsdtRead(e.type, src + (base + v) * sstride + e.offset, &o[slot[e.reg]]);
         }
     }
     return stride;
+}
+
+/// Where a stream's vertex 0 is, and its stride.
+fn streamSrc(stream: u32, up: ?[*]const u8, up_stride: u32) ?struct { [*]const u8, u32 } {
+    return if (stream == 0 and up != null) .{ up.?, up_stride } else if (stream_host[stream]) |hp| .{ hp, stream_stride[stream] } else if (stream_vb[stream] != 0) .{ d3d.ptr(d3d.resData(stream_vb[stream])), stream_stride[stream] } else null;
+}
+
+// ── Mesh cache ──────────────────────────────────────────────────────────────
+// Most draws repeat a mesh the title has not touched since the frame before
+// (models are skinned and placed by their vertex programs). Converting and
+// uploading it each time, and ANGLE then streaming it into its own buffers, was
+// most of a draw's cost. A program draw is named by a hash of everything its
+// buffers depend on, the source vertices and indices included; drawn a second
+// time with the same hash, it gets buffers of its own and draws from them from
+// then on. Vertices the title rewrites every frame never repeat and keep the
+// streamed path.
+// ponytail: fixed-function (FVF) draws are not cached; they are the 2D layer,
+// few and edited per draw (extend2d). Cache them if a title draws its world so.
+
+const Mesh = struct { vao: gl.GLuint = 0, bufs: [2]gl.GLuint = .{ 0, 0 }, mode: gl.GLenum = gl.GL_TRIANGLES, count: gl.GLsizei = 0, indexed: bool = false, used: u32 };
+var meshes: std.AutoHashMapUnmanaged(u64, Mesh) = .empty;
+
+fn meshKey(h: *const HostVs, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, lo: u32, hi: u32, up: ?[*]const u8, up_stride: u32) u64 {
+    var in: [16]d3d.VsInput = undefined;
+    const ni = d3d.vsInputs(&h.decl, &in);
+    var hs = std.hash.Wyhash.init(h.inputs);
+    hs.update(std.mem.asBytes(&[_]u32{ xprim, n, lo, hi, @intFromBool(idx != null) }));
+    hs.update(std.mem.sliceAsBytes(in[0..ni]));
+    var seen: u16 = 0;
+    for (in[0..ni]) |e| {
+        if (seen & (@as(u16, 1) << @intCast(e.stream)) != 0) continue;
+        seen |= @as(u16, 1) << @intCast(e.stream);
+        const src, const stride = streamSrc(e.stream, up, up_stride) orelse continue;
+        hs.update(std.mem.asBytes(&stride));
+        hs.update(src[(base + lo) * stride .. (base + hi + 1) * stride]);
+    }
+    if (idx) |ix| hs.update(@as([*]const u8, @ptrCast(ix))[0 .. n * 2]);
+    return hs.final();
+}
+
+/// Meshes not drawn for 256 frames go, every 256 frames.
+fn meshSweep() void {
+    var it = meshes.iterator();
+    while (it.next()) |e| if (frame -% e.value_ptr.used > 256) {
+        if (e.value_ptr.vao != 0) {
+            gl.glDeleteVertexArrays(1, &e.value_ptr.vao);
+            gl.glDeleteBuffers(2, &e.value_ptr.bufs);
+        }
+        meshes.removeByPtr(e.key_ptr);
+    };
 }
 
 /// GL viewport for the guest viewport. On the wide back buffer it stretches
@@ -1555,10 +1605,31 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         }
     }
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    var mesh: ?*Mesh = null; // this draw's buffers are kept in it (mesh cache)
+    defer if (mesh != null) gl.glBindVertexArray(vao);
     if (p.key.vs != 0) {
+        const h = &programs.items[p.key.vs - 1];
+        const got = meshes.getOrPut(alloc, meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride)) catch return;
+        if (!got.found_existing) {
+            got.value_ptr.* = .{ .used = frame };
+        } else {
+            const m = got.value_ptr;
+            m.used = frame;
+            mesh = m;
+            if (m.vao != 0) {
+                gl.glBindVertexArray(m.vao);
+                if (m.count == 0) return;
+                if (m.indexed) gl.glDrawElements(m.mode, m.count, gl.GL_UNSIGNED_SHORT, null) else gl.glDrawArrays(m.mode, 0, m.count);
+                return;
+            }
+            gl.glGenVertexArrays(1, &m.vao);
+            gl.glGenBuffers(2, &m.bufs);
+            gl.glBindVertexArray(m.vao);
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, m.bufs[0]);
+        }
         var regs: u16 = 0;
-        const stride = vsVertices(&programs.items[p.key.vs - 1], base, lo, hi, up, up_stride, &regs);
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(vs_buf.items.len), vs_buf.items.ptr, gl.GL_STREAM_DRAW);
+        const stride = vsVertices(h, base, lo, hi, up, up_stride, &regs);
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(vs_buf.items.len), vs_buf.items.ptr, if (mesh != null) gl.GL_STATIC_DRAW else gl.GL_STREAM_DRAW);
         var slot: u32 = 0;
         for (0..16) |r| {
             if (regs & (@as(u16, 1) << @intCast(r)) != 0) {
@@ -1627,11 +1698,13 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     }
     if (xprim == 8 or idx != null) {
         if (idx_buf.items.len == 0) return;
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ibo);
-        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(idx_buf.items.len * 2), idx_buf.items.ptr, gl.GL_STREAM_DRAW);
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, if (mesh) |m| m.bufs[1] else ibo);
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(idx_buf.items.len * 2), idx_buf.items.ptr, if (mesh != null) gl.GL_STATIC_DRAW else gl.GL_STREAM_DRAW);
         gl.glDrawElements(mode, @intCast(idx_buf.items.len), gl.GL_UNSIGNED_SHORT, null);
+        if (mesh) |m| m.* = .{ .vao = m.vao, .bufs = m.bufs, .mode = mode, .count = @intCast(idx_buf.items.len), .indexed = true, .used = frame };
     } else {
         gl.glDrawArrays(mode, 0, @intCast(n));
+        if (mesh) |m| m.* = .{ .vao = m.vao, .bufs = m.bufs, .mode = mode, .count = @intCast(n), .used = frame };
     }
 }
 
@@ -1908,21 +1981,35 @@ fn present() void {
         drawlog_frame = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
     };
     if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
-    // RECOMP_FPS=1: game frames and shown frames per second, every 5 s.
-    if (frame % 64 == 0 and std.c.getenv("RECOMP_FPS") != null) {
-        const s = struct {
-            var t0: f64 = 0;
-            var f0: u32 = 0;
-            var s0: u32 = 0;
-        };
+    // RECOMP_FPS=1: game frames and shown frames per second, guest work per
+    // frame and draws per frame, every 5 s.
+    const fps = struct {
+        var on: ?bool = null;
+        var t0: f64 = 0;
+        var f0: u32 = 0;
+        var s0: u32 = 0;
+        var work: f64 = 0;
+        var work_max: f32 = 0;
+        var draws: u64 = 0;
+    };
+    if (fps.on == null) fps.on = std.c.getenv("RECOMP_FPS") != null;
+    if (fps.on.?) {
+        fps.work += stats.work_ms;
+        fps.work_max = @max(fps.work_max, stats.work_ms);
+        fps.draws += stats.draws;
         const now = nowMs();
-        if (now - s.t0 >= 5000) {
-            if (s.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown\n", .{ @as(f64, @floatFromInt(frame - s.f0)) * 1000 / (now - s.t0), @as(f64, @floatFromInt(shown - s.s0)) * 1000 / (now - s.t0) });
-            s.t0 = now;
-            s.f0 = frame;
-            s.s0 = shown;
+        if (frame % 64 == 0 and now - fps.t0 >= 5000) {
+            const n: f64 = @floatFromInt(frame - fps.f0);
+            if (fps.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown, guest {d:.1} ms avg {d:.1} max, {d} draws\n", .{ n * 1000 / (now - fps.t0), @as(f64, @floatFromInt(shown - fps.s0)) * 1000 / (now - fps.t0), fps.work / n, fps.work_max, fps.draws / @as(u64, @intFromFloat(n)) });
+            fps.t0 = now;
+            fps.f0 = frame;
+            fps.s0 = shown;
+            fps.work = 0;
+            fps.work_max = 0;
+            fps.draws = 0;
         }
     }
+    if (frame % 256 == 0) meshSweep();
     blitWindow(fbo);
     if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
     swapWindow();
