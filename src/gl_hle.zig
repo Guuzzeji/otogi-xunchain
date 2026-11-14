@@ -1029,7 +1029,18 @@ fn compile(kind: gl.GLenum, src: []const u8) gl.GLuint {
 var src_buf: [256 * 1024]u8 = undefined;
 
 fn progGet(k: *const Key) ?*Prog {
-    for (progs.items) |*p| if (std.mem.eql(u8, std.mem.asBytes(&p.key), std.mem.asBytes(k))) return if (p.prog != 0) p else null;
+    // Most draws use the program of the draw before.
+    const S = struct {
+        var last: usize = 0;
+    };
+    for (0..progs.items.len + 1) |n| {
+        const i = if (n == 0) S.last else n - 1;
+        if (i >= progs.items.len) continue;
+        const p = &progs.items[i];
+        if (!std.mem.eql(u8, std.mem.asBytes(&p.key), std.mem.asBytes(k))) continue;
+        S.last = i;
+        return if (p.prog != 0) p else null;
+    }
     const p = progs.addOne(alloc) catch return null;
     p.* = .{ .key = k.*, .prog = 0 };
     var w: std.Io.Writer = .fixed(&src_buf);
