@@ -43,7 +43,7 @@ pub fn resData(res: u32) u32 {
 /// memory (TEXTURE_STATE + 0x200 == RENDER_STATE). While a recorded pushbuffer
 /// replays, reads come from its snapshot of the block instead.
 pub const STATE_WORDS = 128 + 160;
-pub var state_snap: ?*const [STATE_WORDS]u32 = null;
+pub threadlocal var state_snap: ?*const [STATE_WORDS]u32 = null;
 comptime {
     std.debug.assert(RENDER_STATE == TEXTURE_STATE + 0x200);
     for (std.enums.values(Rs)) |v| std.debug.assert(@intFromEnum(v) < STATE_WORDS - 128);

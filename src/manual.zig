@@ -133,7 +133,7 @@ export fn sub_000E983E() void {
     if (@abs(aspect.* - 4.0 / 3.0) < 0.01 and mem32(g_esp).* != 0xD09BF) {
         const gl_hle = @import("gl_hle.zig");
         aspect.* *= gl_hle.wide();
-        gl_hle.wide_frame = gl_hle.frame;
+        gl_hle.wide_frame = gl_hle.gframe;
     }
     sub_000E983E_gen();
 }

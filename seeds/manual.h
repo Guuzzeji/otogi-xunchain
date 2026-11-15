@@ -41,6 +41,7 @@ void sub_000F9190(void) {}           /* D3DDevice_DrawIndexedVertices: replaced 
 void sub_000F8F80(void) {}           /* D3DDevice_DrawVerticesUP: replaced */
 extern void sub_000F7CF0_gen(void);  /* D3DDevice_SetRenderTarget */
 extern void sub_000F7FC0_gen(void);  /* D3DDevice_CopyRects */
+extern void sub_000FE580_gen(void);  /* Lock2DSurface */
 extern void sub_000F9570_gen(void);  /* D3DDevice_CreatePixelShader */
 extern void sub_000FA990_gen(void);  /* D3DDevice_BeginPushBuffer */
 extern void sub_000FAA00_gen(void);  /* D3DDevice_EndPushBuffer */

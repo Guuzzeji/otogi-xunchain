@@ -11,6 +11,11 @@ the Release workflow moves "Unreleased" into a new version section.
 - Busy scenes cost about half the CPU time they did: the second stage's 2,600-draw
   opening went from about 30 ms of work a frame to about 16 on the development PC.
   Slower laptops that dropped below 30 fps there should hold up better (issue #2).
+- Drawing runs on its own thread, beside the game's. With frame interpolation on, busy
+  scenes that fell short of 120 shown frames a second (the second stage's opening)
+  now hold it, and the game's own work a frame dropped to a few milliseconds.
+- The full-screen effects (glow, heat haze, menu tint) are copied on the graphics card
+  at the render resolution instead of being read back at 640x480: sharper, and faster.
 
 ### Fixed
 - Setup downloads everything it needs (the ANGLE and Dear ImGui libraries too) before

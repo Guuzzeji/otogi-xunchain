@@ -69,7 +69,8 @@
   - Text and several effects use pixel shaders (register combiners); `CreatePixelShader` keeps each
     `D3DPIXELSHADERDEF`, translated to GLSL after the toolkit's `nv2a_combiner.c`.
   - Every menu frame `CopyRects` copies the back buffer into a 640x480 linear ARGB texture (a desaturate/tint post
-    effect draws it back). The back buffer is GPU-only, so CopyRects reads it back into guest memory.
+    effect draws it back). The back buffer is GPU-only: the copy is a GPU blit into a host target the texture then samples,
+    read back into guest memory only when the game locks the surface (see Render thread under Draw cost).
   - `SetViewport` passes 0x7FFFFFFF for "the whole target"; clamped to 640x480 as D3D does.
   - Swap is held to 60 Hz: nothing else paces it, and the title otherwise runs ~1000 fps.
   - A8 textures read RGB as 1 (as xemu); `G8B8` maps as xemu does.
@@ -144,9 +145,9 @@
   from a back buffer copy counts as one (`addCopy`), so the blur stretches across instead of extending its edge.
 - Frame interpolation (`RECOMP_FRAMERATE`, default the monitor's refresh rate, rounded down to a multiple of 30; 30 is off):
   the logic still steps once per 30 Hz frame. Each frame's draws and clears are recorded (state block, textures,
-  shaders, vertex/index copies, vertex shader constants, transforms); Swap then draws the frame again at in-between
+  shaders, vertex/index copies, vertex shader constants, transforms); the render thread draws the frame again at in-between
   times inside its slot with constants and transforms blended from the previous frame's matching draw (same
-  shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency).
+  shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency, and one for the hand-over).
   CPU-written vertices (particles, 2D) do not blend. `RECOMP_FPS=1` prints game and shown frames per second.
   Tested: 30 game / 60 and 120 shown in stage 1.
 - The game reads `game\`, `settings.ini` and `logs\` from the working directory; when that has no
@@ -235,6 +236,24 @@
   it makes a bad guest state value undefined behaviour).
 - What is left: about 5 in ANGLE's draw call itself (2 us a draw), 3 in the rest of `draw`, the rest guest
   code. Fewer draws would need batching.
+- Render thread: the game thread calls no GL. `draw`, Clear and whole-surface CopyRects are recorded into a
+  frame (what interpolation recorded already, plus the bytes of textures whose hash changed and new render
+  targets); Swap hands it over and waits until the render thread has shown the frame before, which is the 30 Hz
+  pacing. The render thread draws the in-between passes and the frame itself in its slot. Three frames go round:
+  one being built, the one being drawn and the one before it to blend from.
+  - Shaders are kept by content, handle -> table index looked up when the draw is recorded, so a handle reused
+    for another shader (heap reclaim) does not change draws already recorded. Tables are fixed-size (1024) so the
+    render thread can read them while the game thread appends.
+  - Read-backs: a CopyRects into part of a surface, or the game locking (`Lock2DSurface`, hooked) a surface a
+    whole-surface copy left on the GPU, waits while the render thread draws what the game's frame has recorded
+    so far on top of the frame before, and reads the pixels (`serveSync`). The post effects' two full-screen
+    copies a frame did this at first: 18 of the game thread's 23 ms. They are GPU blits now (and filtered, at
+    the render scale, where the read-back sampled nearest down to 640x480).
+  - m001's opening at 2,300-2,500 draws, 120 Hz, scale 2: game thread 3.5 ms a frame (1.4 recording), render
+    thread 17-18 ms over the four passes, 119.8-120 shown (single thread: 110-113).
+  - Costs: one more game frame of latency (the hand-over). The debug menu and cheats run on the render thread
+    and write guest memory from there.
+  - Not tested: the game-over still (the Lock path); the pause menu, which blurs through render targets, is.
 
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the

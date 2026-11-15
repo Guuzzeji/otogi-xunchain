@@ -1,6 +1,6 @@
 //! In-game debug menu (F1): render health, pause and frame step, a memory
 //! poke and cheats. Dear ImGui drawn over the window after each blit, on the
-//! guest thread (the only GL thread). Closed, it costs nothing.
+//! render thread (the only GL thread). Closed, it costs nothing.
 const std = @import("std");
 const im = @import("imgui");
 const gl_hle = @import("gl_hle.zig");
@@ -57,15 +57,15 @@ pub fn holdFrame() bool {
 
 const nowMs = gl_hle.nowMs;
 
-/// CPU time (kernel + user, 100 ns units) of the process and of this thread,
-/// which is the game's: it runs the lifted code and every draw.
+/// CPU time (kernel + user, 100 ns units) of the process and of the game's
+/// thread, which runs the lifted code and records every draw.
 fn cpuTimes() [2]u64 {
     var c: u64 = 0;
     var e: u64 = 0;
     var k: [2]u64 = .{ 0, 0 };
     var u: [2]u64 = .{ 0, 0 };
     _ = GetProcessTimes(GetCurrentProcess(), &c, &e, &k[0], &u[0]);
-    _ = GetThreadTimes(GetCurrentThread(), &c, &e, &k[1], &u[1]);
+    _ = GetThreadTimes(gl_hle.game_thread orelse GetCurrentThread(), &c, &e, &k[1], &u[1]);
     return .{ k[0] + u[0], k[1] + u[1] };
 }
 var cpu0: [2]u64 = .{ 0, 0 };
@@ -171,7 +171,7 @@ fn renderTab() void {
     text("scale {s}, widescreen {s}, framerate {s}, vsync {s}", .{ env("RECOMP_SCALE"), env("RECOMP_WIDESCREEN"), env("RECOMP_FRAMERATE"), env("RECOMP_VSYNC") });
     im.ImGui_SeparatorText("Frame rate");
     text("game {d:.1} fps (target 30), shown {d:.1} fps, frame {d}", .{ game_fps, shown_fps, gl_hle.frame });
-    // Guest ms is the game's code plus draw(); the second graph is draw() alone.
+    // Guest ms is the game's code plus draw(), which records; the second graph is draw() alone.
     for ([_]struct { [:0]const u8, *const [120]f32 }{ .{ "guest ms", &work_hist }, .{ "of it in draw", &draw_hist } }) |g| {
         var max: f32 = 0;
         var sum: f32 = 0;
@@ -198,7 +198,8 @@ fn renderTab() void {
     const l = gl_hle.last;
     text("draws {d} ({d} from the mesh cache, {d} new, {d} merged into another)", .{ l.draws, l.mesh_hits, l.mesh_new, l.merged });
     text("clears {d}, CopyRects {d}, texture uploads {d}", .{ l.clears, l.copies, l.uploads });
-    text("game code {d:.1} ms, draw {d:.1} ms; objects queued to draw {d} + {d}", .{ l.work_ms - l.draw_ms, l.draw_ms, l.queued[0], l.queued[1] });
+    text("game code {d:.1} ms, recording draws {d:.1} ms, waiting on read-backs {d:.1} ms", .{ l.work_ms - l.draw_ms - l.sync_ms, l.draw_ms, l.sync_ms });
+    text("render thread {d:.1} ms over all passes; objects queued to draw {d} + {d}", .{ l.render_ms, l.queued[0], l.queued[1] });
     if (im.ImGui_TreeNode("Frustum tests by call site")) {
         for (cull_last) |s| if (s.tested != 0) text("{X:0>6}: {d} tested, {d} visible", .{ s.from, s.tested, s.visible });
         im.ImGui_TreePop();
