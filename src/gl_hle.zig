@@ -581,6 +581,10 @@ const Prog = struct {
     u_psf: gl.GLint = -1,
     u_bump: gl.GLint = -1,
     u_flow: gl.GLint = -1,
+    // The uniform values last set, in uploadUniforms' order: ANGLE uploads a
+    // program's whole constant buffer at the next draw after any glUniform call.
+    shadow: ?*[1024]f32 = null,
+    fresh: bool = true, // shadow is not what the program holds
 };
 var progs: std.ArrayList(Prog) = .empty;
 
@@ -1048,7 +1052,7 @@ fn progGet(k: *const Key) ?*Prog {
         return if (p.prog != 0) p else null;
     }
     const p = progs.addOne(alloc) catch return null;
-    p.* = .{ .key = k.*, .prog = 0 };
+    p.* = .{ .key = k.*, .prog = 0, .shadow = alloc.create([1024]f32) catch null };
     var w: std.Io.Writer = .fixed(&src_buf);
     genVs(k, &w) catch return null;
     if (std.c.getenv("RECOMP_GL_DUMP") != null and k.vs != 0) std.debug.print("[GL] program {d}, vertex shader {X}:\n{s}\n", .{ progs.items.len, programs.items[k.vs - 1].handle, w.buffered() });
@@ -1112,9 +1116,9 @@ fn mistDepth() bool {
 
 fn applyRenderState() void {
     const rs = d3d.rs;
+    setCap(gl.GL_DEPTH_TEST, rs(.zenable) != 0 or mistDepth());
     const cull = rs(.cullmode);
     const cw = rs(.colorwriteenable);
-    setCap(gl.GL_DEPTH_TEST, rs(.zenable) != 0 or mistDepth());
     gl.glDepthFunc(glFunc(rs(.zfunc)));
     gl.glDepthMask(@intFromBool(rs(.zwriteenable) != 0));
     setCap(gl.GL_BLEND, rs(.alphablendenable) != 0);
@@ -1224,7 +1228,7 @@ fn keyVertex(k: *Key) void {
 /// Texture coordinate scale (linear textures address in texels) and offset.
 /// A back buffer copy holds the whole wide back buffer; a draw kept in the 4:3
 /// middle (the title logo's refraction) samples it at its 4:3 screen position.
-fn uploadTscale(p: *const Prog) void {
+fn uploadTscale(p: *Prog, shadowed: bool) void {
     if (p.u_tscale < 0) return;
     var v: [4][4]f32 = undefined;
     for (0..4) |i| {
@@ -1235,33 +1239,67 @@ fn uploadTscale(p: *const Prog) void {
             v[i][2] = @as(f32, @floatFromInt((bbw() - 640) / 2)) / bw;
         }
     }
-    gl.glUniform4fv(p.u_tscale, 4, @ptrCast(&v));
+    if (!shadowed or uniNew(p, @as(*const [16]f32, @ptrCast(&v)))) gl.glUniform4fv(p.u_tscale, 4, @ptrCast(&v));
+    if (!shadowed) p.fresh = true;
 }
 
-fn uploadUniforms(p: *const Prog) void {
+/// True if `v`, the next uniform in uploadUniforms' order, differs from what
+/// the program holds; the shadow then takes it.
+fn uniNew(p: *Prog, v: []const f32) bool {
+    const s = p.shadow orelse return true;
+    const old = s[uni_at..][0..v.len];
+    uni_at += v.len;
+    if (!p.fresh and std.mem.eql(u8, std.mem.sliceAsBytes(old), std.mem.sliceAsBytes(v))) return false;
+    @memcpy(old, v);
+    return true;
+}
+var uni_at: usize = 0;
+
+fn uploadUniforms(p: *Prog) void {
     const rs = d3d.rs;
-    if (p.u_wv >= 0) gl.glUniformMatrix4fv(p.u_wv, 1, gl.GL_FALSE, &matMul(xf[6], xf[0])); // world0 * view
+    uni_at = 0;
+    defer p.fresh = false;
+    if (p.u_wv >= 0) {
+        const m = matMul(xf[6], xf[0]); // world0 * view
+        if (uniNew(p, &m)) gl.glUniformMatrix4fv(p.u_wv, 1, gl.GL_FALSE, &m);
+    }
     if (p.u_proj >= 0) {
         // A quad exactly on the far plane with ZFUNC LESS against depth cleared to
         // 1.0 survives the NV2A's integer depth; scale z a hair under 1 for float depth.
         var pr = xf[1];
         const kz: f32 = 1.0 - 1.0 / 4194304.0;
         for ([_]usize{ 2, 6, 10, 14 }) |i| pr[i] *= kz;
-        gl.glUniformMatrix4fv(p.u_proj, 1, gl.GL_FALSE, &pr);
+        if (uniNew(p, &pr)) gl.glUniformMatrix4fv(p.u_proj, 1, gl.GL_FALSE, &pr);
     }
-    if (p.u_texm >= 0) gl.glUniformMatrix4fv(p.u_texm, 4, gl.GL_FALSE, @ptrCast(&xf[2]));
-    if (p.u_rhw >= 0) gl.glUniform4f(p.u_rhw, @floatFromInt(vp.x), @floatFromInt(vp.y), @floatFromInt(@max(vp.w, 1)), @floatFromInt(@max(vp.h, 1)));
-    if (p.u_fog >= 0) gl.glUniform4f(p.u_fog, @floatFromInt(rs(.fogtablemode)), @bitCast(rs(.fogstart)), @bitCast(rs(.fogend)), @bitCast(rs(.fogdensity)));
-    if (p.u_fogcolor >= 0) gl.glUniform4fv(p.u_fogcolor, 1, &argbVec(rs(.fogcolor)));
+    if (p.u_texm >= 0 and uniNew(p, @as(*const [64]f32, @ptrCast(&xf[2])))) gl.glUniformMatrix4fv(p.u_texm, 4, gl.GL_FALSE, @ptrCast(&xf[2]));
+    if (p.u_rhw >= 0) {
+        const v = [4]f32{ @floatFromInt(vp.x), @floatFromInt(vp.y), @floatFromInt(@max(vp.w, 1)), @floatFromInt(@max(vp.h, 1)) };
+        if (uniNew(p, &v)) gl.glUniform4fv(p.u_rhw, 1, &v);
+    }
+    if (p.u_fog >= 0) {
+        const v = [4]f32{ @floatFromInt(rs(.fogtablemode)), @bitCast(rs(.fogstart)), @bitCast(rs(.fogend)), @bitCast(rs(.fogdensity)) };
+        if (uniNew(p, &v)) gl.glUniform4fv(p.u_fog, 1, &v);
+    }
+    if (p.u_fogcolor >= 0) {
+        const v = argbVec(rs(.fogcolor));
+        if (uniNew(p, &v)) gl.glUniform4fv(p.u_fogcolor, 1, &v);
+    }
     if (p.u_flow >= 0) {
         // The waterfall's flow (genFs): game frames at 30 a second, 0.35 texture lengths a second,
         // wrapped here in f64 so the phase never jumps (the game's own scroll wraps at 1).
         const t = @as(f64, @floatFromInt(frame)) / 30.0 * 0.35;
-        gl.glUniform2f(p.u_flow, @floatCast(@mod(t, 1.0)), @floatCast(@mod(t * 0.73, 1.0)));
+        const v = [2]f32{ @floatCast(@mod(t, 1.0)), @floatCast(@mod(t * 0.73, 1.0)) };
+        if (uniNew(p, &v)) gl.glUniform2fv(p.u_flow, 1, &v);
     }
-    if (p.u_tf >= 0) gl.glUniform4fv(p.u_tf, 1, &argbVec(rs(.texturefactor)));
-    if (p.u_aref >= 0) gl.glUniform1f(p.u_aref, @floatFromInt(rs(.alpharef) & 0xFF));
-    uploadTscale(p);
+    if (p.u_tf >= 0) {
+        const v = argbVec(rs(.texturefactor));
+        if (uniNew(p, &v)) gl.glUniform4fv(p.u_tf, 1, &v);
+    }
+    if (p.u_aref >= 0) {
+        const v = [1]f32{@floatFromInt(rs(.alpharef) & 0xFF)};
+        if (uniNew(p, &v)) gl.glUniform1f(p.u_aref, v[0]);
+    }
+    uploadTscale(p, true);
     if (p.u_c >= 0) {
         // c[58]/c[59] identity: the translated program undoes D3D's divide.
         vsc[58] = .{ 1, 1, 1, 1 };
@@ -1270,7 +1308,7 @@ fn uploadUniforms(p: *const Prog) void {
         const c158 = vsc[158][0];
         if (fog_scale != 1 and std.math.isFinite(c158)) vsc[158][0] = c158 / fog_scale;
         defer vsc[158][0] = c158;
-        gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
+        if (uniNew(p, @as(*const [192 * 4]f32, @ptrCast(&vsc)))) gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
     }
     if (p.key.ps != 0) {
         const def = &pixel_shaders.items[p.key.ps - 1].def;
@@ -1279,16 +1317,16 @@ fn uploadUniforms(p: *const Prog) void {
             c[i] = argbVec(def[PsDef.constant0 + i]);
             c[8 + i] = argbVec(def[PsDef.constant1 + i]);
         }
-        if (p.u_psc >= 0) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
+        if (p.u_psc >= 0 and uniNew(p, @as(*const [64]f32, @ptrCast(&c)))) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
         const f = [2][4]f32{ argbVec(def[PsDef.final_c0]), argbVec(def[PsDef.final_c1]) };
-        if (p.u_psf >= 0) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
+        if (p.u_psf >= 0 and uniNew(p, @as(*const [8]f32, @ptrCast(&f)))) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
         if (p.u_bump >= 0) {
             var m: [4][4]f32 = undefined;
             for (0..4) |i| {
                 const s: u32 = @intCast(i);
                 m[i] = .{ @bitCast(d3d.tss(s, .bumpenvmat00)), @bitCast(d3d.tss(s, .bumpenvmat01)), @bitCast(d3d.tss(s, .bumpenvmat10)), @bitCast(d3d.tss(s, .bumpenvmat11)) };
             }
-            gl.glUniform4fv(p.u_bump, 4, @ptrCast(&m));
+            if (uniNew(p, @as(*const [16]f32, @ptrCast(&m)))) gl.glUniform4fv(p.u_bump, 4, @ptrCast(&m));
         }
     }
 }
@@ -1453,23 +1491,39 @@ fn idxSpan(ix: [*]align(1) const u16, n: u32) [2]u32 {
 }
 
 /// This draw joins the waiting one: same state, and a mesh the cache holds.
+/// With frame interpolation its record says part of that already (fr_d, fr_same).
 fn batchAdd(xprim: u32, n: u32, ix: [*]align(1) const u16, base: u32) bool {
     const b = &batch;
     if (b.n == b.keys.len) return false;
-    const S = struct {
-        var sig: Sig = undefined;
+    const eq = struct {
+        fn eq(x: anytype, y: anytype) bool {
+            return std.mem.eql(u8, std.mem.sliceAsBytes(x), std.mem.sliceAsBytes(y));
+        }
+    }.eq;
+    if (!fr_same and !(eq(&vsc, &b.sig.vsc) and eq(&xf, &b.sig.xf))) return false;
+    const st: *align(1) const [d3d.STATE_WORDS]u32 = if (d3d.state_snap) |s| s else @ptrCast(d3d.ptr(d3d.TEXTURE_STATE));
+    const ci = 128 + @intFromEnum(d3d.Rs.cullmode);
+    const cull = st[ci];
+    // A replayed draw that joined the draw before it the first time is in its state still.
+    if (!(fr_replaying and fr_d.?.joined)) {
+        const s = &b.sig;
+        if ((if (cull == 0x901) 0x900 else cull) != s.state[ci] or !eq(st[0..ci], s.state[0..ci]) or !eq(st[ci + 1 ..], s.state[ci + 1 ..])) return false;
+        if (!eq(&stage_tex, &s.tex) or vshader != s.vs or pshader != s.ps or !std.meta.eql(vp, s.vp) or !std.meta.eql(tgtNow(), s.tgt)) return false;
+    }
+    const key = if (fr_replaying and fr_d.?.mesh != 0) fr_d.?.mesh else blk: {
+        const lo, const hi = idxSpan(ix, n);
+        break :blk meshKey(b.h, xprim, n, ix, base, lo, hi, null, 0);
     };
-    var cull: u32 = 0;
-    sigNow(&S.sig, &cull);
-    if (!std.mem.eql(u8, std.mem.asBytes(&S.sig), std.mem.asBytes(&b.sig))) return false;
-    const lo, const hi = idxSpan(ix, n);
-    const key = meshKey(b.h, xprim, n, ix, base, lo, hi, null, 0);
     const m = meshes.getPtr(key) orelse return false;
     if (m.tris.len == 0 or b.verts + m.verts.len / m.stride > 0xFFFF) return false;
     m.used = frame;
     if (!fr_replaying) {
         stats.mesh_hits += 1;
         stats.merged += 1;
+        if (fr_d) |d| {
+            d.mesh = key;
+            d.joined = true;
+        }
     }
     b.keys[b.n] = key;
     b.flip[b.n] = cull != b.cull;
@@ -1484,7 +1538,6 @@ fn flushBatch() void {
     const keys = b.keys[0..b.n];
     if (keys.len == 0) return;
     b.n = 0;
-    defer gl.glBindVertexArray(vao);
     var merged: ?*Mesh = null;
     if (keys.len > 1) {
         var hs = std.hash.Wyhash.init(keys.len);
@@ -1764,7 +1817,11 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         if (up != null) return sayOnce("DrawVerticesUP inside a recorded pushbuffer skipped");
         return recordDraw(ri, xprim, n, idx, base);
     }
-    if (fr_on and !fr_replaying) frameDraw(xprim, n, idx, up, up_stride, base);
+    if (!fr_replaying) {
+        fr_d = null;
+        fr_same = false;
+        if (fr_on) frameDraw(xprim, n, idx, up, up_stride, base);
+    }
     if (!fr_replaying) stats.draws += 1;
     // Indexed triangles of a program can merge; the draw log wants each draw.
     const can = idx != null and up == null and (xprim == 5 or xprim == 6) and vshader & 1 != 0 and drawlog_frame != frame + 1;
@@ -1784,12 +1841,12 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     if (idx) |ix| lo, hi = idxSpan(ix, n);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
     var mesh: ?*Mesh = null; // this draw's buffers are kept in it (mesh cache)
-    defer if (mesh != null) gl.glBindVertexArray(vao);
     var regs: u16 = 0;
     var stride: u32 = 0;
     if (p.key.vs != 0) {
         const h = &programs.items[p.key.vs - 1];
-        const key = meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride);
+        const key = if (fr_replaying and fr_d.?.mesh != 0) fr_d.?.mesh else meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride);
+        if (fr_d) |d| d.mesh = key;
         const got = meshes.getOrPut(alloc, key) catch return;
         if (!got.found_existing) {
             got.value_ptr.* = .{ .used = frame };
@@ -1820,10 +1877,12 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
             gl.glBindVertexArray(m.vao);
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, m.bufs[0]);
         }
+        if (mesh == null) gl.glBindVertexArray(vao);
         stride = vsVertices(h, base, lo, hi, up, up_stride, &regs);
         gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(vs_buf.items.len), vs_buf.items.ptr, if (mesh != null) gl.GL_STATIC_DRAW else gl.GL_STREAM_DRAW);
         vsAttribs(regs, stride);
     } else {
+        gl.glBindVertexArray(vao);
         stride = if (up != null) up_stride else stream_stride[0];
         if (stride == 0) stride = fvfStride(vshader);
         const verts = if (up) |u| u else if (stream_host[0]) |h| h + base * stride else if (stream_vb[0] != 0) d3d.ptr(d3d.resData(stream_vb[0])) + base * stride else return;
@@ -1847,9 +1906,10 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
                 nv = bytes / stride;
                 gl.glViewport(0, @intCast(vp.y * scale), @intCast(bbw() * scale), @intCast(vp.h * scale));
                 gl.glUniform4f(p.u_rhw, -@as(f32, @floatFromInt((bbw() - 640) / 2)), @floatFromInt(vp.y), @floatFromInt(bbw()), @floatFromInt(@max(vp.h, 1)));
+                p.fresh = true;
             } else if (xs[0] <= 0.5 and xs[1] >= 639) {
                 setViewport(true);
-                uploadTscale(p);
+                uploadTscale(p, false);
             }
         }
         // One glBufferData per draw: a mapped ring is slower on ANGLE's D3D11 (Sneak King P10).
@@ -1922,6 +1982,8 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
 var fr_on = false;
 var fr_steps: u32 = 1; // shown frames per game frame
 var fr_replaying = false;
+var fr_d: ?*FDraw = null; // this draw's record: being made, or being replayed
+var fr_same = false; // and its constants and transforms are the draw's before it
 
 const Tgt = struct { fbo: gl.GLuint, size: [2]u32, rt: u32 };
 fn tgtNow() Tgt {
@@ -1948,6 +2010,8 @@ const FDraw = struct {
     vp: @TypeOf(vp),
     tgt: Tgt,
     key: u64,
+    mesh: u64 = 0, // its mesh cache key, once draw() has worked it out
+    joined: bool = false, // merged into the draw before it
 };
 const FOp = union(enum) { draw: FDraw, clear: struct { c: Clear, tgt: Tgt } };
 const Frame = struct {
@@ -2011,6 +2075,7 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
             hi = @max(hi, ix[i]);
         }
     }
+    fr_same = !vsc_dirty and !xf_dirty;
     if (vsc_dirty) f.consts.append(alloc, vsc) catch @panic("OOM");
     if (xf_dirty) f.xfs.append(alloc, xf) catch @panic("OOM");
     vsc_dirty = false;
@@ -2055,6 +2120,7 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
     hsh.update(std.mem.asBytes(&[_]u32{ vshader, pshader, stage_tex[0], stage_tex[1], stream_vb[0], base, lo, n, xprim, render_target }));
     d.key = hsh.final();
     f.ops.append(alloc, .{ .draw = d }) catch @panic("OOM");
+    fr_d = &f.ops.items[f.ops.items.len - 1].draw;
 }
 
 const RowSet = std.StaticBitSet(232);
@@ -2308,6 +2374,7 @@ fn frameReplay(prev: *const Frame, cur: *const Frame, t: f32) void {
     const saved = .{ stage_tex, vshader, pshader, stream_vb, stream_stride, vsc, xf, vp, target_fbo, target_size, render_target };
     fr_replaying = true;
     const bytes = cur.bytes.items.ptr;
+    var from0: [4]u32 = @splat(no_op);
     for (cur.ops.items, cur.match.items) |*op, m| switch (op.*) {
         .clear => |*c| {
             target_fbo, target_size, render_target = .{ c.tgt.fbo, c.tgt.size, c.tgt.rt };
@@ -2315,13 +2382,20 @@ fn frameReplay(prev: *const Frame, cur: *const Frame, t: f32) void {
         },
         .draw => |*d| {
             target_fbo, target_size, render_target = .{ d.tgt.fbo, d.tgt.size, d.tgt.rt };
-            vsc = cur.consts.items[d.vsc];
-            xf = cur.xfs.items[d.xf];
-            if (m) |pi| {
-                const p = &prev.ops.items[pi].draw;
-                lerpInto(@as(*[192 * 4]f32, @ptrCast(&vsc)), @as(*const [192 * 4]f32, @ptrCast(&prev.consts.items[p.vsc])), @as(*const [192 * 4]f32, @ptrCast(&cur.consts.items[d.vsc])), t);
-                lerpInto(@as(*[160]f32, @ptrCast(&xf)), @as(*const [160]f32, @ptrCast(&prev.xfs.items[p.xf])), @as(*const [160]f32, @ptrCast(&cur.xfs.items[d.xf])), t);
+            const p: ?*const FDraw = if (m) |pi| &prev.ops.items[pi].draw else null;
+            // Blended from the same four sets as the last draw's: they are loaded.
+            const from = [4]u32{ d.vsc, d.xf, if (p) |x| x.vsc else no_op, if (p) |x| x.xf else no_op };
+            fr_same = std.mem.eql(u32, &from, &from0);
+            from0 = from;
+            if (!fr_same) {
+                vsc = cur.consts.items[d.vsc];
+                xf = cur.xfs.items[d.xf];
+                if (p) |q| {
+                    lerpInto(@as(*[192 * 4]f32, @ptrCast(&vsc)), @as(*const [192 * 4]f32, @ptrCast(&prev.consts.items[q.vsc])), @as(*const [192 * 4]f32, @ptrCast(&cur.consts.items[d.vsc])), t);
+                    lerpInto(@as(*[160]f32, @ptrCast(&xf)), @as(*const [160]f32, @ptrCast(&prev.xfs.items[q.xf])), @as(*const [160]f32, @ptrCast(&cur.xfs.items[d.xf])), t);
+                }
             }
+            fr_d = d;
             stage_tex = d.tex;
             vshader = d.vs;
             pshader = d.ps;
