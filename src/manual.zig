@@ -138,6 +138,24 @@ export fn sub_000E983E() void {
     sub_000E983E_gen();
 }
 
+/// The game's sphere-against-frustum test (center*, radius) -> al, cdecl: near,
+/// far (0x1E6994) and four side planes. Counted per call site for the debug
+/// menu, which clears the counts each game frame.
+pub const CullSite = struct { from: u32 = 0, tested: u32 = 0, visible: u32 = 0 };
+pub var cull: [32]CullSite = @splat(.{});
+extern fn sub_000167B0_gen() void;
+export fn sub_000167B0() void {
+    const from = mem32(g_esp).*;
+    sub_000167B0_gen();
+    for (&cull) |*c| {
+        if (c.from == 0) c.from = from;
+        if (c.from != from) continue;
+        c.tested += 1;
+        c.visible += g_eax & 1;
+        return;
+    }
+}
+
 // ── XAPI input (XPP section) ────────────────────────────────────────────────
 // The title talks to its pad through XAPI's USB stack, which hangs and then
 // crashes on the toolkit's OHCI model. Replace the eight entry points it calls

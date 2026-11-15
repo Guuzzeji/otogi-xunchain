@@ -178,6 +178,9 @@ var scale: u32 = 2;
 /// Widescreen (hor+) widens the back buffer to 16:9 by this factor;
 /// RECOMP_WIDESCREEN=0 keeps 4:3. 3D stretches across it (manual.zig widens
 /// the projection's aspect to match) and pre-transformed 2D stays 4:3 in the middle.
+/// Fog start and end times this (cheats.zig; settings.ini fog_distance).
+pub var fog_scale: f32 = 1;
+
 pub fn wide() f32 {
     const S = struct {
         var v: f32 = 0;
@@ -337,12 +340,15 @@ pub var renderer_name: [*:0]const u8 = "";
 
 /// Per game frame counts for the debug menu: `stats` fills during a frame,
 /// `last` is the frame before.
-pub const Stats = struct { draws: u32 = 0, clears: u32 = 0, copies: u32 = 0, uploads: u32 = 0, work_ms: f32 = 0 };
+/// work_ms: one Swap's return to the next one's entry (game code and draw()).
+/// draw_ms: the part of it inside draw(). queued: the game's two draw queues
+/// (objects that passed its frustum test, 0x1E69A8/AC) as of Swap.
+pub const Stats = struct { draws: u32 = 0, clears: u32 = 0, copies: u32 = 0, uploads: u32 = 0, work_ms: f32 = 0, draw_ms: f32 = 0, mesh_hits: u32 = 0, mesh_new: u32 = 0, merged: u32 = 0, queued: [2]u32 = .{ 0, 0 } };
 pub var stats: Stats = .{};
 pub var last: Stats = .{};
 
-pub fn cacheSizes() struct { textures: usize, programs: usize, vertex_programs: usize, pixel_shaders: usize, targets: usize, pushbuffers: usize } {
-    return .{ .textures = textures.items.len, .programs = progs.items.len, .vertex_programs = programs.items.len, .pixel_shaders = pixel_shaders.items.len, .targets = rts.items.len, .pushbuffers = pb_recs.items.len };
+pub fn cacheSizes() struct { textures: usize, programs: usize, vertex_programs: usize, pixel_shaders: usize, targets: usize, pushbuffers: usize, meshes: usize } {
+    return .{ .textures = textures.items.len, .programs = progs.items.len, .vertex_programs = programs.items.len, .pixel_shaders = pixel_shaders.items.len, .targets = rts.items.len, .pushbuffers = pb_recs.items.len, .meshes = meshes.count() };
 }
 
 var conv: std.ArrayList(u8) = .empty;
@@ -1260,6 +1266,10 @@ fn uploadUniforms(p: *const Prog) void {
         // c[58]/c[59] identity: the translated program undoes D3D's divide.
         vsc[58] = .{ 1, 1, 1, 1 };
         vsc[59] = .{ 0, 0, 0, 0 };
+        // Fog distance hack: c158.x is -1/(end - start), so dividing it moves both.
+        const c158 = vsc[158][0];
+        if (fog_scale != 1 and std.math.isFinite(c158)) vsc[158][0] = c158 / fog_scale;
+        defer vsc[158][0] = c158;
         gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
     }
     if (p.key.ps != 0) {
@@ -1394,8 +1404,156 @@ fn streamSrc(stream: u32, up: ?[*]const u8, up_stride: u32) ?struct { [*]const u
 // ponytail: fixed-function (FVF) draws are not cached; they are the 2D layer,
 // few and edited per draw (extend2d). Cache them if a title draws its world so.
 
-const Mesh = struct { vao: gl.GLuint = 0, bufs: [2]gl.GLuint = .{ 0, 0 }, mode: gl.GLenum = gl.GL_TRIANGLES, count: gl.GLsizei = 0, indexed: bool = false, used: u32 };
+const Mesh = struct {
+    vao: gl.GLuint = 0,
+    bufs: [2]gl.GLuint = .{ 0, 0 },
+    mode: gl.GLenum = gl.GL_TRIANGLES,
+    count: gl.GLsizei = 0,
+    indexed: bool = false,
+    used: u32,
+    // Indexed triangles keep their vertices and a triangle list, for merging (below).
+    verts: []u8 = &.{},
+    tris: []u16 = &.{},
+    stride: u32 = 0,
+    regs: u16 = 0,
+};
 var meshes: std.AutoHashMapUnmanaged(u64, Mesh) = .empty;
+
+// ── Merged draws ────────────────────────────────────────────────────────────
+// A model part reaches us as several small indexed strips, one draw each, with
+// nothing changed in between but the winding the cull mode expects (Otogi's
+// m001 building: 3,700 draws a frame, half of them 24 vertices or fewer). A
+// draw of a cached mesh waits; draws after it in the same state join it, and
+// the lot is drawn as one triangle list, cached under its members' keys like
+// any mesh once seen twice. Everything else that touches GL flushes first.
+// ponytail: a merged mesh is a second copy of its members' vertices, in RAM and
+// on the GPU; share one vertex buffer if that ever shows.
+
+const Sig = struct { state: [d3d.STATE_WORDS]u32, tex: [4]u32, vs: u32, ps: u32, vsc: [192][4]f32, xf: [10][16]f32, vp: @TypeOf(vp), tgt: Tgt };
+var batch: struct { n: u32 = 0, verts: usize = 0, cull: u32 = 0, sig: Sig = undefined, h: *HostVs = undefined, keys: [64]u64 = undefined, flip: [64]bool = undefined } = .{};
+
+/// Everything a draw's GL state comes from, with CW and CCW culling as one
+/// (cull gets which): the merged list winds its triangles one way.
+fn sigNow(s: *Sig, cull: *u32) void {
+    s.* = .{ .state = undefined, .tex = stage_tex, .vs = vshader, .ps = pshader, .vsc = vsc, .xf = xf, .vp = vp, .tgt = tgtNow() };
+    if (d3d.state_snap) |snap| s.state = snap.* else d3d.stateBlock(&s.state);
+    const c = &s.state[128 + @intFromEnum(d3d.Rs.cullmode)];
+    cull.* = c.*;
+    if (c.* == 0x901) c.* = 0x900;
+}
+
+fn idxSpan(ix: [*]align(1) const u16, n: u32) [2]u32 {
+    var lo: u32 = 0xFFFF;
+    var hi: u32 = 0;
+    for (0..n) |i| {
+        lo = @min(lo, ix[i]);
+        hi = @max(hi, ix[i]);
+    }
+    return .{ lo, hi };
+}
+
+/// This draw joins the waiting one: same state, and a mesh the cache holds.
+fn batchAdd(xprim: u32, n: u32, ix: [*]align(1) const u16, base: u32) bool {
+    const b = &batch;
+    if (b.n == b.keys.len) return false;
+    const S = struct {
+        var sig: Sig = undefined;
+    };
+    var cull: u32 = 0;
+    sigNow(&S.sig, &cull);
+    if (!std.mem.eql(u8, std.mem.asBytes(&S.sig), std.mem.asBytes(&b.sig))) return false;
+    const lo, const hi = idxSpan(ix, n);
+    const key = meshKey(b.h, xprim, n, ix, base, lo, hi, null, 0);
+    const m = meshes.getPtr(key) orelse return false;
+    if (m.tris.len == 0 or b.verts + m.verts.len / m.stride > 0xFFFF) return false;
+    m.used = frame;
+    if (!fr_replaying) {
+        stats.mesh_hits += 1;
+        stats.merged += 1;
+    }
+    b.keys[b.n] = key;
+    b.flip[b.n] = cull != b.cull;
+    b.verts += m.verts.len / m.stride;
+    b.n += 1;
+    return true;
+}
+
+/// Draw what waits. GL state is still as the first draw's prepareDraw left it.
+fn flushBatch() void {
+    const b = &batch;
+    const keys = b.keys[0..b.n];
+    if (keys.len == 0) return;
+    b.n = 0;
+    defer gl.glBindVertexArray(vao);
+    var merged: ?*Mesh = null;
+    if (keys.len > 1) {
+        var hs = std.hash.Wyhash.init(keys.len);
+        hs.update(std.mem.sliceAsBytes(keys));
+        hs.update(std.mem.sliceAsBytes(b.flip[0..keys.len]));
+        const got = meshes.getOrPut(alloc, hs.final()) catch return;
+        if (!got.found_existing) {
+            got.value_ptr.* = .{ .used = frame };
+        } else if (got.value_ptr.vao != 0 or got.value_ptr.used != frame) { // as in draw()
+            merged = got.value_ptr;
+        }
+    }
+    const mm = merged orelse {
+        // Alone, or a group seen for the first time: each from its own buffers.
+        for (keys, b.flip[0..keys.len]) |k, flip| {
+            const m = meshes.getPtr(k) orelse continue;
+            gl.glBindVertexArray(m.vao);
+            if (flip) gl.glFrontFace(if (b.cull == 0x900) gl.GL_CCW else gl.GL_CW);
+            gl.glDrawElements(m.mode, m.count, gl.GL_UNSIGNED_SHORT, null);
+            if (flip) gl.glFrontFace(if (b.cull == 0x900) gl.GL_CW else gl.GL_CCW);
+        }
+        return;
+    };
+    mm.used = frame;
+    if (mm.vao == 0) {
+        vs_buf.clearRetainingCapacity();
+        idx_buf.clearRetainingCapacity();
+        var first: ?*const Mesh = null;
+        for (keys, b.flip[0..keys.len]) |k, flip| {
+            const m = meshes.getPtr(k) orelse continue;
+            if (first == null) first = m;
+            const off: u16 = @intCast(vs_buf.items.len / m.stride);
+            vs_buf.appendSlice(alloc, m.verts) catch @panic("OOM");
+            var i: usize = 0;
+            while (i + 3 <= m.tris.len) : (i += 3) {
+                const t = m.tris[i..][0..3];
+                idx_buf.appendSlice(alloc, &.{ off + t[@intFromBool(flip)], off + t[@intFromBool(!flip)], off + t[2] }) catch @panic("OOM");
+            }
+        }
+        const f = first orelse return;
+        gl.glGenVertexArrays(1, &mm.vao);
+        gl.glGenBuffers(2, &mm.bufs);
+        gl.glBindVertexArray(mm.vao);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, mm.bufs[0]);
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(vs_buf.items.len), vs_buf.items.ptr, gl.GL_STATIC_DRAW);
+        vsAttribs(f.regs, f.stride);
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, mm.bufs[1]);
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(idx_buf.items.len * 2), idx_buf.items.ptr, gl.GL_STATIC_DRAW);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+        mm.count = @intCast(idx_buf.items.len);
+        mm.indexed = true;
+    }
+    gl.glBindVertexArray(mm.vao);
+    gl.glDrawElements(gl.GL_TRIANGLES, mm.count, gl.GL_UNSIGNED_SHORT, null);
+}
+
+/// A program's vertices as vsVertices lays them out: float4 per register used.
+fn vsAttribs(regs: u16, stride: u32) void {
+    var slot: u32 = 0;
+    for (0..16) |r| {
+        if (regs & (@as(u16, 1) << @intCast(r)) != 0) {
+            attrib(@intCast(r), 4, gl.GL_FLOAT, false, stride, 16 * slot);
+            slot += 1;
+        } else {
+            gl.glDisableVertexAttribArray(@intCast(r));
+            gl.glVertexAttrib4f(@intCast(r), 0, 0, 0, 1);
+        }
+    }
+}
 
 fn meshKey(h: *const HostVs, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, lo: u32, hi: u32, up: ?[*]const u8, up_stride: u32) u64 {
     var in: [16]d3d.VsInput = undefined;
@@ -1417,12 +1575,15 @@ fn meshKey(h: *const HostVs, xprim: u32, n: u32, idx: ?[*]align(1) const u16, ba
 
 /// Meshes not drawn for 256 frames go, every 256 frames.
 fn meshSweep() void {
+    flushBatch();
     var it = meshes.iterator();
     while (it.next()) |e| if (frame -% e.value_ptr.used > 256) {
         if (e.value_ptr.vao != 0) {
             gl.glDeleteVertexArrays(1, &e.value_ptr.vao);
             gl.glDeleteBuffers(2, &e.value_ptr.bufs);
         }
+        alloc.free(e.value_ptr.verts);
+        alloc.free(e.value_ptr.tris);
         meshes.removeByPtr(e.key_ptr);
     };
 }
@@ -1589,18 +1750,29 @@ fn prepareDraw() ?*Prog {
 }
 
 var idx_buf: std.ArrayList(u16) = .empty;
+extern threadlocal var g_esp: u32;
 
 /// One draw. Vertices come from `up` (inline) or the bound streams starting at
 /// vertex `base`; idx == null draws [0, n). Xbox primitive types are NV2A's.
 fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_stride: u32, base: u32) void {
     if (n == 0) return;
+    const t0 = nowMs();
+    defer if (!fr_replaying) {
+        stats.draw_ms += @floatCast(nowMs() - t0);
+    };
     if (rec_cur) |ri| {
         if (up != null) return sayOnce("DrawVerticesUP inside a recorded pushbuffer skipped");
         return recordDraw(ri, xprim, n, idx, base);
     }
     if (fr_on and !fr_replaying) frameDraw(xprim, n, idx, up, up_stride, base);
     if (!fr_replaying) stats.draws += 1;
+    // Indexed triangles of a program can merge; the draw log wants each draw.
+    const can = idx != null and up == null and (xprim == 5 or xprim == 6) and vshader & 1 != 0 and drawlog_frame != frame + 1;
+    if (can and batch.n != 0 and batchAdd(xprim, n, idx.?, base)) return;
+    flushBatch();
     const p = prepareDraw() orelse return;
+    // Who drew what: the guest's return address (stale inside a pushbuffer replay).
+    if (drawlog_frame == frame + 1) std.debug.print("       n={d} prim={d} idx={} vb={X} base={d} from={X}\n", .{ n, xprim, idx != null, stream_vb[0], base, mem32(g_esp) });
     // An offscreen target holds the whole wide view like a back buffer copy when
     // it is drawn from one, or when widened 3D is drawn into it (m027's after-images).
     if (target_fbo != fbo and (p.key.rhw == 0 and wideNow() or for (stage_tex) |t| {
@@ -1609,27 +1781,35 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
     var lo: u32 = 0;
     var hi: u32 = n - 1;
     var nv = n; // vertices drawn: extend2d may add banner tiles
-    if (idx) |ix| {
-        lo = 0xFFFF;
-        hi = 0;
-        for (0..n) |i| {
-            lo = @min(lo, ix[i]);
-            hi = @max(hi, ix[i]);
-        }
-    }
+    if (idx) |ix| lo, hi = idxSpan(ix, n);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
     var mesh: ?*Mesh = null; // this draw's buffers are kept in it (mesh cache)
     defer if (mesh != null) gl.glBindVertexArray(vao);
+    var regs: u16 = 0;
+    var stride: u32 = 0;
     if (p.key.vs != 0) {
         const h = &programs.items[p.key.vs - 1];
-        const got = meshes.getOrPut(alloc, meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride)) catch return;
+        const key = meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride);
+        const got = meshes.getOrPut(alloc, key) catch return;
         if (!got.found_existing) {
             got.value_ptr.* = .{ .used = frame };
+            stats.mesh_new += 1;
         } else if (got.value_ptr.vao != 0 or got.value_ptr.used != frame) { // an in-between replay of this frame is not a second time
             const m = got.value_ptr;
             m.used = frame;
             mesh = m;
             if (m.vao != 0) {
+                if (!fr_replaying) stats.mesh_hits += 1;
+                // Flat shading takes its colour from a vertex the merged list may not keep last.
+                if (can and m.tris.len != 0 and p.key.flat == 0) {
+                    sigNow(&batch.sig, &batch.cull);
+                    batch.h = h;
+                    batch.keys[0] = key;
+                    batch.flip[0] = false;
+                    batch.verts = m.verts.len / m.stride;
+                    batch.n = 1;
+                    return;
+                }
                 gl.glBindVertexArray(m.vao);
                 if (m.count == 0) return;
                 if (m.indexed) gl.glDrawElements(m.mode, m.count, gl.GL_UNSIGNED_SHORT, null) else gl.glDrawArrays(m.mode, 0, m.count);
@@ -1640,21 +1820,11 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
             gl.glBindVertexArray(m.vao);
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, m.bufs[0]);
         }
-        var regs: u16 = 0;
-        const stride = vsVertices(h, base, lo, hi, up, up_stride, &regs);
+        stride = vsVertices(h, base, lo, hi, up, up_stride, &regs);
         gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(vs_buf.items.len), vs_buf.items.ptr, if (mesh != null) gl.GL_STATIC_DRAW else gl.GL_STREAM_DRAW);
-        var slot: u32 = 0;
-        for (0..16) |r| {
-            if (regs & (@as(u16, 1) << @intCast(r)) != 0) {
-                attrib(@intCast(r), 4, gl.GL_FLOAT, false, stride, 16 * slot);
-                slot += 1;
-            } else {
-                gl.glDisableVertexAttribArray(@intCast(r));
-                gl.glVertexAttrib4f(@intCast(r), 0, 0, 0, 1);
-            }
-        }
+        vsAttribs(regs, stride);
     } else {
-        var stride = if (up != null) up_stride else stream_stride[0];
+        stride = if (up != null) up_stride else stream_stride[0];
         if (stride == 0) stride = fvfStride(vshader);
         const verts = if (up) |u| u else if (stream_host[0]) |h| h + base * stride else if (stream_vb[0] != 0) d3d.ptr(d3d.resData(stream_vb[0])) + base * stride else return;
         if (stride == 0) return;
@@ -1714,7 +1884,25 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, if (mesh) |m| m.bufs[1] else ibo);
         gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(idx_buf.items.len * 2), idx_buf.items.ptr, if (mesh != null) gl.GL_STATIC_DRAW else gl.GL_STREAM_DRAW);
         gl.glDrawElements(mode, @intCast(idx_buf.items.len), gl.GL_UNSIGNED_SHORT, null);
-        if (mesh) |m| m.* = .{ .vao = m.vao, .bufs = m.bufs, .mode = mode, .count = @intCast(idx_buf.items.len), .indexed = true, .used = frame };
+        if (mesh) |m| {
+            m.* = .{ .vao = m.vao, .bufs = m.bufs, .mode = mode, .count = @intCast(idx_buf.items.len), .indexed = true, .used = frame };
+            if (can) {
+                // As a triangle list, each triangle's last vertex still last. Degenerate ones go.
+                const ix = idx_buf.items;
+                const strip = xprim == 6;
+                var tris: std.ArrayList(u16) = .empty;
+                var i: usize = 0;
+                while (i + 3 <= ix.len) : (i += if (strip) 1 else 3) {
+                    const odd = @intFromBool(strip and i & 1 != 0);
+                    const t = [3]u16{ ix[i + odd], ix[i + 1 - odd], ix[i + 2] };
+                    if (t[0] != t[1] and t[1] != t[2] and t[0] != t[2]) tris.appendSlice(alloc, &t) catch @panic("OOM");
+                }
+                m.tris = tris.toOwnedSlice(alloc) catch @panic("OOM");
+                m.verts = alloc.dupe(u8, vs_buf.items) catch @panic("OOM");
+                m.stride = stride;
+                m.regs = regs;
+            }
+        }
     } else {
         gl.glDrawArrays(mode, 0, @intCast(n));
         if (mesh) |m| m.* = .{ .vao = m.vao, .bufs = m.bufs, .mode = mode, .count = @intCast(n), .used = frame };
@@ -2153,6 +2341,7 @@ fn frameReplay(prev: *const Frame, cur: *const Frame, t: f32) void {
 
 
 fn blitFbo(src: gl.GLuint, dst: gl.GLuint) void {
+    flushBatch();
     const w: i32 = @intCast(bbw() * scale);
     const h: i32 = @intCast(480 * scale);
     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, src);
@@ -2207,13 +2396,15 @@ extern "kernel32" fn DeleteFileA([*:0]const u8) callconv(.winapi) i32;
 
 
 fn present() void {
+    flushBatch();
     frame += 1;
     if (frame == 1) if (std.c.getenv("RECOMP_GL_DRAWLOG")) |e| {
         drawlog_frame = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
     };
     if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
     // RECOMP_FPS=1: game frames and shown frames per second, guest work per
-    // frame and draws per frame, every 5 s.
+    // frame (and the part inside draw()), draws per frame, the game's queued
+    // objects and the camera's position, every 5 s.
     const fps = struct {
         var on: ?bool = null;
         var t0: f64 = 0;
@@ -2222,22 +2413,25 @@ fn present() void {
         var work: f64 = 0;
         var work_max: f32 = 0;
         var draws: u64 = 0;
+        var draw_ms: f64 = 0;
     };
     if (fps.on == null) fps.on = std.c.getenv("RECOMP_FPS") != null;
     if (fps.on.?) {
         fps.work += stats.work_ms;
         fps.work_max = @max(fps.work_max, stats.work_ms);
         fps.draws += stats.draws;
+        fps.draw_ms += stats.draw_ms;
         const now = nowMs();
         if (frame % 64 == 0 and now - fps.t0 >= 5000) {
             const n: f64 = @floatFromInt(frame - fps.f0);
-            if (fps.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown, guest {d:.1} ms avg {d:.1} max, {d} draws\n", .{ n * 1000 / (now - fps.t0), @as(f64, @floatFromInt(shown - fps.s0)) * 1000 / (now - fps.t0), fps.work / n, fps.work_max, fps.draws / @as(u64, @intFromFloat(n)) });
+            if (fps.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown, guest {d:.1} ms avg {d:.1} max ({d:.1} in draw), {d} draws ({d} merged), queued {d}+{d}, eye {d:.0} {d:.0} {d:.0}\n", .{ n * 1000 / (now - fps.t0), @as(f64, @floatFromInt(shown - fps.s0)) * 1000 / (now - fps.t0), fps.work / n, fps.work_max, fps.draw_ms / n, fps.draws / @as(u64, @intFromFloat(n)), stats.merged, stats.queued[0], stats.queued[1], d3d.memf(0x1386AB4), d3d.memf(0x1386AB8), d3d.memf(0x1386ABC) });
             fps.t0 = now;
             fps.f0 = frame;
             fps.s0 = shown;
             fps.work = 0;
             fps.work_max = 0;
             fps.draws = 0;
+            fps.draw_ms = 0;
         }
     }
     if (frame % 256 == 0) meshSweep();
@@ -2268,6 +2462,7 @@ fn swapWindow() void {
 /// The back buffer `src` to the window, letterboxed to its aspect and flipped:
 /// the back buffer keeps the guest's row order.
 fn blitWindow(src: gl.GLuint) void {
+    flushBatch();
     const sz = clientSize();
     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, src);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
@@ -2385,7 +2580,7 @@ extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) i32;
 extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) i32;
 extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 
-fn nowMs() f64 {
+pub fn nowMs() f64 {
     var f: i64 = 0;
     var t: i64 = 0;
     _ = QueryPerformanceFrequency(&f);
@@ -2404,6 +2599,7 @@ const present_period = 1000.0 / 30.0;
 var last_swap_end: f64 = 0;
 export fn sub_000F4D00() void {
     if (last_swap_end != 0) stats.work_ms = @floatCast(nowMs() - last_swap_end);
+    stats.queued = .{ mem32(0x1E69A8), mem32(0x1E69AC) };
     defer last_swap_end = nowMs();
     sub_000F4D00_gen();
     if (!ready()) return;
@@ -2438,6 +2634,7 @@ export fn sub_000F4EB0() void {
 const Clear = struct { count: u32 = 0, rects: [16][4]i32 = undefined, flags: u32, color: u32, z: u32, stencil: u32 };
 
 fn clearGl(c: *const Clear) void {
+    flushBatch();
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target_fbo);
     var mask: gl.GLbitfield = 0;
     if (c.flags & 0xF0 != 0) mask |= gl.GL_COLOR_BUFFER_BIT;
@@ -2489,6 +2686,7 @@ const Rt = struct { data: u32, w: u32, h: u32, tex: gl.GLuint, fbo: gl.GLuint, d
 var rts: std.ArrayList(Rt) = .empty;
 
 fn rtGet(s: u32) ?*Rt {
+    flushBatch();
     const data = d3d.resData(s);
     const dims = d3d.surfDims(s);
     for (rts.items) |*r| if (r.data == data and r.w == dims.w and r.h == dims.h) return r;
@@ -2513,6 +2711,7 @@ fn rtGet(s: u32) ?*Rt {
 /// movie does), so depth tests then pass as they do without a Z surface.
 /// ponytail: the title's Z surface itself is not shared between targets.
 export fn sub_000F7CF0() void {
+    flushBatch();
     const s = arg(0);
     const z = arg(1);
     sub_000F7CF0_gen();
@@ -2541,6 +2740,7 @@ export fn sub_000F8F80() void {
 /// is only on the GPU, so read the rectangles back into the guest surface;
 /// the texture cache then sees new bytes.
 export fn sub_000F7FC0() void {
+    flushBatch();
     const src = arg(0);
     const rects = arg(1);
     const n = arg(2);
@@ -2671,6 +2871,7 @@ export fn sub_000F9570() void {
 
 /// Forget compiled programs whose key names shader table entry `idx`.
 fn dropProgs(comptime field: enum { vs, ps }, idx: u32) void {
+    flushBatch();
     var i: usize = 0;
     while (i < progs.items.len) {
         if (@field(progs.items[i].key, @tagName(field)) == idx) {

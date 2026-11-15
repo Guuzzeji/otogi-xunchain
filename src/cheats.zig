@@ -5,6 +5,7 @@ const std = @import("std");
 const im = @import("imgui");
 const menu = @import("debug_menu.zig");
 const d3d = @import("d3d.zig");
+const gl_hle = @import("gl_hle.zig");
 
 fn p32(va: u32) *align(1) u32 {
     return @ptrCast(d3d.ptr(va));
@@ -42,8 +43,21 @@ const tables = [_]Table{
 };
 const table_max = [_]u32{ 64, 16, 32, 32 };
 
+// Stage render settings (stage render sub_000428A0, loader sub_00026570).
+const FAR = 0x1E6830; // f32: the projection's far plane and the frustum test's far distance
+const MAP_HEADER = 0x2F5790; // -> the loaded map's header; +0x14 f32 = its far distance
+
 var god = false;
 var inf_magic = false;
+/// Draw and fog distance, times the stage's own (settings.ini draw_distance,
+/// fog_distance). 1 leaves the game untouched.
+var far_scale: f32 = 1;
+var scales_read = false;
+
+fn envScale(name: [*:0]const u8) f32 {
+    const v = std.fmt.parseFloat(f32, std.mem.span(std.c.getenv(name) orelse return 1)) catch return 1;
+    return if (v >= 0.1 and v <= 16) v else 1;
+}
 var warp_index: c_int = 0;
 
 extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
@@ -53,7 +67,8 @@ extern "c" fn remove([*:0]const u8) c_int;
 
 /// logs\cheat, for scripted testing: read and deleted when it appears, one
 /// command per line: warp <stage id>, stage <id> (the story stage only), god,
-/// ungod, magic, kill, all, clear, give, status. Results go to the log.
+/// ungod, magic, kill, all, clear, give, status, far <x>, fog <x> (draw and fog
+/// distance), cull (last frame's frustum tests). Results go to the log.
 fn liveCommands() void {
     const f = fopen("logs\\cheat", "rb") orelse return;
     var buf: [512]u8 = undefined;
@@ -72,6 +87,12 @@ fn liveCommands() void {
             warp();
         } else if (std.mem.eql(u8, cmd, "stage")) {
             p32(STAGE).* = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
+        } else if (std.mem.eql(u8, cmd, "far")) {
+            far_scale = std.fmt.parseFloat(f32, it.next() orelse "") catch continue;
+        } else if (std.mem.eql(u8, cmd, "fog")) {
+            gl_hle.fog_scale = std.fmt.parseFloat(f32, it.next() orelse "") catch continue;
+        } else if (std.mem.eql(u8, cmd, "cull")) {
+            for (menu.cull_last) |s| if (s.tested != 0) std.debug.print("[CHEAT] frustum test from {X:0>6}: {d} tested, {d} visible\n", .{ s.from, s.tested, s.visible });
         } else if (std.mem.eql(u8, cmd, "god")) god = true
         else if (std.mem.eql(u8, cmd, "ungod")) god = false
         else if (std.mem.eql(u8, cmd, "magic")) inf_magic = true
@@ -100,7 +121,21 @@ pub fn tick() void {
         pf(HP_SHOWN).* = max;
     }
     if (inf_magic and p32(MAGIC_MAX).* > 0) pf(MAGIC).* = @floatFromInt(p32(MAGIC_MAX).*);
+    if (!scales_read) {
+        scales_read = true;
+        far_scale = envScale("RECOMP_DRAW_DISTANCE");
+        gl_hle.fog_scale = envScale("RECOMP_FOG_DISTANCE");
+    }
+    // The loader sets FAR once per stage from the map header (500000 without
+    // one); the stage render reads it every frame.
+    const header = p32(MAP_HEADER).*;
+    if ((far_scale != 1 or far_touched) and menu.valid(header, 0x18)) {
+        const far = pf(header + 0x14).*;
+        pf(FAR).* = far_scale * (if (far > 0) far else 500000);
+        far_touched = far_scale != 1; // one more write puts the stage's own back
+    }
 }
+var far_touched = false;
 
 pub fn tab() void {
     im.ImGui_SeparatorText("Stages");
@@ -130,6 +165,11 @@ pub fn tab() void {
     _ = im.ImGui_InputInt("money", @ptrCast(@alignCast(p32(MONEY))));
     im.ImGui_SameLine();
     if (im.ImGui_Button("Max")) p32(MONEY).* = 99999;
+
+    im.ImGui_SeparatorText("World");
+    _ = im.ImGui_SliderFloat("Draw distance x", &far_scale, 0.25, 8);
+    _ = im.ImGui_SliderFloat("Fog distance x", &gl_hle.fog_scale, 0.25, 8);
+    menu.text("far plane {d:.0}", .{pf(FAR).*});
 
     im.ImGui_SeparatorText("Inventory");
     for (tables, table_max) |t, max| {
