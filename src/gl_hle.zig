@@ -1149,14 +1149,16 @@ fn applyStages(k: *Key) void {
     for (0..4) |st| {
         const s: u32 = @intCast(st);
         var cube = false;
-        const t = if (stage_tex[st] != 0) texGet(stage_tex[st], &lin[st], &cube) else blk: {
+        // A stage with no texture is not sampled (genFs): its unit and sampler stay as they are.
+        const t = if (stage_tex[st] != 0) blk: {
+            gl.glActiveTexture(@as(gl.GLenum, gl.GL_TEXTURE0) + s); // first: an upload binds on the active unit
+            break :blk texGet(stage_tex[st], &lin[st], &cube);
+        } else blk: {
             lin[st] = .{ 0, 0 };
             break :blk 0;
         };
         k.tex[st] = if (t == 0) 0 else if (cube) 2 else 1;
-        // A stage with no texture is not sampled (genFs): its unit and sampler stay as they are.
         if (t != 0) {
-            gl.glActiveTexture(@as(gl.GLenum, gl.GL_TEXTURE0) + s);
             gl.glBindTexture(if (cube) gl.GL_TEXTURE_CUBE_MAP else gl.GL_TEXTURE_2D, t);
             const smp = samplers[st];
             gl.glBindSampler(s, smp);
@@ -1623,7 +1625,7 @@ fn draw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_st
         const got = meshes.getOrPut(alloc, meshKey(h, xprim, n, idx, base, lo, hi, up, up_stride)) catch return;
         if (!got.found_existing) {
             got.value_ptr.* = .{ .used = frame };
-        } else {
+        } else if (got.value_ptr.vao != 0 or got.value_ptr.used != frame) { // an in-between replay of this frame is not a second time
             const m = got.value_ptr;
             m.used = frame;
             mesh = m;
@@ -1867,27 +1869,245 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
     f.ops.append(alloc, .{ .draw = d }) catch @panic("OOM");
 }
 
-/// For each draw of `cur`, the draw of `prev` with the same key, when the key
-/// is unique in both frames. Repeated look-alike draws (mist sprites,
-/// particles) cannot be told apart, and blending them between the wrong pairs
-/// made the mist vanish from in-between frames: they show unblended.
+const RowSet = std.StaticBitSet(232);
+const no_row = 255;
+const no_op: u32 = 0xFFFFFFFF;
+/// Row `r` of a draw's 192 constants and 40 transform rows.
+fn frameRow(f: *const Frame, d: *const FDraw, r: usize) [4]u32 {
+    return @bitCast(if (r < 192) f.consts.items[d.vsc][r] else @as(*const [40][4]f32, @ptrCast(&f.xfs.items[d.xf]))[r - 192]);
+}
+/// A draw's rows `rows` as one number.
+fn frameId(f: *const Frame, d: *const FDraw, rows: *const RowSet) u64 {
+    var h = std.hash.Wyhash.init(d.key);
+    var it = rows.iterator(.{});
+    while (it.next()) |r| h.update(std.mem.asBytes(&frameRow(f, d, r)));
+    return h.final();
+}
+/// How far apart two draws are in the rows `rows`, squared.
+fn frameDist(a: *const Frame, da: *const FDraw, b: *const Frame, db: *const FDraw, rows: [4]u8) f32 {
+    var sum: f32 = 0;
+    for (rows) |r| if (r != no_row) {
+        const d = @as(@Vector(4, f32), @as([4]f32, @bitCast(frameRow(a, da, r)))) - @as(@Vector(4, f32), @as([4]f32, @bitCast(frameRow(b, db, r))));
+        sum += @reduce(.Add, d * d);
+    };
+    return sum;
+}
+
+/// Whether two draws of a frame have the same constants.
+fn frameTwin(f: *const Frame, a: *const FDraw, b: *const FDraw) bool {
+    return (a.vsc == b.vsc or std.mem.eql(u8, std.mem.asBytes(&f.consts.items[a.vsc]), std.mem.asBytes(&f.consts.items[b.vsc]))) and
+        (a.xf == b.xf or std.mem.eql(u8, std.mem.asBytes(&f.xfs.items[a.xf]), std.mem.asBytes(&f.xfs.items[b.xf])));
+}
+/// Of the previous draws from `head` back that are not paired yet, the one
+/// nearest `d` in `rows`, and how near it and the next are. One with the same
+/// constants as the nearest is not the next: either will do.
+fn frameNearest(prev: *const Frame, head: u32, cur: *const Frame, d: *const FDraw, rows: [4]u8) struct { at: u32, best: f32, next: f32 } {
+    var at: u32 = no_op;
+    var best = std.math.inf(f32);
+    var next = best;
+    var i = head;
+    while (i != no_op) : (i = fr_link[0].items[i]) {
+        if (fr_near.items[i] < 0) continue;
+        const p = &prev.ops.items[i].draw;
+        const dist = frameDist(prev, p, cur, d, rows);
+        fr_near.items[i] = @min(fr_near.items[i], dist);
+        if (dist < best) {
+            next = best;
+            best = dist;
+            at = i;
+        } else if (dist == best and at != no_op) {
+            if (!frameTwin(prev, p, &prev.ops.items[at].draw)) next = best;
+        } else if (dist < next) next = dist;
+    }
+    return .{ .at = at, .best = best, .next = next };
+}
+/// How badly `rows` tell the previous draw of each of `sample` from the next,
+/// 0 to 1 a draw.
+fn frameCost(prev: *const Frame, head: u32, cur: *const Frame, sample: []const u32, rows: [4]u8) f32 {
+    var cost: f32 = 0;
+    for (sample) |i| {
+        const r = frameNearest(prev, head, cur, &cur.ops.items[i].draw, rows);
+        cost += if (r.next > 0 and r.best < r.next) r.best / r.next else 1;
+    }
+    return cost;
+}
+
+var fr_link: [2]std.ArrayList(u32) = .{ .empty, .empty }; // per op of the previous and current frame, the one before it with the same key
+var fr_near: std.ArrayList(f32) = .empty; // per op of the previous frame, how near the nearest current draw is; negative once paired by its rows
+var fr_id: std.ArrayList(u64) = .empty; // per op of the current frame, its frameId
+/// Per repeated key, the rows that name an instance and the frame they were
+/// found in, and the rows that place one.
+var fr_rows: std.AutoHashMapUnmanaged(u64, struct { rows: RowSet = .empty, at: u32 = 0, near: ?[4]u8 = null }) = .empty;
+
+/// For each draw of `cur`, the draw of `prev` it continues. A key unique in
+/// both frames names it. A mesh drawn several times (trees, enemies of one
+/// kind, mist sprites) repeats its key. Things that stand still keep some
+/// constant rows from frame to frame that differ from one to the next (m000's
+/// bamboo: its light in object space, rows 91-93 and 120-122) while the rows
+/// the camera is in change for all: those rows name the instance, whatever the
+/// camera does and however many are culled. The ones not named so (they move)
+/// each take the previous draw nearest in the up to 4 rows that change least
+/// from frame to frame for how much they differ within the key (the mist's
+/// world matrix, rows 120-122: a camera turn changes the others more than the
+/// sprites are apart), when that one is 4 times nearer than the next and no
+/// other current draw is nearer to it. Draws with the same constants (the two
+/// passes of a shadow volume) get the same answer, or the passes come apart.
+/// ponytail: keys repeated more than 512 times stay unblended (the search is n
+/// squared); so does what moves further in a frame than a quarter of the way
+/// to its neighbour.
 fn frameMatch(prev: *const Frame, cur: *Frame) void {
-    const Seen = struct { prev: u32 = 0, n_prev: u32 = 0, n_cur: u32 = 0 };
+    const none = no_op;
+    const Seen = struct {
+        prev: u32 = none,
+        cur: u32 = none,
+        n_prev: u32 = 0,
+        n_cur: u32 = 0,
+        rows: ?RowSet = null,
+        near: ?[4]u8 = null,
+        named: u32 = 0, // current draws paired by their rows
+        fn group(s: @This()) bool {
+            return s.n_prev != 0 and s.n_cur != 0 and s.n_prev + s.n_cur > 2;
+        }
+        fn byRows(s: @This()) bool {
+            return s.named * 2 >= s.n_cur;
+        }
+    };
     var seen: std.AutoHashMapUnmanaged(u64, Seen) = .empty;
     defer seen.deinit(alloc);
-    for (prev.ops.items, 0..) |op, i| if (op == .draw) {
-        const g = seen.getOrPutValue(alloc, op.draw.key, .{}) catch @panic("OOM");
-        g.value_ptr.prev = @intCast(i);
-        g.value_ptr.n_prev += 1;
+    for ([_]*const Frame{ prev, cur }, &fr_link, 0..) |f, *link, side| {
+        link.resize(alloc, f.ops.items.len) catch @panic("OOM");
+        for (f.ops.items, link.items, 0..) |op, *l, i| if (op == .draw) {
+            const g = seen.getOrPutValue(alloc, op.draw.key, .{}) catch @panic("OOM");
+            const head, const n = if (side == 0) .{ &g.value_ptr.prev, &g.value_ptr.n_prev } else .{ &g.value_ptr.cur, &g.value_ptr.n_cur };
+            l.* = head.*;
+            head.* = @intCast(i);
+            n.* += 1;
+        };
+    }
+    var groups = seen.iterator();
+    while (groups.next()) |e| if (e.value_ptr.group() and @max(e.value_ptr.n_prev, e.value_ptr.n_cur) <= 512) {
+        if (fr_rows.get(e.key_ptr.*)) |k| {
+            if (k.rows.count() != 0) e.value_ptr.rows = k.rows;
+            e.value_ptr.near = k.near;
+        }
     };
-    for (cur.ops.items) |op| if (op == .draw) {
-        const g = seen.getOrPutValue(alloc, op.draw.key, .{}) catch @panic("OOM");
-        g.value_ptr.n_cur += 1;
+
+    // By the rows that name an instance.
+    var ids: std.AutoHashMapUnmanaged(u64, struct { prev: u32, n_prev: u32 = 1, n_cur: u32 = 0 }) = .empty;
+    defer ids.deinit(alloc);
+    for (prev.ops.items, 0..) |*op, i| if (op.* == .draw) if (seen.getPtr(op.draw.key).?.rows) |*rows| {
+        const g = ids.getOrPut(alloc, frameId(prev, &op.draw, rows)) catch @panic("OOM");
+        if (g.found_existing) g.value_ptr.n_prev += 1 else g.value_ptr.* = .{ .prev = @intCast(i) };
+    };
+    fr_id.resize(alloc, cur.ops.items.len) catch @panic("OOM");
+    for (cur.ops.items, fr_id.items) |*op, *id| if (op.* == .draw) if (seen.getPtr(op.draw.key).?.rows) |*rows| {
+        id.* = frameId(cur, &op.draw, rows);
+        if (ids.getPtr(id.*)) |g| g.n_cur += 1;
     };
     cur.match.clearRetainingCapacity();
-    for (cur.ops.items) |op| {
-        const s = if (op == .draw) seen.get(op.draw.key).? else Seen{};
-        cur.match.append(alloc, if (s.n_prev == 1 and s.n_cur == 1) s.prev else null) catch @panic("OOM");
+    for (cur.ops.items, fr_id.items) |*op, id| {
+        var m: ?u32 = null;
+        if (op.* == .draw) {
+            const s = seen.getPtr(op.draw.key).?;
+            if (s.n_prev == 1 and s.n_cur == 1) {
+                m = s.prev;
+            } else if (s.rows != null) if (ids.get(id)) |g| if (g.n_prev == 1 and g.n_cur == 1) {
+                m = g.prev;
+                s.named += 1;
+            };
+        }
+        cur.match.append(alloc, m) catch @panic("OOM");
+    }
+
+    // The rest by the nearest rows, among the previous draws not paired yet.
+    fr_near.resize(alloc, prev.ops.items.len) catch @panic("OOM");
+    @memset(fr_near.items, std.math.inf(f32));
+    for (cur.ops.items, cur.match.items) |*op, *m| if (m.*) |pi| {
+        const s = seen.get(op.draw.key).?;
+        if (!s.group()) continue;
+        if (s.byRows()) fr_near.items[pi] = -1 else m.* = null;
+    };
+    for (cur.ops.items, cur.match.items) |*op, *m| if (op.* == .draw and m.* == null) {
+        const s = seen.get(op.draw.key).?;
+        const r = frameNearest(prev, s.prev, cur, &op.draw, s.near orelse continue);
+        if (r.best * 16 < r.next) m.* = r.at;
+    };
+    for (cur.ops.items, cur.match.items) |*op, *m| if (m.*) |pi| {
+        const near = seen.get(op.draw.key).?.near orelse continue;
+        if (fr_near.items[pi] >= 0 and fr_near.items[pi] < frameDist(prev, &prev.ops.items[pi].draw, cur, &op.draw, near)) m.* = null;
+    };
+
+    // Look for the rows again where some were not named.
+    // ponytail: the naming rows every 16 frames at most and not for keys
+    // repeated more than 256 times, the placing rows every 4 frames from 16
+    // of the draws; the table is dropped when it fills.
+    if (fr_rows.count() > 4096) fr_rows.clearRetainingCapacity();
+    groups = seen.iterator();
+    while (groups.next()) |e| {
+        const s = e.value_ptr;
+        const n = @max(s.n_prev, s.n_cur);
+        if (!s.group() or s.named == s.n_cur or n > 512) continue;
+        const k = (fr_rows.getOrPutValue(alloc, e.key_ptr.*, .{}) catch @panic("OOM")).value_ptr;
+        // Naming: the rows that differ within the key, each found unchanged in
+        // the previous frame by 3 in 4.
+        if (!s.byRows() and n <= 256 and frame -% k.at >= 16) {
+            k.at = frame;
+            k.rows = .empty;
+            for (0..232) |r| {
+                const first = frameRow(cur, &cur.ops.items[s.cur].draw, r);
+                var differs = false;
+                var found: u32 = 0;
+                var i = s.cur;
+                while (i != none) : (i = fr_link[1].items[i]) {
+                    const row = frameRow(cur, &cur.ops.items[i].draw, r);
+                    differs = differs or !std.mem.eql(u32, &row, &first);
+                    var j = s.prev;
+                    while (j != none) : (j = fr_link[0].items[j]) if (std.mem.eql(u32, &frameRow(prev, &prev.ops.items[j].draw, r), &row)) {
+                        found += 1;
+                        break;
+                    };
+                }
+                if (differs and found * 4 >= @min(s.n_prev, s.n_cur) * 3) k.rows.set(r);
+            }
+        }
+        // Placing: of the rows that differ, add the one that best sets the
+        // nearest previous draw apart from the next, while one does so by a
+        // quarter.
+        if (k.near != null and (frame +% @as(u32, @truncate(e.key_ptr.*))) % 4 != 0) continue;
+        var sample: [16]u32 = undefined;
+        var cnt: usize = 0;
+        var i = s.cur;
+        while (i != none and cnt < sample.len) : (i = fr_link[1].items[i]) {
+            if (cur.match.items[i]) |pi| if (fr_near.items[pi] < 0) continue;
+            sample[cnt] = i;
+            cnt += 1;
+        }
+        if (cnt == 0) continue;
+        var differ: RowSet = .empty;
+        for (0..232) |r| for (sample[1..cnt]) |j| if (!std.mem.eql(u32, &frameRow(cur, &cur.ops.items[j].draw, r), &frameRow(cur, &cur.ops.items[sample[0]].draw, r))) {
+            differ.set(r);
+            break;
+        };
+        var near: [4]u8 = @splat(no_row);
+        var least = frameCost(prev, s.prev, cur, sample[0..cnt], near);
+        for (&near) |*slot| {
+            var pick: u8 = no_row;
+            var low = least * 0.75;
+            var it = differ.iterator(.{});
+            while (it.next()) |r| {
+                slot.* = @intCast(r);
+                const c = frameCost(prev, s.prev, cur, sample[0..cnt], near);
+                if (c < low) {
+                    low = c;
+                    pick = @intCast(r);
+                }
+            }
+            slot.* = pick;
+            if (pick == no_row) break;
+            least = low;
+            differ.unset(pick);
+        }
+        k.near = near;
     }
 }
 

@@ -167,6 +167,25 @@
   scattered them. Draws now blend only when their key (shader, textures, stream, base, first vertex, count) is unique
   in both frames; repeated ones show the newer frame. A probe comparing each in-between frame with its neighbours
   (32x18 downsample) found 10 bad frames in a 25 s dash run before, 0 after; about half the draws blend.
+- Stutter on trees and enemies (m000, 2026-11-14): the unblended half was every mesh drawn more than once (bamboo,
+  enemies of one kind: 329 of 689 draws standing in m000), moving at 30 Hz inside a 60 Hz picture. Pairing them by
+  nearest constants (an 8-number signature, the group's mean change taken out, the nearest 4 times nearer than the
+  next) fixed standing still and left the trees jittering when the camera turned: a group whose count changed as one
+  culled stayed unblended whole (100-220 draws a frame), and a turn changes each instance's rows by a different
+  amount. What works: things that stand still keep some rows bit for bit that differ from one to the next (bamboo,
+  program `1DA3E41`: rows 91-93 and 120-122 of 13 that differ), so `frameMatch` learns those rows per key and pairs
+  by them, any count, any camera. That left the mist jittering (sprites of `1D94C21`, all moving): by the signature
+  24-35 of 40 paired while the camera turned, and none where the count changed. The ones the rows do not name now
+  take the previous draw nearest in up to 4 rows picked per key, each added while it sets the nearest previous draw
+  further apart from the next (16 draws tried, every 4 frames); for the mist that picks its world matrix, rows
+  120-122, which a camera turn leaves alone. Two as near count as one only with all constants equal: picking either
+  of two sprites with the same alpha is how a one-row choice would scatter them. Running forward and turning in
+  m000: 0 draws unblended most frames, else the ones new that frame. Draws with equal constants must get the same
+  answer: blending one pass of the player's shadow volume and not the other drew streaks from player to shadow.
+  Matching costs 0.1-0.2 ms at 260-690 draws, 1.1-1.3 ms at 1,400-2,200, in the frame's wait. Checked by eye on
+  in-between frames of m000, m001, m003, m014, m020; not with the dash probe.
+- The mesh cache counted an in-between replay as a mesh's second sighting, so with interpolation on every new mesh got
+  buffers at once; it now waits for a later game frame.
 - Mist sprites (vertex program `1D94C21`, additive, Z write off) come last in the frame; the game turns ZENABLE off
   for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
   test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
