@@ -330,9 +330,12 @@
 - GitHub Actions (github.com/Guuzzeji/otogi-xunchain):
   - `ci.yml` on push to main and on pull requests: changelog has a section for the current version, `zig build setup`,
     `zig build test`, setup exe as an artifact. The game itself is not built (it needs the lifted C from a disc).
-  - `release.yml`, run by hand with a bump (patch, minor, major, none): bumps the version, moves Unreleased into a dated
-    section, commits "Release vX.Y.Z", tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the
-    font's OFL text, and that changelog section as notes. "none" releases the current version.
-  - It also runs on its own when a push to main sets a new `.version` in `build.zig.zon` (the commit needs that
-    version's changelog section; CI checks it). That push releases the version as it is; an already tagged one is skipped.
-  - The bump and changelog shell was dry-run locally on a scratch repo.
+  - `pr.yml` on pull requests (and body edits): exactly one box ticked under "Release" in the PR body
+    (`.github/pull_request_template.md`: major, minor, patch, none), and unless none, an entry under Unreleased.
+  - `release.yml` on every merged PR (`pull_request_target` closed + merged, so fork PRs get a write token; it checks
+    out main, never PR code): bumps by the ticked box, moves Unreleased into a dated section, commits "Release vX.Y.Z"
+    to main, tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the font's OFL text,
+    and that changelog section as notes. A "none" box releases nothing. Runs are serialized (`concurrency: release`);
+    if a merge lands during a build the push fails, and re-running the job bumps again from the new main.
+  - By hand: Actions > Release > Run workflow with a bump; "none" there releases the current version as it is.
+  - The bump and changelog shell and the box parser were dry-run locally on scratch copies.
