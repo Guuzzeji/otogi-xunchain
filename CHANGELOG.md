@@ -3,7 +3,7 @@
 All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/). The version lives in `build.zig.zon`;
-the Release workflow moves "Unreleased" into a new version section.
+merging a PR runs the Release workflow, which moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
@@ -16,6 +16,7 @@ the Release workflow moves "Unreleased" into a new version section.
   now hold it, and the game's own work a frame dropped to a few milliseconds.
 - The full-screen effects (glow, heat haze, menu tint) are copied on the graphics card
   at the render resolution instead of being read back at 640x480: sharper, and faster.
+- Every merged pull request publishes its own release; the PR says how big a version step it is.
 
 ### Fixed
 - Judder with `framerate` above 30: the scenery moved unevenly while the character

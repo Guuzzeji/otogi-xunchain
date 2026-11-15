@@ -1,0 +1,25 @@
+# Every pull request: exactly one box ticked under "Release" in its body, and unless
+# that box is "none", a changelog entry under ## [Unreleased]. Release (release.yml)
+# reads the same box on merge. Reruns when the body is edited, so ticking a box rechecks.
+name: PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  release-box:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          boxes=$(tr -d '\r' <<< "$BODY" | grep -oiE '^\s*- \[x\] (major|minor|patch|none)' || true)
+          [ "$(grep -c . <<< "$boxes")" = 1 ] || { echo "::error::Tick exactly one box under Release in the PR"; exit 1; }
+          bump=$(grep -oiE '[a-z]+$' <<< "$boxes" | tr A-Z a-z)
+          echo "Release box: $bump"
+          [ "$bump" = none ] && exit 0
+          unreleased=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)
+          grep -q '[^[:space:]]' <<< "$unreleased" || { echo "::error::Add an entry under ## [Unreleased] in CHANGELOG.md"; exit 1; }
