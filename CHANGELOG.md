@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-15
+
 ### Changed
 - Busy scenes cost about half the CPU time they did: the second stage's 2,600-draw
   opening went from about 30 ms of work a frame to about 16 on the development PC.
