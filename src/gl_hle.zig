@@ -2075,7 +2075,8 @@ fn drawGl(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_
 // ponytail: only constants blend (camera, objects, bones); vertex data the CPU
 // writes each frame (particles, 2D) shows at the newer frame's positions.
 
-var fr_steps: u32 = 1; // shown frames per game frame
+var fr_step: f64 = present_period; // ms between shown frames
+var fr_pass_ms: f64 = 0; // what drawing one in-between costs, averaged
 var fr_d: *FDraw = undefined; // the draw being replayed
 var fr_same = false; // and its constants and transforms are the draw's before it
 var fr_final = false; // this pass draws the game's frame for showing: not an in-between, not a read-back
@@ -2191,14 +2192,26 @@ fn wake() void {
 
 extern "gdi32" fn GetDeviceCaps(hdc: ?*anyopaque, index: c_int) callconv(.winapi) c_int;
 extern "user32" fn GetDC(wnd: ?HWND) callconv(.winapi) ?*anyopaque;
+extern "user32" fn EnumDisplaySettingsW(?[*:0]const u16, u32, *DEVMODEW) callconv(.winapi) i32;
 
-/// RECOMP_FRAMERATE=<hz> shows that many frames a second (rounded down to a
-/// multiple of 30); unset or 0 follows the monitor's refresh rate; 30 is off.
+/// The refresh rate of the monitor the window is on; the primary's when that
+/// cannot be read.
+fn refreshHz() u32 {
+    var mi: extern struct { mi: MONITORINFO, dev: [32]u16 } = .{ .mi = .{ .cbSize = @sizeOf(MONITORINFO) + 64 }, .dev = @splat(0) }; // MONITORINFOEXW
+    var dm: DEVMODEW = .{};
+    if (GetMonitorInfoW(MonitorFromWindow(hwnd.?, 2), &mi.mi) != 0 and
+        EnumDisplaySettingsW(@ptrCast(&mi.dev), 0xFFFFFFFF, &dm) != 0 and dm._rest[1] > 1) // ENUM_CURRENT_SETTINGS; dmDisplayFrequency
+        return dm._rest[1];
+    return @intCast(@max(GetDeviceCaps(GetDC(null), 116), 30)); // VREFRESH
+}
+
+/// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
+/// the monitor's refresh rate; 30 is off.
 fn frInit() void {
     var hz: u32 = 0;
     if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
-    if (hz == 0) hz = @intCast(@max(GetDeviceCaps(GetDC(null), 116), 30)); // VREFRESH
-    fr_steps = @max(hz / 30, 1); // not past the refresh rate: 144 Hz shows 120
+    if (hz == 0) hz = refreshHz();
+    if (hz > 30) fr_step = 1000.0 / @as(f64, @floatFromInt(hz));
     for (&hold) |*h| {
         gl.glGenTextures(1, &h.tex);
         gl.glBindTexture(gl.GL_TEXTURE_2D, h.tex);
@@ -2207,7 +2220,7 @@ fn frInit() void {
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, h.fbo);
         gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, h.tex, 0);
     }
-    if (fr_steps > 1) std.debug.print("[GL] frame interpolation: {d} frames a second\n", .{30 * fr_steps});
+    if (hz > 30) std.debug.print("[GL] frame interpolation: {d} frames a second\n", .{hz});
 }
 
 /// Record a draw into the frame being built (game thread).
@@ -2655,9 +2668,10 @@ fn waitServing(t: f64) void {
         serveSync();
         const now = nowMs();
         if (now >= t) return;
-        if (t - now < 2) continue; // too short to sleep through
+        // A sleep of 1 ms can take 2 at the 1 ms timer resolution: stop 2 ms short, spin the rest.
+        if (t - now < 3) continue;
         lock();
-        if (sync_req == null) wait(@intFromFloat(t - now - 1));
+        if (sync_req == null) wait(@intFromFloat(t - now - 2));
         unlock();
     }
 }
@@ -2681,8 +2695,6 @@ fn renderThread() void {
     wake();
     unlock();
     if (!ok) return;
-    const steps: f64 = @floatFromInt(fr_steps);
-    const step = present_period / steps;
     while (true) {
         lock();
         while (pending == null) {
@@ -2707,18 +2719,27 @@ fn renderThread() void {
         tex_dead.clearRetainingCapacity();
         runUploads(cur);
         frameResolve(cur, cur.ops.items.len);
-        if (last_present != 0 and fr_steps > 1 and fr_prev.ops.items.len != 0) {
+        const due = last_present + present_period;
+        if (last_present != 0 and fr_step < present_period and fr_prev.ops.items.len != 0) {
             frameMatch(fr_prev, cur);
-            for (1..fr_steps) |k| {
-                const t = last_present + step * @as(f64, @floatFromInt(k));
+            // Evenly spaced beats many: when one in-between takes longer to draw
+            // than one refresh, they show every second (third...) one.
+            const slot = fr_step * @max(1, @ceil(fr_pass_ms / fr_step));
+            // Each is blended for the time it really shows at, not for a place on
+            // a grid: one shown late with an earlier picture moves the world unevenly.
+            var shown_at = last_present;
+            var next = @max(shown_at + slot, nowMs() + fr_pass_ms);
+            while (next < due - slot * 0.5) : (next = @max(shown_at + slot, nowMs() + fr_pass_ms)) {
                 serveSync();
-                if (nowMs() >= t + step) continue; // too late for this one
+                const t0 = nowMs();
                 blitFbo(hold[hold_at].fbo, fbo);
-                frameReplay(fr_prev, cur, 0, cur.ops.items.len, @floatCast(@as(f64, @floatFromInt(k)) / steps));
+                frameReplay(fr_prev, cur, 0, cur.ops.items.len, @floatCast((next - last_present) / present_period));
                 sync_have = 0;
                 blitWindow(fbo);
-                waitServing(t);
+                fr_pass_ms += (nowMs() - t0 - fr_pass_ms) * 0.1;
+                waitServing(next);
                 swapWindow();
+                shown_at = nowMs(); // with vsync the swap returns at the vblank
             }
         }
         if (!final_done) finalPass();
@@ -2729,11 +2750,10 @@ fn renderThread() void {
         if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
         blitWindow(hold[1 - hold_at].fbo);
         if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
-        // On the vblank grid while on time, so sleep overshoot does not add up.
-        const due = last_present + present_period;
         if (last_present != 0) waitServing(due);
         swapWindow();
         const now = nowMs();
+        // On the vblank grid while on time, so sleep overshoot does not add up.
         last_present = if (now - due < present_period) due else now;
         frameStats(cur);
         if (frame % 256 == 0) meshSweep();
@@ -2777,7 +2797,8 @@ fn frameStats(f: *const Frame) void {
     const now = nowMs();
     if (frame % 64 != 0 or now - fps.t0 < 5000) return;
     const n: f64 = @floatFromInt(frame - fps.f0);
-    if (fps.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown, guest {d:.1} ms avg {d:.1} max ({d:.1} in draw), {d} draws ({d} merged), queued {d}+{d}, eye {d:.0} {d:.0} {d:.0}, render {d:.1} ms, read-back {d:.1} ms\n", .{ n * 1000 / (now - fps.t0), @as(f64, @floatFromInt(shown - fps.s0)) * 1000 / (now - fps.t0), fps.work / n, fps.work_max, fps.draw_ms / n, fps.draws / @as(u64, @intFromFloat(n)), s.merged, s.queued[0], s.queued[1], f.eye[0], f.eye[1], f.eye[2], fps.render / n, fps.sync / n });
+    if (fps.t0 != 0) std.debug.print("[GL] {d:.1} fps, {d:.1} shown, guest {d:.1} ms avg {d:.1} max ({d:.1} in draw), {d} draws ({d} merged), queued {d}+{d}, eye {d:.0} {d:.0} {d:.0}, render {d:.1} ms, read-back {d:.1} ms, longest gap {d:.1} ms\n", .{ n * 1000 / (now - fps.t0), @as(f64, @floatFromInt(shown - fps.s0)) * 1000 / (now - fps.t0), fps.work / n, fps.work_max, fps.draw_ms / n, fps.draws / @as(u64, @intFromFloat(n)), s.merged, s.queued[0], s.queued[1], f.eye[0], f.eye[1], f.eye[2], fps.render / n, fps.sync / n, swap_gap });
+    swap_gap = 0;
     fps.t0 = now;
     fps.f0 = frame;
     fps.s0 = shown;
@@ -2795,9 +2816,15 @@ fn showFbo(src: gl.GLuint) void {
     swapWindow();
 }
 
+var swap_at: f64 = 0;
+var swap_gap: f64 = 0; // longest time between shown frames, for RECOMP_FPS
+
 fn swapWindow() void {
     _ = gl.eglSwapBuffers(dpy, surf);
     shown += 1;
+    const now = nowMs();
+    if (swap_at != 0) swap_gap = @max(swap_gap, now - swap_at);
+    swap_at = now;
     pumpMessages();
 }
 

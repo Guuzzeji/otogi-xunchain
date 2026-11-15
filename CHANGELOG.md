@@ -18,6 +18,11 @@ the Release workflow moves "Unreleased" into a new version section.
   at the render resolution instead of being read back at 640x480: sharper, and faster.
 
 ### Fixed
+- Judder with `framerate` above 30: the scenery moved unevenly while the character
+  looked fine. In-between frames are now drawn for the moment they are shown at,
+  and when the PC cannot make them all in time it shows fewer, evenly spaced.
+- `framerate = 0` follows the refresh rate of the monitor the game is on, exactly
+  (a 144 Hz monitor shows 144 frames a second, was 120).
 - Setup downloads everything it needs (the ANGLE and Dear ImGui libraries too) before
   translating the game, and tries a failed download three times. A network hiccup no
   longer stops the build minutes in, at the compile step.
