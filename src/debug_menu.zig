@@ -1,6 +1,6 @@
 //! In-game debug menu (F1): render health, pause and frame step, a memory
 //! poke and cheats. Dear ImGui drawn over the window after each blit, on the
-//! guest thread (the only GL thread). Closed, it costs nothing.
+//! render thread (the only GL thread). Closed, it costs nothing.
 const std = @import("std");
 const im = @import("imgui");
 const gl_hle = @import("gl_hle.zig");
@@ -15,8 +15,17 @@ extern fn cImGui_ImplWin32_WndProcHandler(hwnd: *anyopaque, msg: u32, wp: usize,
 extern fn cImGui_ImplOpenGL3_InitEx(glsl_version: ?[*:0]const u8) bool;
 extern fn cImGui_ImplOpenGL3_NewFrame() void;
 extern fn cImGui_ImplOpenGL3_RenderDrawData(data: *im.ImDrawData) void;
-extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) i32;
-extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) i32;
+const manual = @import("manual.zig");
+
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) *anyopaque;
+extern "kernel32" fn GetCurrentThread() callconv(.winapi) *anyopaque;
+extern "kernel32" fn GetProcessTimes(*anyopaque, *u64, *u64, kernel: *u64, user: *u64) callconv(.winapi) i32;
+extern "kernel32" fn GetThreadTimes(*anyopaque, *u64, *u64, kernel: *u64, user: *u64) callconv(.winapi) i32;
+const MemCounters = extern struct { cb: u32 = @sizeOf(MemCounters), faults: u32 = 0, peak_working_set: usize = 0, working_set: usize = 0, quota: [4]usize = @splat(0), pagefile: usize = 0, peak_pagefile: usize = 0, private: usize = 0 };
+extern "kernel32" fn K32GetProcessMemoryInfo(*anyopaque, *MemCounters, u32) callconv(.winapi) i32;
+extern fn xbox_ContiguousInUseBytes() u32;
+extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
+extern "c" fn fclose(*anyopaque) c_int;
 
 const VK_F1 = 0x70;
 const WM_KEYDOWN = 0x0100;
@@ -46,16 +55,27 @@ pub fn holdFrame() bool {
     return paused;
 }
 
-fn nowMs() f64 {
-    var f: i64 = 0;
-    var t: i64 = 0;
-    _ = QueryPerformanceFrequency(&f);
-    _ = QueryPerformanceCounter(&t);
-    return @as(f64, @floatFromInt(t)) * 1000 / @as(f64, @floatFromInt(f));
+const nowMs = gl_hle.nowMs;
+
+/// CPU time (kernel + user, 100 ns units) of the process and of the game's
+/// thread, which runs the lifted code and records every draw.
+fn cpuTimes() [2]u64 {
+    var c: u64 = 0;
+    var e: u64 = 0;
+    var k: [2]u64 = .{ 0, 0 };
+    var u: [2]u64 = .{ 0, 0 };
+    _ = GetProcessTimes(GetCurrentProcess(), &c, &e, &k[0], &u[0]);
+    _ = GetThreadTimes(gl_hle.game_thread orelse GetCurrentThread(), &c, &e, &k[1], &u[1]);
+    return .{ k[0] + u[0], k[1] + u[1] };
 }
+var cpu0: [2]u64 = .{ 0, 0 };
+var cpu_pct: [2]f32 = .{ 0, 0 }; // process, game thread; 100 = one core
+var mem: MemCounters = .{};
+pub var cull_last: [manual.cull.len]manual.CullSite = @splat(.{});
 
 /// Rates over the last second, and the guest's work time per frame.
 var work_hist: [120]f32 = @splat(0);
+var draw_hist: [120]f32 = @splat(0);
 var hist_at: usize = 0;
 var seen_frame: u32 = 0;
 var rate_t0: f64 = 0;
@@ -69,17 +89,24 @@ fn sampleRates() void {
     if (gl_hle.frame != seen_frame) {
         seen_frame = gl_hle.frame;
         work_hist[hist_at] = gl_hle.last.work_ms;
+        draw_hist[hist_at] = gl_hle.last.draw_ms;
         hist_at = (hist_at + 1) % work_hist.len;
         if (gl_hle.last.work_ms > 1000.0 / 30.0) late += 1;
+        cull_last = manual.cull;
+        for (&manual.cull) |*c| c.* = .{ .from = c.from };
     }
     const now = nowMs();
     if (now - rate_t0 < 1000) return;
+    const cpu = cpuTimes();
     if (rate_t0 != 0) {
         const dt: f32 = @floatCast((now - rate_t0) / 1000);
+        for (&cpu_pct, cpu, cpu0) |*p, a, b| p.* = @as(f32, @floatFromInt(a - b)) / 1e5 / dt;
+        _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mem, @sizeOf(MemCounters));
         game_fps = @as(f32, @floatFromInt(gl_hle.frame -% rate_f0)) / dt;
         shown_fps = @as(f32, @floatFromInt(gl_hle.shown -% rate_s0)) / dt;
     }
     rate_t0, rate_f0, rate_s0 = .{ now, gl_hle.frame, gl_hle.shown };
+    cpu0 = cpu;
 }
 
 pub fn text(comptime f: []const u8, args: anytype) void {
@@ -144,24 +171,42 @@ fn renderTab() void {
     text("scale {s}, widescreen {s}, framerate {s}, vsync {s}", .{ env("RECOMP_SCALE"), env("RECOMP_WIDESCREEN"), env("RECOMP_FRAMERATE"), env("RECOMP_VSYNC") });
     im.ImGui_SeparatorText("Frame rate");
     text("game {d:.1} fps (target 30), shown {d:.1} fps, frame {d}", .{ game_fps, shown_fps, gl_hle.frame });
-    var max: f32 = 0;
-    var sum: f32 = 0;
-    for (work_hist) |v| {
-        max = @max(max, v);
-        sum += v;
+    // Guest ms is the game's code plus draw(), which records; the second graph is draw() alone.
+    for ([_]struct { [:0]const u8, *const [120]f32 }{ .{ "guest ms", &work_hist }, .{ "of it in draw", &draw_hist } }) |g| {
+        var max: f32 = 0;
+        var sum: f32 = 0;
+        for (g[1]) |v| {
+            max = @max(max, v);
+            sum += v;
+        }
+        var overlay: [64]u8 = undefined;
+        const ov = std.fmt.bufPrintSentinel(&overlay, "avg {d:.1} ms, max {d:.1} ms", .{ sum / work_hist.len, max }, 0) catch "";
+        im.ImGui_PlotLinesEx(g[0], g[1], work_hist.len, @intCast(hist_at), ov, 0, 50, .{ .x = 0, .y = 80 }, @sizeOf(f32));
     }
-    var overlay: [64]u8 = undefined;
-    const ov = std.fmt.bufPrintSentinel(&overlay, "avg {d:.1} ms, max {d:.1} ms", .{ sum / work_hist.len, max }, 0) catch "";
-    im.ImGui_PlotLinesEx("guest ms", &work_hist, work_hist.len, @intCast(hist_at), ov, 0, 50, .{ .x = 0, .y = 80 }, @sizeOf(f32));
     text("frames over 33.3 ms of guest work: {d}", .{late});
     im.ImGui_SameLine();
     if (im.ImGui_Button("reset")) late = 0;
+    im.ImGui_SeparatorText("CPU and RAM");
+    text("CPU, 100 = one core: all {d:.0}%, game thread {d:.0}%, others {d:.0}%", .{ cpu_pct[0], cpu_pct[1], cpu_pct[0] - cpu_pct[1] });
+    text("RAM: {d} MB in use ({d} MB private, peak {d} MB)", .{ mem.working_set >> 20, mem.private >> 20, mem.peak_working_set >> 20 });
+    text("guest contiguous memory: {d:.1} of 64 MB", .{@as(f32, @floatFromInt(xbox_ContiguousInUseBytes())) / (1 << 20)});
+    // The sampler (main.zig) logs where each thread spent the next 3 s.
+    if (im.ImGui_Button("Profile 3 s to otogi.log")) if (fopen("logs\\sample", "wb")) |f| {
+        _ = fclose(f);
+    };
     im.ImGui_SeparatorText("Last game frame");
     const l = gl_hle.last;
-    text("draws {d}, clears {d}, CopyRects {d}, texture uploads {d}", .{ l.draws, l.clears, l.copies, l.uploads });
+    text("draws {d} ({d} from the mesh cache, {d} new, {d} merged into another)", .{ l.draws, l.mesh_hits, l.mesh_new, l.merged });
+    text("clears {d}, CopyRects {d}, texture uploads {d}", .{ l.clears, l.copies, l.uploads });
+    text("game code {d:.1} ms, recording draws {d:.1} ms, waiting on read-backs {d:.1} ms", .{ l.work_ms - l.draw_ms - l.sync_ms, l.draw_ms, l.sync_ms });
+    text("render thread {d:.1} ms over all passes; objects queued to draw {d} + {d}", .{ l.render_ms, l.queued[0], l.queued[1] });
+    if (im.ImGui_TreeNode("Frustum tests by call site")) {
+        for (cull_last) |s| if (s.tested != 0) text("{X:0>6}: {d} tested, {d} visible", .{ s.from, s.tested, s.visible });
+        im.ImGui_TreePop();
+    }
     const c = gl_hle.cacheSizes();
     im.ImGui_SeparatorText("Host caches");
-    text("textures {d}, GL programs {d}, render targets {d}", .{ c.textures, c.programs, c.targets });
+    text("textures {d}, GL programs {d}, render targets {d}, meshes {d}", .{ c.textures, c.programs, c.targets, c.meshes });
     text("vertex programs {d}, pixel shaders {d}, recorded pushbuffers {d}", .{ c.vertex_programs, c.pixel_shaders, c.pushbuffers });
     im.ImGui_SeparatorText("Game");
     _ = im.ImGui_Checkbox("Pause", &paused);

@@ -121,7 +121,7 @@ fn addGenerated(b: *std.Build, mod: *std.Build.Module) void {
         if (e.kind == .file and std.mem.endsWith(u8, e.name, ".c")) files.append(b.allocator, b.dupe(e.name)) catch @panic("OOM");
     }
     mod.addIncludePath(b.path("src/recomp/gen"));
-    mod.addCSourceFiles(.{ .root = b.path("src/recomp/gen"), .files = files.items, .flags = &.{ "-std=gnu11", "-O1", "-fno-strict-aliasing", "-fwrapv", "-w" } });
+    mod.addCSourceFiles(.{ .root = b.path("src/recomp/gen"), .files = files.items, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-fwrapv", "-w" } });
 }
 
 // Windows source set from xboxrecomp's CMakeLists (minus the SDL/POSIX-only files).

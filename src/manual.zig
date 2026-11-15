@@ -9,6 +9,8 @@ extern var g_icall_trace_idx: u32;
 extern var g_icall_count: u64;
 
 extern threadlocal var g_eax: u32;
+extern threadlocal var g_ecx: u32;
+extern threadlocal var g_edx: u32;
 extern threadlocal var g_esp: u32;
 extern var g_xbox_mem_offset: isize;
 
@@ -48,6 +50,24 @@ export fn sub_000FA2A0() void {
     mem32(dev + 0x30).* = dev + 0x2C;
     g_eax = mem32(dev + 0x2C).*;
     g_esp += 12; // ret 8
+}
+
+/// D3D pushbuffer kick (ecx = device). The original sets the PFB flush bit and
+/// spins until the GPU clears it, then writes PUT. Here the nv2a-ack thread
+/// clears it once per millisecond, and the ring fills several times a frame:
+/// 17% of the guest thread in a 2,400-draw scene. Nothing executes the
+/// pushbuffer, so write PUT and return, leaving the registers as the original
+/// does. The recording (0x2000) and wait-for-idle paths keep the original body.
+extern fn sub_000FA0C0_gen() void;
+export fn sub_000FA0C0() void {
+    const dev = g_ecx;
+    const flags = mem32(dev + 8).*;
+    if (flags & 0x2000 != 0 or mem32(0x104D20).* != 0) return sub_000FA0C0_gen();
+    g_edx = mem32(if (flags & 4 != 0) dev + 0x358 else dev).* & 0x0FFFFFFF;
+    g_ecx = mem32(dev + 0x1800).*;
+    mem32(g_ecx + 0x40).* = g_edx;
+    g_eax = 0;
+    g_esp += 4; // ret
 }
 
 /// RECOMP_ICALL could not resolve a target.
@@ -113,9 +133,27 @@ export fn sub_000E983E() void {
     if (@abs(aspect.* - 4.0 / 3.0) < 0.01 and mem32(g_esp).* != 0xD09BF) {
         const gl_hle = @import("gl_hle.zig");
         aspect.* *= gl_hle.wide();
-        gl_hle.wide_frame = gl_hle.frame;
+        gl_hle.wide_frame = gl_hle.gframe;
     }
     sub_000E983E_gen();
+}
+
+/// The game's sphere-against-frustum test (center*, radius) -> al, cdecl: near,
+/// far (0x1E6994) and four side planes. Counted per call site for the debug
+/// menu, which clears the counts each game frame.
+pub const CullSite = struct { from: u32 = 0, tested: u32 = 0, visible: u32 = 0 };
+pub var cull: [32]CullSite = @splat(.{});
+extern fn sub_000167B0_gen() void;
+export fn sub_000167B0() void {
+    const from = mem32(g_esp).*;
+    sub_000167B0_gen();
+    for (&cull) |*c| {
+        if (c.from == 0) c.from = from;
+        if (c.from != from) continue;
+        c.tested += 1;
+        c.visible += g_eax & 1;
+        return;
+    }
 }
 
 // ── XAPI input (XPP section) ────────────────────────────────────────────────

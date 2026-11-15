@@ -583,6 +583,12 @@ uint64_t xbox_ReadTimeStampCounter(void);
 uint32_t xbox_PortIn(uint32_t port, int width);
 void     xbox_PortOut(uint32_t port, uint32_t value, int width);
 
+/* A dword at a fixed address in the MCPX APU register window (0xFE800000).
+ * The lifter emits these in place of the memory access, which would fault
+ * into the same register model. */
+uint32_t xbox_apu_rd32(uint32_t va);
+void     xbox_apu_wr32(uint32_t va, uint32_t value);
+
 void recomp_trace_enter(const char *name, uint32_t va);
 #define RECOMP_TRACE_ENTER(name, va) recomp_trace_enter((name), (va))
 void recomp_trace_exit(const char *name, uint32_t va);

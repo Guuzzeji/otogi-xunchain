@@ -69,7 +69,8 @@
   - Text and several effects use pixel shaders (register combiners); `CreatePixelShader` keeps each
     `D3DPIXELSHADERDEF`, translated to GLSL after the toolkit's `nv2a_combiner.c`.
   - Every menu frame `CopyRects` copies the back buffer into a 640x480 linear ARGB texture (a desaturate/tint post
-    effect draws it back). The back buffer is GPU-only, so CopyRects reads it back into guest memory.
+    effect draws it back). The back buffer is GPU-only: the copy is a GPU blit into a host target the texture then samples,
+    read back into guest memory only when the game locks the surface (see Render thread under Draw cost).
   - `SetViewport` passes 0x7FFFFFFF for "the whole target"; clamped to 640x480 as D3D does.
   - Swap is held to 60 Hz: nothing else paces it, and the title otherwise runs ~1000 fps.
   - A8 textures read RGB as 1 (as xemu); `G8B8` maps as xemu does.
@@ -144,9 +145,9 @@
   from a back buffer copy counts as one (`addCopy`), so the blur stretches across instead of extending its edge.
 - Frame interpolation (`RECOMP_FRAMERATE`, default the refresh rate of the window's monitor; 30 is off):
   the logic still steps once per 30 Hz frame. Each frame's draws and clears are recorded (state block, textures,
-  shaders, vertex/index copies, vertex shader constants, transforms); Swap then draws the frame again at in-between
+  shaders, vertex/index copies, vertex shader constants, transforms); the render thread draws the frame again at in-between
   times inside its slot with constants and transforms blended from the previous frame's matching draw (same
-  shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency).
+  shader/texture/stream/count, n-th occurrence), and shows the real frame at the slot's end (one frame of latency, and one for the hand-over).
   CPU-written vertices (particles, 2D) do not blend. `RECOMP_FPS=1` prints game and shown frames per second.
   Tested: 30 game / 60 and 120 shown in stage 1.
 - The game reads `game\`, `settings.ini` and `logs\` from the working directory; when that has no
@@ -168,6 +169,8 @@
   a second with 40 ms gaps (an in-between at 30 ms into the slot, the real frame 3 ms later). After: 30 shown,
   34 ms gaps, as nothing fits; menus (work 7 ms) show 60. `RECOMP_FPS=1` prints the longest gap and the work time.
   More frames in a stage need less work a frame, or the replays on a second thread while the game runs.
+  With the render thread (below) it is that thread that schedules them (`renderThread`), and what one in-between
+  costs to draw (`fr_pass_ms`), not the game's work, decides the spacing: the same opening shows 137 of 144.
 - Flicker report (2026-11-01): a probe reading nine points of the window after every shown frame (title, menus,
   stage, combat, 95 s at 120 Hz, vsync off) found no black frames except the game's own cut at stage start.
   Unexplained; vsync was added in case it was tearing.
@@ -176,6 +179,25 @@
   scattered them. Draws now blend only when their key (shader, textures, stream, base, first vertex, count) is unique
   in both frames; repeated ones show the newer frame. A probe comparing each in-between frame with its neighbours
   (32x18 downsample) found 10 bad frames in a 25 s dash run before, 0 after; about half the draws blend.
+- Stutter on trees and enemies (m000, 2026-11-14): the unblended half was every mesh drawn more than once (bamboo,
+  enemies of one kind: 329 of 689 draws standing in m000), moving at 30 Hz inside a 60 Hz picture. Pairing them by
+  nearest constants (an 8-number signature, the group's mean change taken out, the nearest 4 times nearer than the
+  next) fixed standing still and left the trees jittering when the camera turned: a group whose count changed as one
+  culled stayed unblended whole (100-220 draws a frame), and a turn changes each instance's rows by a different
+  amount. What works: things that stand still keep some rows bit for bit that differ from one to the next (bamboo,
+  program `1DA3E41`: rows 91-93 and 120-122 of 13 that differ), so `frameMatch` learns those rows per key and pairs
+  by them, any count, any camera. That left the mist jittering (sprites of `1D94C21`, all moving): by the signature
+  24-35 of 40 paired while the camera turned, and none where the count changed. The ones the rows do not name now
+  take the previous draw nearest in up to 4 rows picked per key, each added while it sets the nearest previous draw
+  further apart from the next (16 draws tried, every 4 frames); for the mist that picks its world matrix, rows
+  120-122, which a camera turn leaves alone. Two as near count as one only with all constants equal: picking either
+  of two sprites with the same alpha is how a one-row choice would scatter them. Running forward and turning in
+  m000: 0 draws unblended most frames, else the ones new that frame. Draws with equal constants must get the same
+  answer: blending one pass of the player's shadow volume and not the other drew streaks from player to shadow.
+  Matching costs 0.1-0.2 ms at 260-690 draws, 1.1-1.3 ms at 1,400-2,200, in the frame's wait. Checked by eye on
+  in-between frames of m000, m001, m003, m014, m020; not with the dash probe.
+- The mesh cache counted an in-between replay as a mesh's second sighting, so with interpolation on every new mesh got
+  buffers at once; it now waits for a later game frame.
 - Mist sprites (vertex program `1D94C21`, additive, Z write off) come last in the frame; the game turns ZENABLE off
   for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
   test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
@@ -199,6 +221,50 @@
   scroll wraps at 1 and jumps if rescaled), v mapped through sqrt for falling water, whole-number u scales so the wrap
   round the tower is seamless; solid near the top of each strip, streaky with gaps lower, faded in over the top 15%
   and out over the lower 60%; no distance terms, so it looks the same close up.
+
+## Draw cost (issue #2)
+- Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.
+  CPU-bound on the guest thread; resolution and backend make no difference.
+- Bench: load a save, cheat `warp 1`, let m001's opening play; `RECOMP_FPS=1` prints guest ms and draws every 5 s.
+  Development PC, d3d11, scale 1, at the 2,660-draw part of the opening, guest ms a frame after each step:
+  - 28-31 as it was.
+  - 26.5: `sub_000FA0C0`, the D3D pushbuffer kick, waited on a PFB flush bit the nv2a-ack thread clears once a
+    millisecond; the ring fills several times a frame. Hooked in `manual.zig` to write PUT and return.
+  - 24.2: sampler parameters written only when changed, stages with no texture skipped (`applyStages`). ANGLE
+    rebuilds a sampler state on every write, changed or not.
+  - 18.4: mesh cache (`gl_hle.zig`). Only about 100 of the draws are recorded pushbuffers, so caching those alone
+    would have done nothing; nearly all the others repeat unchanged vertices too (skinning is in the vertex programs).
+  - 16.1: lifted code at `-O2` (was `-O1`).
+  - 16.0: `progGet` tries the last program first.
+  - 13.3 (from 15.2 the day it was measured): DirectSound's APU register accesses call the register model
+    instead of faulting into it. About 200 faults a frame, 6 of every 7 from one voice-volume routine. The
+    lifter emits `xbox_apu_rd32`/`xbox_apu_wr32` for a dword at a fixed address in 0xFE800000-0xFE87FFFF (288
+    sites); two byte accesses and anything computed still trap. `RECOMP_APU_TRACE` only sees the trapped ones.
+- All 29 stages, old against new, busiest 5 s of the first 45 s after a warp: 33% to 61% less guest ms on every
+  stage, about half on most. The heaviest (m003, m005, m014, m016, m017, m019, m021) were 29-36 ms and are 13-20.
+  Nothing here is per stage, so there is no switch.
+- Measured and left out: skipping unchanged uniform uploads (0.3 ms at best), a no-error EGL context (0.1 ms, and
+  it makes a bad guest state value undefined behaviour).
+- What is left: about 5 in ANGLE's draw call itself (2 us a draw), 3 in the rest of `draw`, the rest guest
+  code. Fewer draws would need batching.
+- Render thread: the game thread calls no GL. `draw`, Clear and whole-surface CopyRects are recorded into a
+  frame (what interpolation recorded already, plus the bytes of textures whose hash changed and new render
+  targets); Swap hands it over and waits until the render thread has shown the frame before, which is the 30 Hz
+  pacing. The render thread draws the in-between passes and the frame itself in its slot. Three frames go round:
+  one being built, the one being drawn and the one before it to blend from.
+  - Shaders are kept by content, handle -> table index looked up when the draw is recorded, so a handle reused
+    for another shader (heap reclaim) does not change draws already recorded. Tables are fixed-size (1024) so the
+    render thread can read them while the game thread appends.
+  - Read-backs: a CopyRects into part of a surface, or the game locking (`Lock2DSurface`, hooked) a surface a
+    whole-surface copy left on the GPU, waits while the render thread draws what the game's frame has recorded
+    so far on top of the frame before, and reads the pixels (`serveSync`). The post effects' two full-screen
+    copies a frame did this at first: 18 of the game thread's 23 ms. They are GPU blits now (and filtered, at
+    the render scale, where the read-back sampled nearest down to 640x480).
+  - m001's opening at 2,300-2,500 draws, 120 Hz, scale 2: game thread 3.5 ms a frame (1.4 recording), render
+    thread 17-18 ms over the four passes, 119.8-120 shown (single thread: 110-113).
+  - Costs: one more game frame of latency (the hand-over). The debug menu and cheats run on the render thread
+    and write guest memory from there.
+  - Not tested: the game-over still (the Lock path); the pause menu, which blurs through render targets, is.
 
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
