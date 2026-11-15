@@ -13,6 +13,9 @@ the Release workflow moves "Unreleased" into a new version section.
   and when the PC cannot make them all in time it shows fewer, evenly spaced.
 - `framerate = 0` follows the refresh rate of the monitor the game is on, exactly
   (a 144 Hz monitor shows 144 frames a second, was 120).
+- Setup downloads everything it needs (the ANGLE and Dear ImGui libraries too) before
+  translating the game, and tries a failed download three times. A network hiccup no
+  longer stops the build minutes in, at the compile step.
 
 ## [0.7.0] - 2026-11-08
 

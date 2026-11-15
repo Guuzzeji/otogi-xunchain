@@ -1,5 +1,6 @@
 //! otogi-xunchain-setup.exe: builds the game from the player's own disc image.
-//! Checks the ISO, extracts game\, fetches pinned Zig and Python (+ Capstone),
+//! Checks the ISO, extracts game\, fetches pinned Zig, the build's packages
+//! (ANGLE, Dear ImGui) and Python (+ Capstone), all before the long steps,
 //! lifts the XBE to C, builds, and leaves a playable folder:
 //!   <out>\otogi.exe, the ANGLE DLLs, settings.ini, game\
 //! Work files go to <out>\build; each finished step leaves a stamp in
@@ -56,7 +57,7 @@ const capstone_dl: Download = .{
     .name = "capstone-5.0.9-py3-none-win_amd64.whl",
 };
 
-const steps = [_][:0]const u8{ "Check the disc image", "Extract the game files", "Unpack the source code", "Download Zig", "Download Python and Capstone", "Translate the game code to C", "Compile the game", "Finish" };
+const steps = [_][:0]const u8{ "Check the disc image", "Extract the game files", "Unpack the source code", "Download Zig and libraries", "Download Python and Capstone", "Translate the game code to C", "Compile the game", "Finish" };
 
 // ── Shared between the UI and the worker ───────────────────────────────────
 var iso_buf: [1024:0]u8 = @splat(0);
@@ -74,7 +75,7 @@ var step_ms: u64 = 0; // when the current step started
 /// fast connection (setup.log stamps each step; 8 min 15 s in all; extract is 5 s from a
 /// warm cache, so 20 here). Steps already done count 0.
 /// ponytail: fixed guesses; scale by the measured speed if they prove far off.
-const step_secs = [_]f32{ 1, 20, 1, 20, 2, 230, 240, 1 };
+const step_secs = [_]f32{ 1, 20, 1, 30, 2, 230, 240, 1 };
 var step_left: [steps.len]f32 = step_secs;
 
 /// Cancel: the worker stops at the next step; tools die with the job.
@@ -884,7 +885,9 @@ fn worker(io: Io, gpa: std.mem.Allocator) void {
             return fail("{s}", .{"Stopped. Build again to pick up from the last finished step."});
         }
         c.say("FAILED: {t}", .{e});
-        if (result != .failed) fail("{s}: {t}", .{ steps[step_at.load(.acquire)], e });
+        const at = step_at.load(.acquire);
+        if (result == .failed) return;
+        if (at == 3 or at == 4) fail("Could not download the build tools ({t}). Check your internet connection and try again.", .{e}) else fail("{s}: {t}", .{ steps[at], e });
         return;
     };
     c.say("Done: {s}\\otogi.exe", .{out});
@@ -965,10 +968,23 @@ fn pipeline(c: *Ctx) !void {
     // The source has no .git: build.zig takes the commit from here instead.
     try cwd.writeFile(c.io, .{ .sub_path = c.path("{s}\\commit.txt", .{c.work}), .data = commit });
 
+    // Zig's cache (packages too) stays in the build folder; zig build has
+    // no flag for it, the child inherits this.
+    _ = SetEnvironmentVariableA("ZIG_GLOBAL_CACHE_DIR", (std.fmt.allocPrintSentinel(c.gpa, "{s}\\zig-cache", .{c.work}, 0) catch unreachable).ptr);
+
     try next(c, 3);
     const zig = c.path("{s}\\tools\\zig-x86_64-windows-0.17.0\\zig.exe", .{c.work});
     if (!c.done("zig")) {
         try unzipFile(c, try fetch(c, zig_dl), c.path("{s}\\tools", .{c.work}));
+        // build.zig.zon's packages (ANGLE, Dear ImGui) now, not minutes later
+        // in the compile: a network failure should cost seconds.
+        var attempt: u32 = 1;
+        while (true) : (attempt += 1) {
+            if (c.run(c.work, &.{ zig, "build", "--fetch" })) break else |e| {
+                if (e == error.Cancelled or attempt == tries) return e;
+                c.say("retrying ({d} of {d})", .{ attempt + 1, tries });
+            }
+        }
         c.stamp("zig");
     }
 
@@ -999,9 +1015,6 @@ fn pipeline(c: *Ctx) !void {
     if (!c.done("build")) {
         // Sneak King's lift needed ~16 GB to compile in parallel.
         const jobs: []const u8 = if (ram_gb != 0 and ram_gb < 16) "-j1" else "-j4";
-        // Zig's cache (packages too) stays in the build folder; zig build has
-        // no flag for it, the child inherits this.
-        _ = SetEnvironmentVariableA("ZIG_GLOBAL_CACHE_DIR", (std.fmt.allocPrintSentinel(c.gpa, "{s}\\zig-cache", .{c.work}, 0) catch unreachable).ptr);
         try c.run(c.work, &.{ zig, "build", jobs, "--prefix", c.out, "--prefix-exe-dir", "." });
         c.stamp("build");
     }
@@ -1093,18 +1106,11 @@ fn fetch(c: *Ctx, d: Download) ![]const u8 {
     const dest = c.path("{s}\\{s}", .{ dir, d.name });
     if (sha256File(c, dest)) |h| if (std.mem.eql(u8, &h, d.sha256)) return dest;
     c.say("downloading {s}", .{d.url});
-    {
-        const f = try Io.Dir.cwd().createFile(io, dest, .{});
-        defer f.close(io);
-        var buf: [64 * 1024]u8 = undefined;
-        var w = f.writer(io, &buf);
-        var client: std.http.Client = .{ .allocator = c.gpa, .io = io };
-        defer client.deinit();
-        const res = try client.fetch(.{ .location = .{ .url = d.url }, .response_writer = &w.interface });
-        try w.interface.flush();
-        if (res.status != .ok) {
-            c.say("HTTP {d}", .{@intFromEnum(res.status)});
-            return error.DownloadFailed;
+    var attempt: u32 = 1;
+    while (true) : (attempt += 1) {
+        if (download(c, d.url, dest)) break else |e| {
+            if (attempt == tries or cancel.load(.acquire)) return e;
+            c.say("download failed: {t}; retrying ({d} of {d})", .{ e, attempt + 1, tries });
         }
     }
     const h = sha256File(c, dest) orelse return error.DownloadFailed;
@@ -1113,6 +1119,24 @@ fn fetch(c: *Ctx, d: Download) ![]const u8 {
         return error.HashMismatch;
     }
     return dest;
+}
+
+/// A download that fails is tried this many times in all.
+const tries = 3;
+
+fn download(c: *Ctx, url: []const u8, dest: []const u8) !void {
+    const f = try Io.Dir.cwd().createFile(c.io, dest, .{});
+    defer f.close(c.io);
+    var buf: [64 * 1024]u8 = undefined;
+    var w = f.writer(c.io, &buf);
+    var client: std.http.Client = .{ .allocator = c.gpa, .io = c.io };
+    defer client.deinit();
+    const res = try client.fetch(.{ .location = .{ .url = url }, .response_writer = &w.interface });
+    try w.interface.flush();
+    if (res.status != .ok) {
+        c.say("HTTP {d}", .{@intFromEnum(res.status)});
+        return error.DownloadFailed;
+    }
 }
 
 fn sha256File(c: *Ctx, p: []const u8) ?[64]u8 {
