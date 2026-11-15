@@ -17,6 +17,18 @@
  * platform's MMIO hook is active, so define it before the #if guard. */
 MCPXAPUState *g_apu_state = NULL;
 
+/* Lifted code calls these for a dword at a fixed APU address: the same
+ * register model the trap below reaches, without the fault. */
+uint32_t xbox_apu_rd32(uint32_t va)
+{
+    return (uint32_t)mcpx_apu_mmio_read(g_apu_state, va - 0xFE800000u, 4);
+}
+
+void xbox_apu_wr32(uint32_t va, uint32_t value)
+{
+    mcpx_apu_mmio_write(g_apu_state, va - 0xFE800000u, value, 4);
+}
+
 /* Windows: a VEH hands over the CONTEXT. POSIX arm64: a SIGBUS/SIGSEGV
  * handler hands over the ucontext (apu_hook_handle_mmio_posix, at the end).
  * x86-64 Linux has no trap yet. */

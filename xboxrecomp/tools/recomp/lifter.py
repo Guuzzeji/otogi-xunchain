@@ -249,8 +249,22 @@ def _fmt_mem(op):
     return " + ".join(parts)
 
 
+def _apu_reg(op):
+    """A dword at a fixed address in the MCPX APU register window.
+
+    Those go straight to the register model: left as a plain access, each one
+    faults into it, and DirectSound writes several a voice every frame.
+    Anything else in the window (a computed address, a byte) still traps.
+    """
+    return (op.mem_size == 4 and not op.mem_base and not op.mem_index
+            and getattr(op, "mem_seg", None) != "fs"
+            and 0xFE800000 <= (op.mem_disp & 0xFFFFFFFF) < 0xFE880000)
+
+
 def _fmt_mem_read(op):
     """Format reading from a memory operand."""
+    if _apu_reg(op):
+        return f"xbox_apu_rd32({_fmt_imm(op.mem_disp & 0xFFFFFFFF)})"
     accessor = _mem_accessor(op.mem_size)
     addr = _fmt_mem(op)
     return f"{accessor}({addr})"
@@ -258,6 +272,8 @@ def _fmt_mem_read(op):
 
 def _fmt_mem_write(op, value_expr):
     """Format writing to a memory operand."""
+    if _apu_reg(op):
+        return f"xbox_apu_wr32({_fmt_imm(op.mem_disp & 0xFFFFFFFF)}, {value_expr});"
     accessor = _mem_accessor(op.mem_size)
     addr = _fmt_mem(op)
     return f"{accessor}({addr}) = {value_expr};"

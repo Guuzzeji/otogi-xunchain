@@ -205,14 +205,17 @@
     would have done nothing; nearly all the others repeat unchanged vertices too (skinning is in the vertex programs).
   - 16.1: lifted code at `-O2` (was `-O1`).
   - 16.0: `progGet` tries the last program first.
+  - 13.3 (from 15.2 the day it was measured): DirectSound's APU register accesses call the register model
+    instead of faulting into it. About 200 faults a frame, 6 of every 7 from one voice-volume routine. The
+    lifter emits `xbox_apu_rd32`/`xbox_apu_wr32` for a dword at a fixed address in 0xFE800000-0xFE87FFFF (288
+    sites); two byte accesses and anything computed still trap. `RECOMP_APU_TRACE` only sees the trapped ones.
 - All 29 stages, old against new, busiest 5 s of the first 45 s after a warp: 33% to 61% less guest ms on every
   stage, about half on most. The heaviest (m003, m005, m014, m016, m017, m019, m021) were 29-36 ms and are 13-20.
   Nothing here is per stage, so there is no switch.
 - Measured and left out: skipping unchanged uniform uploads (0.3 ms at best), a no-error EGL context (0.1 ms, and
   it makes a bad guest state value undefined behaviour).
-- What is left at 16 ms: about 5 in ANGLE's draw call itself (2 us a draw), 3 in the rest of `draw`, the rest guest
-  code. APU register writes trap through the exception handler on the guest thread, about 1.5 ms a frame: the next
-  candidate. Fewer draws would need batching.
+- What is left: about 5 in ANGLE's draw call itself (2 us a draw), 3 in the rest of `draw`, the rest guest
+  code. Fewer draws would need batching.
 
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
