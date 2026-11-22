@@ -88,8 +88,7 @@
 							<div class="gap"></div>
 							<div class="row">
 								<input class="text grow" type="text" id="iso" onchange="iso" placeholder="C:\path\to\otogi.iso"/>
-								<div class="gap"></div>
-								<div class="btn" style="margin: 0 0 0 8dp;" onclick="pick-iso">Browse</div>
+								<div class="btn" onclick="pick-iso">Browse</div>
 							</div>
 							<div class="gap"></div>
 							<div class="small" id="iso-status"></div>
@@ -100,7 +99,7 @@
 							<div class="gap"></div>
 							<div class="row">
 								<input class="text grow" type="text" id="out" onchange="out"/>
-								<div class="btn" style="margin: 0 0 0 8dp;" onclick="pick-out">Browse</div>
+								<div class="btn" onclick="pick-out">Browse</div>
 							</div>
 							<div class="gap"></div>
 							<div class="small" id="out-status"></div>
@@ -140,8 +139,9 @@
 				<div class="card">
 					<div class="row">
 						<div class="path grow" id="settings-path"></div>
-						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-settings">Open file</div>
+						<div class="btn" onclick="open-settings">Open file</div>
 					</div>
+					<div class="gap"></div>
 					<div id="settings-list"></div>
 				</div>
 			</div>
@@ -153,8 +153,8 @@
 				<div class="card">
 					<div class="row">
 						<div class="path grow" id="saves-path"></div>
-						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-saves">Open folder</div>
-						<div class="btn primary" style="margin: 0 0 0 8dp;" onclick="backup-saves">Back up...</div>
+						<div class="btn" onclick="open-saves">Open folder</div>
+						<div class="btn primary" onclick="backup-saves">Back up...</div>
 					</div>
 					<div class="gap"></div>
 					<div id="saves-list"></div>
@@ -186,32 +186,34 @@
 						<span class="icon">&#xEBE8;</span>
 						<h3>Report a bug</h3>
 						<p class="muted small">A crash, a graphics glitch, broken sound, or anything that plays differently from the Xbox. Opens a new GitHub issue with your version, Windows and graphics card filled in, and copies the log below so you can paste it in.</p>
-						<div class="gap"></div>
-						<div class="btn primary" onclick="report">Report on GitHub</div>
-						<div class="btn" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/issues">Known issues</div>
+						<div class="row actions">
+							<div class="btn primary" onclick="report">Report on GitHub</div>
+							<div class="btn" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/issues">Known issues</div>
+						</div>
 					</div>
 					<div class="col card help">
 						<span class="icon">&#xE8BD;</span>
 						<h3>Ask a question</h3>
 						<p class="muted small">How to set it up, how to play, which settings to use, or an idea for the project: ask the community in GitHub Discussions. No log needed.</p>
-						<div class="gap"></div>
-						<div class="btn primary" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/discussions">Open Discussions</div>
+						<div class="row actions">
+							<div class="btn primary" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/discussions">Open Discussions</div>
+						</div>
 					</div>
 				</div>
 				<div class="card">
 					<div class="row">
-						<h3 class="grow" style="margin: 0;">Logs</h3>
+						<h3 class="grow flush">Logs</h3>
 						<div class="chip" id="log-game" onclick="log-pick" value="game">Game (otogi.log)</div>
 						<div class="chip" id="log-build" onclick="log-pick" value="build">Build (setup.log)</div>
 					</div>
 					<div class="gap"></div>
 					<div class="row">
 						<div class="path grow" id="help-log-path"></div>
-						<div class="btn" style="margin: 0 0 0 8dp;" onclick="log-copy">Copy</div>
-						<div class="btn" style="margin: 0 0 0 8dp;" onclick="log-open">Open file</div>
-						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-out">Open folder</div>
+						<div class="btn" onclick="log-copy">Copy</div>
+						<div class="btn" onclick="log-open">Open file</div>
+						<div class="btn" onclick="open-out">Open folder</div>
 					</div>
-					<div class="muted small" id="help-log-info" style="margin: 8dp 0;"></div>
+					<div class="muted small" id="help-log-info"></div>
 					<div id="help-log" class="follow logview"></div>
 				</div>
 			</div>
