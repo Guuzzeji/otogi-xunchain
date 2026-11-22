@@ -171,6 +171,11 @@
   More frames in a stage need less work a frame, or the replays on a second thread while the game runs.
   With the render thread (below) it is that thread that schedules them (`renderThread`), and what one in-between
   costs to draw (`fr_pass_ms`), not the game's work, decides the spacing: the same opening shows 137 of 144.
+- Stuck at 30 shown (issues #15, #1): `fr_pass_ms` was measured only inside the loop it gates. One slow pass
+  (about 200 ms: a program compiling as the pause menu opens) lifted the average past what fits between two game
+  frames, the loop stopped, and nothing lowered the average again until a restart. Now a sample counts as one game
+  frame at most and the average falls while no in-between runs (`pacer.zig`); the log says when they go off and on.
+  Forcing the average to 30 ms brings them back within five game frames.
 - Flicker report (2026-11-01): a probe reading nine points of the window after every shown frame (title, menus,
   stage, combat, 95 s at 120 Hz, vsync off) found no black frames except the game's own cut at stage start.
   Unexplained; vsync was added in case it was tearing.

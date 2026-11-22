@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
     b.step("setup", "Build otogi-xunchain-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);
 
     const test_step = b.step("test", "Run tests");
-    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig" }) |f| {
+    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig", "src/pacer.zig" }) |f| {
         const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host, .link_libc = true }) });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
