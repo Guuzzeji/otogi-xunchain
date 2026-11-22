@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
     //  RECOMP_HEAP_RECLAIM: freed memory is reused. Off, each stage load leaks
     //    its textures and the second one runs the 64 MB contiguous arena dry
     //    (menus then draw white: their textures fail to load).
-    inline for (.{ "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_HEAP_RECLAIM" }) |v| {
+    inline for (.{ "RECOMP_KEYBOARD", "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_HEAP_RECLAIM" }) |v| {
         if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
     }
     print("=== Otogi XUnchain v{s} ({s}): Otogi: Myth of Demons static recompilation ===\n", .{ build_info.version, commit });

@@ -7,7 +7,18 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Added
+- PlayStation and Switch controllers work directly, without DS4Windows or Steam Input, and any
+  controller can be plugged in, unplugged or swapped while playing. Rumble works on all of them.
+
+### Changed
+- The window and input now run on SDL3 (`SDL3.dll` sits beside `otogi.exe`). The picture is drawn
+  the same way as before.
+- The frame rate follows the monitor the window is on, also after moving it to another one.
+
 ### Fixed
+- Keyboard controls work (issue #8): they were listed in the README but never reached the game.
+- A controller is found whichever slot Windows gave it; before, only the first slot was read.
 - The game no longer stays at 30 shown frames a second after one slow moment (opening the
   pause menu, skipping a cutscene, loading a stage). It used to need a restart to get the
   higher frame rate back (issues #15 and #1).

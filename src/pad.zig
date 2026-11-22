@@ -41,3 +41,32 @@ test hostPad {
     try std.testing.expect(std.mem.readInt(i16, g[16..18], .little) < -13107); // past the game's 40%
 }
 
+/// XINPUT_GAMEPAD as the toolkit's XBOX_GAMEPAD lays it out.
+pub const Pad = extern struct {
+    buttons: u16 = 0,
+    analog: [8]u8 = @splat(0), // A B X Y Black White LT RT
+    axes: [4]i16 = @splat(0), // LX LY RX RY
+};
+
+/// Every host pad plays the one guest pad: a button held on any is held, and
+/// an axis is the one pushed furthest. So it does not matter which pad a
+/// player picks up, nor that a pad and a virtual copy of it (DS4Windows,
+/// Steam Input) both show up.
+pub fn merge(into: *Pad, p: Pad) void {
+    into.buttons |= p.buttons;
+    for (&into.analog, p.analog) |*a, b| a.* = @max(a.*, b);
+    for (&into.axes, p.axes) |*a, b| {
+        if (@abs(b) > @abs(a.*)) a.* = b;
+    }
+}
+
+test merge {
+    var m: Pad = .{};
+    merge(&m, .{ .buttons = 0x10, .analog = .{ 255, 0, 0, 0, 0, 0, 0, 0 }, .axes = .{ 100, 0, 0, -32768 } });
+    merge(&m, .{ .buttons = 0x01, .analog = .{ 10, 0, 0, 0, 0, 0, 0, 90 }, .axes = .{ -20000, 0, 0, 5 } }); // the same pad again, or a second one
+    try std.testing.expectEqual(0x11, m.buttons);
+    try std.testing.expectEqual(255, m.analog[0]);
+    try std.testing.expectEqual(90, m.analog[7]);
+    try std.testing.expectEqual(-20000, m.axes[0]);
+    try std.testing.expectEqual(-32768, m.axes[3]);
+}

@@ -42,7 +42,7 @@ You need:
 - Windows 10 or 11, 64-bit
 - A disc image (`.iso`) of your own **Otogi: Myth of Demons, USA** disc. Setup checks it, and only this version works for now.
 - About 5 GB of free disk space. 16 GB of RAM is best; less works, the build just takes longer.
-- An Xbox-style controller is recommended. Keyboard works too.
+- A controller is recommended: Xbox, PlayStation and Switch pads all work, with no extra tools. Keyboard works too.
 
 Then:
 
@@ -75,7 +75,7 @@ Each line can also be set as an environment variable with a `RECOMP_` prefix (`R
 
 ## Controls
 
-Controller: as on the Xbox. LB and RB also work as the triggers (lock-on and dash).
+Controller: as on the Xbox, by button position (the bottom face button is A on every pad). LB and RB also work as the triggers (lock-on and dash). Pads can be plugged in or swapped while playing.
 
 Keyboard:
 
