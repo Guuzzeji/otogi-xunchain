@@ -60,6 +60,7 @@ The launcher also:
 - **Settings:** every option in `settings.ini`, with its explanation, saved as you change it.
 - **Saves:** lists your saved games and where they are (`%LOCALAPPDATA%\Otogi`), and backs them up to a folder you pick.
 - **What's new:** the notes of every release. When a new one is out, **Update** downloads the new launcher and rebuilds the game from the files it already has (about 8 minutes; the disc is not needed again). Your settings and saves stay.
+- **Help & logs:** shows the game's and the build's logs as they are written, and has buttons to report a bug on GitHub (your version and PC filled in, the log copied to paste) or ask a question in Discussions.
 
 A controller works too: the d-pad moves, A selects, LB and RB switch pages.
 
@@ -108,7 +109,7 @@ Known issues:
 - Only the USA disc is supported.
 - *Otogi 2: Immortal Warriors* is a different game and is not supported.
 
-The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. If you hit a crash, a graphics glitch, broken sound or anything that plays differently from the Xbox, please [open an issue](../../issues) and attach `otogi.log` from the game folder (and `setup.log` if the build failed). The log has your GPU and Windows version at the top. Every report helps make the recomp better.
+The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. If you hit a crash, a graphics glitch, broken sound or anything that plays differently from the Xbox, press **Report on GitHub** on the launcher's Help & logs page, or [open an issue](../../issues) yourself and attach `otogi.log` from the game folder (and `setup.log` if the build failed). Questions that are not bugs are welcome in [Discussions](../../discussions). The log has your GPU and Windows version at the top. Every report helps make the recomp better.
 
 ## How it works
 

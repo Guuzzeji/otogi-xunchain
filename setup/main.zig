@@ -44,6 +44,8 @@ const version = "v" ++ build_info.version ++ " (" ++ commit ++ ")";
 const releases_url = "https://api.github.com/repos/Guuzzeji/otogi-xunchain/releases";
 /// The launcher's asset name in each release.
 const asset_name = "otogi-xunchain.exe";
+/// Bug reports go to issues; questions to discussions (setup/ui/launcher.rml).
+const issues_url = "https://github.com/Guuzzeji/otogi-xunchain/issues";
 
 const xbe_sha1 = "abf12bb66fcbd9f694c223419a2309c1a5f72293";
 /// <exe dir>\otogi-setup-iso.txt: the path of the last disc image that checked out.
@@ -283,7 +285,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-const Page = enum { play, install, settings, saves, news };
+const Page = enum { play, install, settings, saves, news, help };
 
 const Ui = struct {
     io: Io,
@@ -294,6 +296,7 @@ const Ui = struct {
     log_off: u64 = 0,
     iso_state: enum { none, ok, wrong, unreadable } = .none,
     copied_at: u64 = 0,
+    help_log: enum { game, build } = .game,
     toast: [:0]const u8 = "",
     toast_at: u64 = 0,
     /// Refreshed every second: the game is built, its disc is extracted.
@@ -374,6 +377,7 @@ const Ui = struct {
         u.free_gb = freeGb();
         u.loadSettings();
         u.loadSaves();
+        if (u.page == .help) u.loadHelpLog();
     }
 
     fn handle(u: *Ui, cmd: []const u8, val: []const u8) void {
@@ -381,7 +385,7 @@ const Ui = struct {
         const eql = std.mem.eql;
         if (eql(u8, cmd, "page")) {
             u.page = std.meta.stringToEnum(Page, val) orelse return;
-            if (u.page == .settings or u.page == .saves) u.refresh();
+            if (u.page == .settings or u.page == .saves or u.page == .help) u.refresh();
         } else if (eql(u8, cmd, "page-step")) {
             const i: i32 = @intFromEnum(u.page);
             const d: i32 = if (eql(u8, val, "-1")) -1 else 1;
@@ -408,8 +412,22 @@ const Ui = struct {
                 if (now - cancel_armed_at < 3000) stopBuild() else cancel_armed_at = now;
             } else if (u.iso_state == .ok or u.extracted) u.start();
         } else if (eql(u8, cmd, "copy-log")) {
-            u.copyLog();
+            _ = u.copyLog("setup.log");
             u.copied_at = GetTickCount64();
+        } else if (eql(u8, cmd, "log-pick")) {
+            u.help_log = if (eql(u8, val, "build")) .build else .game;
+            u.loadHelpLog();
+        } else if (eql(u8, cmd, "log-copy")) {
+            u.say(if (u.copyLog(u.helpLogName())) "Log copied." else "There is no log to copy yet.");
+        } else if (eql(u8, cmd, "log-open")) {
+            var p: [1100:0]u8 = undefined;
+            win_open(z(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }));
+        } else if (eql(u8, cmd, "report")) {
+            // From a failed build: its log; from Help: the log on show.
+            u.report(if (eql(u8, val, "build")) "setup.log" else u.helpLogName());
+        } else if (eql(u8, cmd, "url") and std.mem.startsWith(u8, val, "https://github.com/")) {
+            var p: [300:0]u8 = undefined;
+            win_open(z(&p, "{s}", .{val}));
         } else if (eql(u8, cmd, "open-log")) {
             openOut("setup.log");
         } else if (eql(u8, cmd, "open-out")) {
@@ -535,7 +553,7 @@ const Ui = struct {
         if (result == .ok)
             set("build-result", "<div class=\"gap\"/><p class=\"good\">Otogi is ready.</p><div class=\"gap\"/><div class=\"btn primary\" onclick=\"play-main\">Play</div><div class=\"btn\" onclick=\"open-out\">Open folder</div><div class=\"btn\" onclick=\"page\" value=\"settings\">Settings</div>", .{})
         else if (result == .failed)
-            set("build-result", "<div class=\"gap\"/><p class=\"bad\">{f}</p><p class=\"muted small\">Try again keeps the finished steps. If it keeps failing, click Copy log and send it with your report.</p>", .{esc(std.mem.sliceTo(&fail_msg, 0))})
+            set("build-result", "<div class=\"gap\"/><p class=\"bad\">{f}</p><p class=\"muted small\">Try again keeps the finished steps. If it keeps failing, report it: the log goes with it.</p><div class=\"btn\" onclick=\"report\" value=\"build\">Report this on GitHub</div>", .{esc(std.mem.sliceTo(&fail_msg, 0))})
         else
             set("build-result", "", .{});
 
@@ -543,30 +561,75 @@ const Ui = struct {
         set("sysline", "launcher {s} &#x2014; {f}", .{ version, esc(std.mem.span(win_gpu_name())) });
     }
 
-    /// The last lines of the log (the file has everything).
     fn drawLog(u: *Ui) void {
-        if (u.log.items.len == 0) return ui_set("log", "Nothing yet. The log fills in once you build.");
-        var text = u.log.items;
-        var lines: usize = 0;
-        var i = text.len;
-        while (i > 0 and lines < 400) : (i -= 1) if (text[i - 1] == '\n') {
-            lines += 1;
-        };
-        text = text[i..];
-        var out: std.Io.Writer.Allocating = .init(u.gpa);
-        defer out.deinit();
-        logic.escape(&out.writer, text) catch return;
-        out.writer.writeByte(0) catch return;
-        ui_set("log", @ptrCast(out.written().ptr));
+        showLog(u.gpa, "log", u.log.items, "Nothing yet. The log fills in once you build.");
     }
 
-    /// The whole setup.log to the clipboard (the view keeps only its tail).
-    fn copyLog(u: *Ui) void {
+    /// A whole log (setup.log, otogi.log) to the clipboard: the views keep only
+    /// its tail. False if there is none.
+    fn copyLog(u: *Ui, name: []const u8) bool {
         var p: [1100]u8 = undefined;
-        const name = std.fmt.bufPrint(&p, "{s}\\setup.log", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
-        const text = Io.Dir.cwd().readFileAllocOptions(u.io, name, u.gpa, .limited(64 << 20), .of(u8), 0) catch return;
+        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+        const text = Io.Dir.cwd().readFileAllocOptions(u.io, path, u.gpa, .limited(64 << 20), .of(u8), 0) catch return false;
         defer u.gpa.free(text);
         ui_clipboard(text.ptr);
+        return true;
+    }
+
+    // ── Help & logs ─────────────────────────────────────────────────────────
+    fn helpLogName(u: *Ui) []const u8 {
+        return if (u.help_log == .game) "otogi.log" else "setup.log";
+    }
+
+    /// The picked log's tail, followed live: refresh() calls this each second.
+    fn loadHelpLog(u: *Ui) void {
+        ui_class("log-game", "on", u.help_log == .game);
+        ui_class("log-build", "on", u.help_log == .build);
+        var p: [1100]u8 = undefined;
+        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }) catch return;
+        set("help-log-path", "{f}", .{esc(path)});
+        const f = Io.Dir.cwd().openFile(u.io, path, .{}) catch {
+            set("help-log-info", "", .{});
+            return showLog(u.gpa, "help-log", "", if (u.help_log == .game) "No game log yet. otogi.log is written each time the game runs (unless log = 0 in Settings)." else "No build log yet. setup.log is written when you build the game.");
+        };
+        defer f.close(u.io);
+        const st = f.stat(u.io) catch return;
+        const keep = 96 * 1024; // ponytail: the tail only; Copy and Open file have it all
+        const buf = u.gpa.alloc(u8, @min(st.size, keep)) catch return;
+        defer u.gpa.free(buf);
+        const got = f.readPositionalAll(u.io, buf, st.size - buf.len) catch return;
+        var d: [16]u8 = undefined;
+        set("help-log-info", "{d} KB, last written {s} (UTC)", .{ (st.size + 1023) / 1024, dateTime(&d, st.mtime.nanoseconds) });
+        showLog(u.gpa, "help-log", buf[0..got], "The log is empty.");
+    }
+
+    /// A new GitHub issue with the version and this PC filled in, and the log
+    /// on the clipboard to paste into it (a URL cannot carry a file).
+    fn report(u: *Ui, log: []const u8) void {
+        const copied = u.copyLog(log);
+        var m: [400]u8 = undefined;
+        var body_buf: [2048]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\**What happened?**
+            \\
+            \\
+            \\**What were you doing?** (stage, menu, settings you changed)
+            \\
+            \\
+            \\**Version:** {s}
+            \\**PC:** {s}
+            \\
+            \\**Log** ({s}):
+            \\{s}
+            \\
+        , .{ version, machine(&m), log, if (copied) "the launcher copied it: paste it here, or drag the file in from the game folder" else "drag it in from the game folder" }) catch return;
+        var url: [6144:0]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&url);
+        w.writeAll(issues_url ++ "/new?labels=bug&body=") catch return;
+        logic.urlEncode(&w, body) catch return;
+        w.writeByte(0) catch return;
+        win_open(@ptrCast(w.buffered().ptr));
+        u.say(if (copied) "Log copied. Paste it into the issue that just opened." else "Opened a new issue on GitHub.");
     }
 
     /// Show the tail of <out>\setup.log (ours and the tools' output).
@@ -856,6 +919,28 @@ fn saveName(io: Io, a: std.mem.Allocator, dir: Io.Dir) ?[]const u8 {
     return std.mem.trim(u8, name[0 .. std.mem.indexOfAny(u8, name, "\r\n") orelse name.len], " ");
 }
 
+/// The last 400 lines of `text`, escaped, into element `id` (a log view).
+fn showLog(gpa: std.mem.Allocator, id: [*:0]const u8, log_text: []const u8, empty: [*:0]const u8) void {
+    if (log_text.len == 0) return ui_set(id, empty);
+    var lines: usize = 0;
+    var i = log_text.len;
+    while (i > 0 and lines < 400) : (i -= 1) if (log_text[i - 1] == '\n') {
+        lines += 1;
+    };
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    logic.escape(&out.writer, log_text[i..]) catch return;
+    out.writer.writeByte(0) catch return;
+    ui_set(id, @ptrCast(out.written().ptr));
+}
+
+/// "2026-11-14 18:03" (UTC) from file-time nanoseconds.
+fn dateTime(buf: []u8, ns: i96) []const u8 {
+    var d: [16]u8 = undefined;
+    const secs: u64 = @intCast(@max(0, @divFloor(ns, std.time.ns_per_s)));
+    return std.fmt.bufPrint(buf, "{s} {d:0>2}:{d:0>2}", .{ date(&d, ns), secs / 3600 % 24, secs / 60 % 60 }) catch "";
+}
+
 /// "2026-11-14" (UTC) from file-time nanoseconds.
 fn date(buf: []u8, ns: i96) []const u8 {
     const secs: u64 = @intCast(@max(0, @divFloor(ns, std.time.ns_per_s)));
@@ -1141,17 +1226,23 @@ fn next(c: *Ctx, i: u32) !void {
 
 /// The top of every setup.log: what a bug report needs to know.
 fn systemInfo(c: *Ctx) void {
+    const iso = std.mem.sliceTo(&iso_buf, 0);
+    const iso_size = if (Io.Dir.cwd().statFile(c.io, iso, .{})) |st| st.size else |_| 0;
+    var m: [400]u8 = undefined;
+    c.say("Otogi XUnchain launcher {s}", .{version});
+    c.say("{s}", .{machine(&m)});
+    if (iso.len == 0) c.say("disc image: none picked", .{}) else c.say("disc image {s} ({d} bytes)", .{ iso, iso_size });
+    c.say("install folder {s} ({?d} GB free)", .{ c.out, freeGb() });
+}
+
+/// "Windows 10.0 build 26200; CPU ...; 31 GB RAM; GPU ...": for setup.log and bug reports.
+fn machine(buf: []u8) []const u8 {
     var v: OsVersion = .{};
     _ = RtlGetVersion(&v);
     var cpu: [128]u8 = @splat(0);
     var cpu_len: u32 = cpu.len;
     _ = RegGetValueA(0x80000002, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", 0x2, null, &cpu, &cpu_len); // HKLM, RRF_RT_REG_SZ
-    const iso = std.mem.sliceTo(&iso_buf, 0);
-    const iso_size = if (Io.Dir.cwd().statFile(c.io, iso, .{})) |st| st.size else |_| 0;
-    c.say("Otogi XUnchain launcher {s}", .{version});
-    c.say("Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.sliceTo(&cpu, 0), ram_gb, std.mem.span(win_gpu_name()) });
-    if (iso.len == 0) c.say("disc image: none picked", .{}) else c.say("disc image {s} ({d} bytes)", .{ iso, iso_size });
-    c.say("install folder {s} ({?d} GB free)", .{ c.out, freeGb() });
+    return std.fmt.bufPrint(buf, "Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.trim(u8, std.mem.sliceTo(&cpu, 0), " "), ram_gb, std.mem.span(win_gpu_name()) }) catch "";
 }
 
 const OsVersion = extern struct { size: u32 = @sizeOf(OsVersion), major: u32 = 0, minor: u32 = 0, build: u32 = 0, platform: u32 = 0, csd: [128]u16 = @splat(0) };

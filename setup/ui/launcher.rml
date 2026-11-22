@@ -21,6 +21,7 @@
 			<div class="navitem" id="nav-settings" onclick="page" value="settings"><span class="icon">&#xE713;</span><span class="label">Settings</span></div>
 			<div class="navitem" id="nav-saves" onclick="page" value="saves"><span class="icon">&#xE74E;</span><span class="label">Saves</span></div>
 			<div class="navitem" id="nav-news" onclick="page" value="news"><span class="icon">&#xE789;</span><span class="label">What's new</span><span class="badge" id="news-badge">NEW</span></div>
+			<div class="navitem" id="nav-help" onclick="page" value="help"><span class="icon">&#xE897;</span><span class="label">Help &amp; logs</span></div>
 			<div class="grow"></div>
 			<div class="foot">
 				<p id="foot-ver"></p>
@@ -174,6 +175,45 @@
 					</div>
 				</div>
 				<div id="releases"></div>
+			</div>
+
+			<!-- Help & logs -->
+			<div class="page" id="page-help">
+				<h1>Help &amp; logs</h1>
+				<div class="lede">Something wrong? The logs say what happened: send them with a report. Every report helps make the recomp better.</div>
+				<div class="cols">
+					<div class="col card help">
+						<span class="icon">&#xEBE8;</span>
+						<h3>Report a bug</h3>
+						<p class="muted small">A crash, a graphics glitch, broken sound, or anything that plays differently from the Xbox. Opens a new GitHub issue with your version, Windows and graphics card filled in, and copies the log below so you can paste it in.</p>
+						<div class="gap"></div>
+						<div class="btn primary" onclick="report">Report on GitHub</div>
+						<div class="btn" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/issues">Known issues</div>
+					</div>
+					<div class="col card help">
+						<span class="icon">&#xE8BD;</span>
+						<h3>Ask a question</h3>
+						<p class="muted small">How to set it up, how to play, which settings to use, or an idea for the project: ask the community in GitHub Discussions. No log needed.</p>
+						<div class="gap"></div>
+						<div class="btn primary" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/discussions">Open Discussions</div>
+					</div>
+				</div>
+				<div class="card">
+					<div class="row">
+						<h3 class="grow" style="margin: 0;">Logs</h3>
+						<div class="chip" id="log-game" onclick="log-pick" value="game">Game (otogi.log)</div>
+						<div class="chip" id="log-build" onclick="log-pick" value="build">Build (setup.log)</div>
+					</div>
+					<div class="gap"></div>
+					<div class="row">
+						<div class="path grow" id="help-log-path"></div>
+						<div class="btn" style="margin: 0 0 0 8dp;" onclick="log-copy">Copy</div>
+						<div class="btn" style="margin: 0 0 0 8dp;" onclick="log-open">Open file</div>
+						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-out">Open folder</div>
+					</div>
+					<div class="muted small" id="help-log-info" style="margin: 8dp 0;"></div>
+					<div id="help-log" class="follow logview"></div>
+				</div>
 			</div>
 		</div>
 		<div id="toast"></div>

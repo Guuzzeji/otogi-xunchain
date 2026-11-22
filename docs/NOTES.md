@@ -427,6 +427,11 @@
   downloads to `<exe>.new`, renames the running exe to `.old` (Windows allows renaming, not overwriting, a running
   exe), moves the new one in, and starts it with `--rebuild <out>`: every stamp but `extract` is deleted and the build
   runs. The disc check is skipped once `extract` is stamped, so no ISO is needed. `.old` is deleted on the next start.
+- Help & logs: a viewer for `<out>\otogi.log` (the game opens it with FILE_SHARE_READ, so it can be read while the
+  game runs) and `<out>\setup.log`: the last 96 KB, re-read each second while the page is open, 400 lines shown.
+  Report opens `issues/new?labels=bug&body=...` (version and `machine()`: Windows, CPU, RAM, GPU) and copies the whole
+  log to the clipboard, since a URL cannot carry a file. Questions go to Discussions. `onclick="url"` opens only
+  `https://github.com/` links.
 - After a build the launcher copies itself to `<out>\otogi-xunchain.exe`. Started from a folder that has `otogi.exe`,
   `game\default.xbe` or `build\.stamps`, it takes that folder as the install folder; anywhere else, `<exe dir>\Otogi`.
 - Testing by script without stealing focus: `PrintWindow(hwnd, dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)` captures

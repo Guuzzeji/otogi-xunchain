@@ -77,6 +77,14 @@ pub fn newer(a: []const u8, b: []const u8) bool {
     return false;
 }
 
+/// `s` percent-encoded for a URL's query (everything but A-Z a-z 0-9 - _ . ~).
+pub fn urlEncode(w: *std.Io.Writer, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => try w.writeByte(c),
+        else => try w.print("%{X:0>2}", .{c}),
+    };
+}
+
 /// Text made safe inside RmlUi markup.
 pub fn escape(w: *std.Io.Writer, s: []const u8) !void {
     for (s) |c| switch (c) {
@@ -181,6 +189,13 @@ test newer {
     try std.testing.expect(newer("1.0.0", "0.99.99"));
     try std.testing.expect(!newer("0.8.0", "v0.8.0"));
     try std.testing.expect(!newer("0.7.9", "0.8.0"));
+}
+
+test urlEncode {
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try urlEncode(&w, "a b&c=d\n**v0.8**~");
+    try std.testing.expectEqualStrings("a%20b%26c%3Dd%0A%2A%2Av0.8%2A%2A~", w.buffered());
 }
 
 test notesRml {
