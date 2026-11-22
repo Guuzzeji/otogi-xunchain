@@ -10,6 +10,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 ### Added
 - PlayStation and Switch controllers work directly, without DS4Windows or Steam Input, and any
   controller can be plugged in, unplugged or swapped while playing. Rumble works on all of them.
+- The mouse pointer is hidden over the game while a controller is connected. The new setting
+  `show_mouse = 1` keeps it shown; the debug menu (F1) shows it either way.
 
 ### Changed
 - The window and input now run on SDL3 (`SDL3.dll` sits beside `otogi.exe`). The picture is drawn

@@ -98,7 +98,7 @@ fn pumpEvents() void {
         }
         if (!debug_menu.event(&e)) input.event(&e);
     }
-    input.poll();
+    input.poll(debug_menu.open);
 }
 
 fn clientSize() [2]i32 {

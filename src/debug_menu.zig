@@ -29,7 +29,7 @@ extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
 extern "c" fn fclose(*anyopaque) c_int;
 
 /// RECOMP_DEBUG_MENU=1 opens it at boot.
-var open = false;
+pub var open = false;
 var open_checked = false;
 var inited = false;
 var paused = false;
