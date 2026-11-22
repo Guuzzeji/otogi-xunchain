@@ -288,6 +288,30 @@
     and write guest memory from there.
   - Not tested: the game-over still (the Lock path); the pause menu, which blurs through render targets, is.
 
+## Shader cache and the shader list
+- A GL program is built the first time a draw needs it (`progGet`). Measured on the dev PC (RX 6700 XT, D3D11):
+  5-10 ms each, all of it in `glLinkProgram`; the first draw after costs 0.5 ms, so ANGLE does not put the
+  compile off to the draw and nothing has to be drawn to finish it.
+- Disk cache: `blobInit` hands ANGLE `EGL_ANDROID_blob_cache` callbacks. Every blob is one file in
+  `shader_cache\` beside `otogi.exe`, named by ANGLE's key in hex. A cached program links in about 1 ms.
+  The key covers driver and backend, so after an update the old files are simply never asked for; deleting
+  the folder is always safe. D3D11 stores one blob a program; Vulkan stores more (its pipeline cache too).
+  Both tested. `RECOMP_SHADER_CACHE=0` turns it off.
+- Otogi makes all its shaders at start-up: 46 vertex programs and 24 pixel shaders before the title, from
+  fixed addresses in its image (0x1C01C0 to 0x1D48A0). So a program can be named across runs without holding
+  any game data.
+- The list, `src/shaders.bin` (embedded): 100-byte records (`Rec`), each a `Key` whose shader indexes are
+  swapped for the guest address and hash of each shader. `warm()` runs at the end of `glInit`, while the game
+  thread still waits: it registers each record's shaders from guest memory as the game would, checks the hash
+  (another disc revision is skipped, and its programs are built on first use as before) and builds the
+  program. It draws a bar only when the wait passes 50 ms. The log says how many came from disk.
+- Recording: run from the repo root with `RECOMP_SHADER_RECORD=1`. `warm()` then reads the list from
+  `src/shaders.bin` on disk and every program the game needs that it lacks is appended. Play the stages,
+  rebuild, commit the file. Changing `Key` invalidates it (a comptime size check catches a size change):
+  empty the file and record again.
+- State on 2026-11-22: the list holds only the title screen's 6 programs. The whole-game count is not
+  measured yet; it takes a recorded playthrough.
+
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
   sources and backends and exposes `dcimgui.h` as module `imgui`. Backend functions are hand-declared externs.

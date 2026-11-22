@@ -186,6 +186,7 @@ var samplers: [4]gl.GLuint = @splat(0);
 
 // HWNDs need not be aligned; translate-c types EGLNativeWindowType as a struct pointer.
 extern fn eglCreateWindowSurface(gl.EGLDisplay, gl.EGLConfig, ?*anyopaque, ?*const gl.EGLint) gl.EGLSurface;
+extern fn eglSetBlobCacheFuncsANDROID(gl.EGLDisplay, *const fn (?*const anyopaque, isize, ?*const anyopaque, isize) callconv(.c) void, *const fn (?*const anyopaque, isize, ?*anyopaque, isize) callconv(.c) isize) void;
 
 fn hasExt(name: []const u8) bool {
     var n: gl.GLint = 0;
@@ -215,6 +216,77 @@ pub var game_thread: ?*anyopaque = null;
 var game_tid: u32 = 0;
 extern "kernel32" fn OpenThread(access: u32, inherit: i32, id: u32) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
+
+// ── Shader cache on disk ────────────────────────────────────────────────────
+// ANGLE hands over every compiled program as a blob (EGL_ANDROID_blob_cache)
+// and asks for it back by key in later runs, so a shader is compiled once per
+// machine, not once per run. One file per blob in shader_cache\, beside
+// otogi.exe. The key covers the driver and backend: after an update the old
+// files are just never asked for.
+// The callbacks run on whichever thread ANGLE compiles on.
+
+extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
+extern "c" fn fclose(*anyopaque) c_int;
+extern "c" fn fread(*anyopaque, usize, usize, *anyopaque) usize;
+extern "c" fn fwrite(*const anyopaque, usize, usize, *anyopaque) usize;
+extern "c" fn rename([*:0]const u8, [*:0]const u8) c_int;
+extern "c" fn remove([*:0]const u8) c_int;
+extern "c" fn _mkdir([*:0]const u8) c_int;
+
+var blob_hits: std.atomic.Value(u32) = .init(0);
+var blob_stores: std.atomic.Value(u32) = .init(0);
+
+
+fn blobPath(buf: *[96]u8, key: ?*const anyopaque, n: isize, ext: []const u8) ?[*:0]const u8 {
+    if (key == null or n <= 0 or n > 32) return null;
+    const k: [*]const u8 = @ptrCast(key.?);
+    return (std.fmt.bufPrintSentinel(buf, "shader_cache\\{x}{s}", .{ k[0..@intCast(n)], ext }, 0) catch return null).ptr;
+}
+
+fn blobSet(key: ?*const anyopaque, key_n: isize, value: ?*const anyopaque, n: isize) callconv(.c) void {
+    var a: [96]u8 = undefined;
+    var b: [96]u8 = undefined;
+    var ext: [24]u8 = undefined;
+    const path = blobPath(&a, key, key_n, ".bin") orelse return;
+    if (value == null or n <= 0) return;
+    // Written whole under another name first: a crash mid-write leaves no
+    // half blob under the real one.
+    const tmp = blobPath(&b, key, key_n, std.fmt.bufPrint(&ext, ".{d}.tmp", .{GetCurrentThreadId()}) catch return) orelse return;
+    const f = fopen(tmp, "wb") orelse return;
+    const ok = fwrite(value.?, 1, @intCast(n), f) == n;
+    _ = fclose(f);
+    _ = remove(path);
+    if (!ok or rename(tmp, path) != 0) _ = remove(tmp) else _ = blob_stores.fetchAdd(1, .monotonic);
+}
+
+/// The blob's size, or 0 when there is none; filled in only when it fits.
+fn blobGet(key: ?*const anyopaque, key_n: isize, value: ?*anyopaque, n: isize) callconv(.c) isize {
+    var a: [96]u8 = undefined;
+    const f = fopen(blobPath(&a, key, key_n, ".bin") orelse return 0, "rb") orelse return 0;
+    defer _ = fclose(f);
+    var size: usize = 0;
+    var chunk: [4096]u8 = undefined;
+    const room: usize = if (value != null and n > 0) @intCast(n) else 0;
+    const out: [*]u8 = if (value) |v| @ptrCast(v) else &chunk;
+    while (true) {
+        const got = fread(&chunk, 1, chunk.len, f);
+        if (got == 0) break;
+        if (size + got <= room) @memcpy(out[size..][0..got], chunk[0..got]);
+        size += got;
+    }
+    if (size != 0 and size <= room) _ = blob_hits.fetchAdd(1, .monotonic);
+    return @intCast(size);
+}
+
+/// RECOMP_SHADER_CACHE=0 turns it off.
+fn blobInit() void {
+    if (std.c.getenv("RECOMP_SHADER_CACHE")) |e| if (e[0] == '0') return;
+    const exts: ?[*:0]const u8 = gl.eglQueryString(dpy, gl.EGL_EXTENSIONS);
+    if (exts == null or std.mem.indexOf(u8, std.mem.span(exts.?), "EGL_ANDROID_blob_cache") == null)
+        return std.debug.print("[GL] no shader cache on disk: this backend has no EGL_ANDROID_blob_cache\n", .{});
+    _ = _mkdir("shader_cache");
+    eglSetBlobCacheFuncsANDROID(dpy, blobSet, blobGet);
+}
 
 /// Window, context and back buffer. RECOMP_GFX=d3d11 (default), vulkan or gl.
 fn glInit() bool {
@@ -250,6 +322,8 @@ fn glInit() bool {
         std.debug.print("[GL] EGL display failed: 0x{X}\n", .{gl.eglGetError()});
         return false;
     }
+    blobInit();
+    shader_record = std.c.getenv("RECOMP_SHADER_RECORD") != null;
     surf = eglCreateWindowSurface(dpy, cfg, hwnd, null);
     const ctx = gl.eglCreateContext(dpy, cfg, gl.EGL_NO_CONTEXT, &ctx_attrs);
     if (surf == gl.EGL_NO_SURFACE or ctx == gl.EGL_NO_CONTEXT or gl.eglMakeCurrent(dpy, surf, surf, ctx) == 0) {
@@ -289,6 +363,7 @@ fn glInit() bool {
     renderer_name = gl.glGetString(gl.GL_RENDERER);
     std.debug.print("[GL] {s}, {s}; rendering at {d}x{s}\n", .{ gl.glGetString(gl.GL_RENDERER), gl.glGetString(gl.GL_VERSION), scale, if (s3tc) "" else " (no S3TC)" });
     frInit();
+    warm();
     return true;
 }
 
@@ -561,6 +636,8 @@ const HostVs = struct {
     inputs: u16 = 0,
     uses_vp: bool = false,
     hash: u32 = 0, // of the microcode: names a program across runs
+    func: u32 = 0, // where the game keeps it, for the shader list (see Rec)
+    decl_va: u32 = 0,
     glsl: ?[]u8 = null,
 };
 // ponytail: fixed tables, so the render thread reads entries while the game
@@ -908,7 +985,7 @@ const PsDef = struct {
     const texture_modes = 54;
     const words = 60; // sizeof(D3DPIXELSHADERDEF) / 4
 };
-const HostPs = struct { def: [PsDef.words]u32 };
+const HostPs = struct { def: [PsDef.words]u32, va: u32 = 0 };
 var pixel_shaders_buf: [1024]HostPs = undefined;
 var pixel_shaders: std.ArrayList(HostPs) = .initBuffer(&pixel_shaders_buf);
 var ps_handles: std.AutoHashMapUnmanaged(u32, u32) = .empty; // handle -> index + 1
@@ -1069,6 +1146,8 @@ fn compile(kind: gl.GLenum, src: []const u8) gl.GLuint {
 }
 
 var src_buf: [256 * 1024]u8 = undefined;
+/// RECOMP_SHADER_RECORD: add every program the shader list lacks to it (see Rec).
+var shader_record = false;
 
 fn progGet(k: *const Key) ?*Prog {
     // Most draws use the program of the draw before.
@@ -1085,6 +1164,7 @@ fn progGet(k: *const Key) ?*Prog {
     }
     const p = progs.addOne(alloc) catch return null;
     p.* = .{ .key = k.*, .prog = 0, .shadow = alloc.create([1024]f32) catch null };
+    if (shader_record and !warming) recAppend(k);
     var w: std.Io.Writer = .fixed(&src_buf);
     genVs(k, &w) catch return null;
     if (std.c.getenv("RECOMP_GL_DUMP") != null and k.vs != 0) std.debug.print("[GL] program {d}, vertex shader {X}:\n{s}\n", .{ progs.items.len, programs.items[k.vs - 1].hash, w.buffered() });
@@ -1121,6 +1201,121 @@ fn progGet(k: *const Key) ?*Prog {
     gl.glUseProgram(prog);
     for (0..4) |i| gl.glUniform1i(gl.glGetUniformLocation(prog, (std.fmt.bufPrintSentinel(&name, "u_tex{d}", .{i}, 0) catch unreachable).ptr), @intCast(i));
     return p;
+}
+
+// ── The shader list: every program, built at start-up ──────────────────────
+
+/// One program of src/shaders.bin: its Key, with the run's shader indexes
+/// swapped for where the game keeps each shader and a hash of it. Otogi makes
+/// all its shaders at start-up from fixed places in its image (0x1C01C0 to
+/// 0x1D48A0), so the list holds addresses and render states, no game data.
+/// The hash skips a program on a disc whose image differs.
+const Rec = extern struct {
+    key: Key, // vs and ps: 1 when it has one
+    vs_func: u32 = 0,
+    vs_decl: u32 = 0,
+    vs_hash: u32 = 0,
+    ps_def: u32 = 0,
+    ps_hash: u32 = 0,
+};
+comptime {
+    // Key changed: the list no longer matches. Empty src/shaders.bin and record it again.
+    std.debug.assert(@sizeOf(Rec) == 100);
+}
+const list_path = "src/shaders.bin";
+var warming = false;
+
+/// The list is ours, but a bad address must not fault: guest RAM is 64 MB, all readable.
+fn inGuest(va: u32) bool {
+    return va >= 0x10000 and va < 0x04000000 - 0x1000;
+}
+
+fn psHash(p: *const HostPs) u32 {
+    return d3d.hashBytes(@ptrCast(&p.def), PsDef.words * 4);
+}
+
+/// RECOMP_SHADER_RECORD, run from the repo: a program the list lacks is added to it.
+fn recAppend(k: *const Key) void {
+    var r: Rec = .{ .key = k.* };
+    if (k.vs != 0) {
+        const v = &programs.items[k.vs - 1];
+        r.key.vs = 1;
+        r.vs_func = v.func;
+        r.vs_decl = v.decl_va;
+        r.vs_hash = v.hash;
+    }
+    if (k.ps != 0) {
+        const p = &pixel_shaders.items[k.ps - 1];
+        r.key.ps = 1;
+        r.ps_def = p.va;
+        r.ps_hash = psHash(p);
+    }
+    const f = fopen(list_path, "ab") orelse return sayOnce("cannot write " ++ list_path);
+    _ = fwrite(&r, 1, @sizeOf(Rec), f);
+    _ = fclose(f);
+}
+
+/// The record's Key in this run, registering its shaders as the game would;
+/// null when the game's image does not hold them.
+fn recKey(r: *const Rec) ?Key {
+    var k = r.key;
+    if (k.vs != 0) {
+        if (!inGuest(r.vs_func) or (r.vs_decl != 0 and !inGuest(r.vs_decl))) return null;
+        k.vs = vsAdd(r.vs_decl, r.vs_func);
+        if (k.vs == 0 or programs.items[k.vs - 1].hash != r.vs_hash) return null;
+    }
+    if (k.ps != 0) {
+        if (!inGuest(r.ps_def)) return null;
+        k.ps = psAdd(r.ps_def);
+        if (k.ps == 0 or psHash(&pixel_shaders.items[k.ps - 1]) != r.ps_hash) return null;
+    }
+    return k;
+}
+
+/// Build every listed program before the game starts, behind a progress bar,
+/// so none is compiled mid-game. With the disk cache full this takes a moment;
+/// with it empty (first run, new driver) it is the wait. A program the list
+/// lacks is still built when first drawn.
+fn warm() void {
+    var list: []const u8 = @embedFile("shaders.bin");
+    if (shader_record) {
+        if (fopen(list_path, "rb")) |f| {
+            const buf = alloc.alloc(u8, 1 << 20) catch return;
+            list = buf[0..fread(buf.ptr, 1, buf.len, f)];
+            _ = fclose(f);
+        }
+    }
+    const n = list.len / @sizeOf(Rec);
+    if (n == 0) return;
+    const t0 = nowMs();
+    var shown_at = t0;
+    var built: usize = 0;
+    warming = true;
+    for (0..n) |i| {
+        var r: Rec = undefined;
+        @memcpy(std.mem.asBytes(&r), list[i * @sizeOf(Rec) ..][0..@sizeOf(Rec)]);
+        if (recKey(&r)) |k| {
+            if (progGet(&k) != null) built += 1;
+        }
+        // The bar, when there is a wait to show: a swap waits for the monitor.
+        if (nowMs() - shown_at < 50) continue;
+        shown_at = nowMs();
+        const sz = clientSize();
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
+        gl.glClearColor(0, 0, 0, 1);
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        gl.glEnable(gl.GL_SCISSOR_TEST);
+        const w = @divTrunc(sz[0], 2);
+        gl.glScissor(@divTrunc(sz[0], 4), @divTrunc(sz[1], 2) - 4, @intCast(@divTrunc(w * @as(i32, @intCast(i + 1)), @as(i32, @intCast(n)))), 8);
+        gl.glClearColor(0.8, 0.8, 0.8, 1);
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        gl.glDisable(gl.GL_SCISSOR_TEST);
+        _ = gl.eglSwapBuffers(dpy, surf);
+        pumpEvents();
+    }
+    warming = false;
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
+    std.debug.print("[GL] shaders: {d} of {d} listed programs ready in {d:.0} ms ({d} from the disk cache, {d} compiled)\n", .{ built, n, nowMs() - t0, blob_hits.load(.monotonic), blob_stores.load(.monotonic) });
 }
 
 // ── Per-draw state ──────────────────────────────────────────────────────────
@@ -3237,16 +3432,23 @@ export fn sub_000F9570() void {
     const ph = arg(1);
     sub_000F9570_gen();
     if (def == 0 or ph == 0 or mem32(ph) == 0) return;
+    const i = psAdd(def);
+    if (i != 0) ps_handles.put(alloc, mem32(ph), i) catch @panic("OOM");
+}
+
+/// The pixel shader at `def`, by content: index + 1, or 0 when the table is full.
+fn psAdd(def: u32) u32 {
     var d: [PsDef.words]u32 = undefined;
     for (&d, 0..) |*w, j| w.* = mem32(def + 4 * @as(u32, @intCast(j)));
-    const i = for (pixel_shaders.items, 0..) |*p, i| {
-        if (std.mem.eql(u32, &p.def, &d)) break i;
-    } else blk: {
-        if (pixel_shaders.items.len == pixel_shaders.capacity) return sayOnce("pixel shader table full; shader not drawn");
-        pixel_shaders.appendAssumeCapacity(.{ .def = d });
-        break :blk pixel_shaders.items.len - 1;
-    };
-    ps_handles.put(alloc, mem32(ph), @intCast(i + 1)) catch @panic("OOM");
+    for (pixel_shaders.items, 0..) |*p, i| {
+        if (std.mem.eql(u32, &p.def, &d)) return @intCast(i + 1);
+    }
+    if (pixel_shaders.items.len == pixel_shaders.capacity) {
+        sayOnce("pixel shader table full; shader not drawn");
+        return 0;
+    }
+    pixel_shaders.appendAssumeCapacity(.{ .def = d, .va = def });
+    return @intCast(pixel_shaders.items.len);
 }
 
 /// D3DDevice_SetPixelShader(Handle)
@@ -3274,7 +3476,14 @@ export fn sub_000F6EC0() void {
     const ph = arg(2);
     sub_000F6EC0_gen();
     if (ph == 0 or mem32(ph) == 0 or func == 0) return;
-    var h: HostVs = .{ .decl = @splat(0xFFFFFFFF), .mc = @splat(0), .nmc = @min(mem32(func) >> 16, 136) };
+    const i = vsAdd(decl, func);
+    if (i != 0) vs_handles.put(alloc, mem32(ph), i) catch @panic("OOM");
+}
+
+/// The vertex program at `func` with the declaration at `decl`, by content:
+/// index + 1, or 0 when the table is full.
+fn vsAdd(decl: u32, func: u32) u32 {
+    var h: HostVs = .{ .decl = @splat(0xFFFFFFFF), .mc = @splat(0), .nmc = @min(mem32(func) >> 16, 136), .func = func, .decl_va = decl };
     for (0..95) |i| {
         h.decl[i] = if (decl != 0) mem32(decl + 4 * @as(u32, @intCast(i))) else 0xFFFFFFFF;
         if (h.decl[i] == 0xFFFFFFFF) break;
@@ -3282,14 +3491,15 @@ export fn sub_000F6EC0() void {
     for (0..h.nmc * 4) |i| h.mc[i] = mem32(func + 4 + 4 * @as(u32, @intCast(i)));
     h.hash = d3d.hashBytes(@ptrCast(&h.mc), @intCast(h.nmc * 16));
     // By content, as pixel shaders are (see CreatePixelShader).
-    const i = for (programs.items, 0..) |*p, i| {
-        if (p.hash == h.hash and std.mem.eql(u32, &p.decl, &h.decl) and std.mem.eql(u32, &p.mc, &h.mc)) break i;
-    } else blk: {
-        if (programs.items.len == programs.capacity) return sayOnce("vertex program table full; program not drawn");
-        programs.appendAssumeCapacity(h);
-        break :blk programs.items.len - 1;
-    };
-    vs_handles.put(alloc, mem32(ph), @intCast(i + 1)) catch @panic("OOM");
+    for (programs.items, 0..) |*p, i| {
+        if (p.hash == h.hash and std.mem.eql(u32, &p.decl, &h.decl) and std.mem.eql(u32, &p.mc, &h.mc)) return @intCast(i + 1);
+    }
+    if (programs.items.len == programs.capacity) {
+        sayOnce("vertex program table full; program not drawn");
+        return 0;
+    }
+    programs.appendAssumeCapacity(h);
+    return @intCast(programs.items.len);
 }
 
 /// SetVertexShaderConstant1/4 (fastcall: ecx = register 0..191, edx = data).

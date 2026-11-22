@@ -22,6 +22,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - The game no longer stays at 30 shown frames a second after one slow moment (opening the
   pause menu, skipping a cutscene, loading a stage). It used to need a restart to get the
   higher frame rate back (issues #15 and #1).
+- Shaders are compiled once per PC, not once per run: they are kept in a `shader_cache` folder beside
+  `otogi.exe`, so the short stutters when an effect first appears do not come back after the first time.
+  The folder is safe to delete.
+- The game compiles the shaders it knows about before the title screen, behind a progress bar when it
+  takes a moment, instead of in the middle of play.
 
 ## [0.8.0] - 2026-11-15
 
