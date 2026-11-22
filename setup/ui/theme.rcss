@@ -44,7 +44,6 @@ body {
 	font-family: "Shippori Mincho B1";
 	font-size: 18dp;
 	color: #9bf00b;
-	font-effect: glow(3dp #107c10);
 	margin-right: 10dp;
 }
 #titlebar .name { font-size: 12dp; letter-spacing: 3dp; color: #b9c8b0; font-weight: bold; }
@@ -72,7 +71,7 @@ body {
 	display: flex;
 	flex-direction: column;
 	padding-top: 14dp;
-	decorator: linear-gradient(180deg, #0c1509, #050804);
+	background-color: #070b06;
 	border-right: 1dp #15240f;
 }
 .navitem {
@@ -81,7 +80,7 @@ body {
 	height: 46dp;
 	margin: 2dp 10dp;
 	padding-left: 14dp;
-	border-radius: 6dp;
+	border-radius: 4dp;
 	color: #a9b8a1;
 	font-size: 15dp;
 	tab-index: auto;
@@ -97,15 +96,15 @@ body {
 .navitem:focus-visible { box-shadow: #9bf00b 0 0 0 2dp; }
 .navitem.on {
 	color: #ffffff;
-	decorator: linear-gradient(90deg, #107c1066, #107c1000);
-	border-left: 3dp #9bf00b;
-	padding-left: 11dp;
+	background-color: #107c1026;
+	border-left: 2dp #9bf00b;
+	padding-left: 12dp;
 }
-.navitem.on .icon { color: #9bf00b; font-effect: glow(2dp #107c10); }
+.navitem.on .icon { color: #9bf00b; }
 .navitem .badge {
 	margin-left: 8dp;
 	padding: 1dp 7dp;
-	border-radius: 9dp;
+	border-radius: 3dp;
 	font-size: 11dp;
 	font-weight: bold;
 	color: #061004;
@@ -141,7 +140,7 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 	position: relative;
 	margin-bottom: 16dp;
 	padding: 18dp 20dp;
-	border-radius: 10dp;
+	border-radius: 6dp;
 	background-color: #0d150bcc;
 	border: 1dp #1d3215;
 }
@@ -163,7 +162,7 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 	display: inline-block;
 	padding: 8dp 18dp;
 	margin-right: 8dp;
-	border-radius: 6dp;
+	border-radius: 4dp;
 	background-color: #1b2a16;
 	border: 1dp #2e4a24;
 	color: #e6eee0;
@@ -180,39 +179,37 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 .btn.primary:hover { background-color: #179217; }
 .btn.off { opacity: 0.45; }
 
-/* The big one: Xbox green with a lime glow, Otogi's brush stroke under the label. */
+/* The big one: flat Xbox green. */
 .play {
 	display: block;
-	position: relative;
-	width: 300dp;
-	height: 62dp;
-	line-height: 62dp;
+	width: 240dp;
+	height: 48dp;
+	line-height: 48dp;
 	text-align: center;
-	border-radius: 31dp;
-	font-size: 22dp;
+	border-radius: 4dp;
+	font-size: 16dp;
 	font-weight: bold;
-	letter-spacing: 4dp;
+	letter-spacing: 2dp;
 	color: #ffffff;
-	font-effect: shadow(0 2dp #00000099);
-	decorator: linear-gradient(180deg, #2fb32f, #107c10 60%, #0b5c0b);
-	box-shadow: #9bf00b55 0 0 22dp 2dp, #ffffff33 0 1dp 0 0 inset;
+	background-color: #107c10;
 	tab-index: auto;
 	nav: auto;
-	transition: transform 0.2s cubic-out;
+	transition: background-color 0.15s cubic-out;
 }
-.play:hover { box-shadow: #9bf00baa 0 0 34dp 4dp, #ffffff44 0 1dp 0 0 inset; transform: scale(1.03); }
-.play:focus-visible { box-shadow: #9bf00b 0 0 0 3dp, #9bf00baa 0 0 34dp 4dp; }
-.play:active { transform: scale(0.98); }
-.play.busy { decorator: linear-gradient(180deg, #7a2b25, #5a1713); box-shadow: #e0604f55 0 0 22dp 2dp; }
-.play.off { decorator: linear-gradient(180deg, #3a463a, #222a22); box-shadow: none; color: #9aa596; }
-.play.wide { width: auto; font-size: 18dp; letter-spacing: 3dp; }
+.play:hover { background-color: #179217; }
+.play:active { background-color: #0c660c; }
+.play:focus-visible { box-shadow: #9bf00b 0 0 0 2dp; }
+.play.busy { background-color: #8a2a22; }
+.play.busy:hover { background-color: #9e322a; }
+.play.off { background-color: #252d24; color: #8a9684; }
+.play.wide { width: auto; font-size: 15dp; }
 
 /* ── Form controls ─────────────────────────────────────────────────────── */
 input.text {
 	box-sizing: border-box;
 	height: 36dp;
 	padding: 8dp 10dp;
-	border-radius: 6dp;
+	border-radius: 4dp;
 	background-color: #050804;
 	border: 1dp #2a4320;
 	color: #e6eee0;
@@ -227,8 +224,8 @@ input.text:placeholder-shown { color: #5c6f52; }
 .toggle {
 	position: relative;
 	width: 46dp;
-	height: 26dp;
-	border-radius: 13dp;
+	height: 24dp;
+	border-radius: 4dp;
 	background-color: #24301f;
 	border: 1dp #3a5030;
 	tab-index: auto;
@@ -240,20 +237,20 @@ input.text:placeholder-shown { color: #5c6f52; }
 	top: 3dp;
 	left: 3dp;
 	width: 18dp;
-	height: 18dp;
-	border-radius: 9dp;
+	height: 16dp;
+	border-radius: 2dp;
 	background-color: #b8c4b0;
 	transition: left background-color 0.18s cubic-out;
 }
 .toggle.on { background-color: #107c10; border-color: #3cbf3c; }
-.toggle.on .knob { left: 23dp; background-color: #ffffff; }
+.toggle.on .knob { left: 25dp; background-color: #ffffff; }
 .toggle:focus-visible { box-shadow: #9bf00b 0 0 0 2dp; }
 
 .chips { display: flex; flex-direction: row; flex-wrap: wrap; }
 .chip {
 	padding: 6dp 14dp;
 	margin: 0 6dp 6dp 0;
-	border-radius: 16dp;
+	border-radius: 4dp;
 	border: 1dp #2e4a24;
 	color: #b9c8b0;
 	font-size: 13dp;
@@ -281,19 +278,19 @@ input.text:placeholder-shown { color: #5c6f52; }
 progress {
 	display: block;
 	width: 100%;
-	height: 10dp;
-	border-radius: 5dp;
+	height: 6dp;
+	border-radius: 2dp;
 	background-color: #142010;
 	margin: 10dp 0 6dp;
 }
-progress fill { border-radius: 5dp; decorator: linear-gradient(90deg, #107c10, #9bf00b); }
+progress fill { border-radius: 2dp; background-color: #107c10; }
 .steps { display: flex; flex-direction: row; flex-wrap: wrap; margin-top: 10dp; }
 .step { width: 50%; display: flex; flex-direction: row; align-items: center; padding: 5dp 0; color: #6f8066; }
-.step .dot { width: 10dp; height: 10dp; border-radius: 5dp; border: 2dp #4a5a42; margin-right: 12dp; }
+.step .dot { width: 8dp; height: 8dp; border-radius: 2dp; border: 2dp #4a5a42; margin-right: 12dp; }
 .step.done { color: #dfe8d8; }
 .step.done .dot { background-color: #9bf00b; border-color: #9bf00b; }
 .step.now { color: #ffffff; }
-.step.now .dot { border-color: #9bf00b; box-shadow: #9bf00b88 0 0 8dp 2dp; animation: 1s pulse infinite alternate; }
+.step.now .dot { border-color: #9bf00b; animation: 1s pulse infinite alternate; }
 .step.now .label { display: inline-block; padding: 3dp 18dp 4dp 10dp; margin-left: -10dp; decorator: image(brush fill); }
 .step.failed { color: #ff7b6b; }
 .step.failed .dot { background-color: #e0604f; border-color: #e0604f; }
@@ -304,7 +301,7 @@ progress fill { border-radius: 5dp; decorator: linear-gradient(90deg, #107c10, #
 	height: 420dp;
 	overflow: auto;
 	padding: 10dp 12dp;
-	border-radius: 6dp;
+	border-radius: 4dp;
 	background-color: #030502;
 	border: 1dp #1a2b14;
 	font-family: "Consolas";
@@ -316,7 +313,7 @@ progress fill { border-radius: 5dp; decorator: linear-gradient(90deg, #107c10, #
 scrollbarvertical { width: 10dp; margin-left: 2dp; }
 scrollbarhorizontal { height: 10dp; }
 scrollbarvertical slidertrack, scrollbarhorizontal slidertrack { background-color: #ffffff05; }
-scrollbarvertical sliderbar, scrollbarhorizontal sliderbar { background-color: #3d6a2b88; border-radius: 5dp; }
+scrollbarvertical sliderbar, scrollbarhorizontal sliderbar { background-color: #3d6a2b88; border-radius: 2dp; }
 scrollbarvertical sliderbar { min-height: 30dp; }
 scrollbarvertical sliderbar:hover, scrollbarhorizontal sliderbar:hover { background-color: #5fa040; }
 scrollbarvertical sliderarrowdec, scrollbarvertical sliderarrowinc { height: 0; }
@@ -365,7 +362,7 @@ scrollbarhorizontal sliderarrowdec, scrollbarhorizontal sliderarrowinc { width: 
 	min-width: 0;
 	margin-right: 16dp;
 	padding: 18dp 20dp;
-	border-radius: 10dp;
+	border-radius: 6dp;
 	background-color: #0d150be6;
 	border: 1dp #1d3215;
 	tab-index: auto;
@@ -384,30 +381,30 @@ scrollbarhorizontal sliderarrowdec, scrollbarhorizontal sliderarrowinc { width: 
 .save .icon { font-family: "Segoe MDL2 Assets"; font-size: 20dp; color: #9bf00b; width: 40dp; }
 .save .name { flex: 1; color: #f0f4ec; }
 .save .meta { color: #7f9076; font-size: 12dp; margin-left: 18dp; }
-.path { overflow: hidden; white-space: nowrap; padding: 8dp 12dp; border-radius: 6dp; background-color: #050804; border: 1dp #1d3215; font-family: "Consolas"; font-size: 13dp; color: #c9d8bf; }
+.path { overflow: hidden; white-space: nowrap; padding: 8dp 12dp; border-radius: 4dp; background-color: #050804; border: 1dp #1d3215; font-family: "Consolas"; font-size: 13dp; color: #c9d8bf; }
 
 .release h3 { margin-bottom: 2dp; }
 .release .when { color: #7f9076; font-size: 12dp; margin-bottom: 6dp; }
 .release p { margin: 3dp 0; color: #d0dac9; }
 .release p.li { padding-left: 16dp; decorator: radial-gradient(circle 3dp at 5dp 11dp, #9bf00b, #9bf00b 90%, #9bf00b00) padding-box; }
 .release .code { font-family: "Consolas"; color: #d4a84b; }
-.tag { display: inline-block; padding: 1dp 8dp; margin-left: 10dp; border-radius: 9dp; font-size: 11dp; font-weight: bold; font-family: "Segoe UI"; }
+.tag { display: inline-block; padding: 1dp 8dp; margin-left: 10dp; border-radius: 3dp; font-size: 11dp; font-weight: bold; font-family: "Segoe UI"; }
 .tag.now { background-color: #2a3a24; color: #b9c8b0; }
 .tag.new { background-color: #9bf00b; color: #061004; }
 
 #banner { display: none; }
-#banner.shown { display: block; border-color: #3cbf3c; decorator: linear-gradient(90deg, #107c1044, #0d150bcc 70%); }
+#banner.shown { display: block; border-color: #107c10; border-left: 3dp #9bf00b; }
 
 #toast {
 	position: absolute;
 	right: 24dp;
 	bottom: 22dp;
 	padding: 10dp 18dp;
-	border-radius: 8dp;
+	border-radius: 4dp;
 	background-color: #107c10;
 	color: #fff;
 	font-size: 13dp;
-	box-shadow: #00000088 0 4dp 16dp 0;
+	box-shadow: #00000066 0 2dp 8dp 0;
 	opacity: 0;
 	transition: opacity 0.25s cubic-out;
 }
