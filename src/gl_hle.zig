@@ -252,11 +252,14 @@ fn blobSet(key: ?*const anyopaque, key_n: isize, value: ?*const anyopaque, n: is
     // Written whole under another name first: a crash mid-write leaves no
     // half blob under the real one.
     const tmp = blobPath(&b, key, key_n, std.fmt.bufPrint(&ext, ".{d}.tmp", .{GetCurrentThreadId()}) catch return) orelse return;
-    const f = fopen(tmp, "wb") orelse return;
+    const f = fopen(tmp, "wb") orelse return sayShader("cannot write into shader_cache (read-only folder or full disk?); programs are compiled again next run");
     const ok = fwrite(value.?, 1, @intCast(n), f) == n;
     _ = fclose(f);
     _ = remove(path);
-    if (!ok or rename(tmp, path) != 0) _ = remove(tmp) else _ = blob_stores.fetchAdd(1, .monotonic);
+    if (!ok or rename(tmp, path) != 0) {
+        _ = remove(tmp);
+        sayShader("cannot write into shader_cache (read-only folder or full disk?); programs are compiled again next run");
+    } else _ = blob_stores.fetchAdd(1, .monotonic);
 }
 
 /// The blob's size, or 0 when there is none; filled in only when it fits.
@@ -279,13 +282,22 @@ fn blobGet(key: ?*const anyopaque, key_n: isize, value: ?*anyopaque, n: isize) c
 }
 
 /// RECOMP_SHADER_CACHE=0 turns it off.
+fn sayShader(comptime msg: []const u8) void {
+    const s = struct {
+        var said = false; // once each: a write that fails does so for every blob
+    };
+    if (!s.said) std.debug.print("[SHADER] " ++ msg ++ "\n", .{});
+    s.said = true;
+}
+
 fn blobInit() void {
-    if (std.c.getenv("RECOMP_SHADER_CACHE")) |e| if (e[0] == '0') return;
+    if (std.c.getenv("RECOMP_SHADER_CACHE")) |e| if (e[0] == '0') return sayShader("disk cache off (RECOMP_SHADER_CACHE=0): every program is compiled again each run");
     const exts: ?[*:0]const u8 = gl.eglQueryString(dpy, gl.EGL_EXTENSIONS);
     if (exts == null or std.mem.indexOf(u8, std.mem.span(exts.?), "EGL_ANDROID_blob_cache") == null)
-        return std.debug.print("[GL] no shader cache on disk: this backend has no EGL_ANDROID_blob_cache\n", .{});
+        return sayShader("no disk cache: this graphics backend has no EGL_ANDROID_blob_cache; every program is compiled again each run");
     _ = _mkdir("shader_cache");
     eglSetBlobCacheFuncsANDROID(dpy, blobSet, blobGet);
+    sayShader("disk cache on, in shader_cache beside the game");
 }
 
 /// Window, context and back buffer. RECOMP_GFX=d3d11 (default), vulkan or gl.
@@ -1165,15 +1177,33 @@ fn progGet(k: *const Key) ?*Prog {
     const p = progs.addOne(alloc) catch return null;
     p.* = .{ .key = k.*, .prog = 0, .shadow = alloc.create([1024]f32) catch null };
     if (shader_record and !warming) recAppend(k);
+    // One [SHADER] line for every program built, for bug reports: when, how
+    // long, and whether the disk cache had it.
+    const t0 = nowMs();
+    const hits = blob_hits.load(.monotonic);
+    const id = .{ progs.items.len, if (k.vs != 0) programs.items[k.vs - 1].hash else 0, if (k.ps != 0) psHash(&pixel_shaders.items[k.ps - 1]) else 0 };
+    progBuild(p, k) catch {
+        std.debug.print("[SHADER] program {d} (vs {X:0>8} ps {X:0>8}) failed to build; what it draws is missing\n", id);
+        return null;
+    };
+    std.debug.print("[SHADER] program {d} (vs {X:0>8} ps {X:0>8}) {s}: {d:.1} ms, {s}\n", id ++ .{
+        if (warming) "at start-up" else "while playing, not on the list",
+        nowMs() - t0,
+        if (blob_hits.load(.monotonic) != hits) "from the disk cache" else "compiled",
+    });
+    return p;
+}
+
+fn progBuild(p: *Prog, k: *const Key) !void {
     var w: std.Io.Writer = .fixed(&src_buf);
-    genVs(k, &w) catch return null;
+    try genVs(k, &w);
     if (std.c.getenv("RECOMP_GL_DUMP") != null and k.vs != 0) std.debug.print("[GL] program {d}, vertex shader {X}:\n{s}\n", .{ progs.items.len, programs.items[k.vs - 1].hash, w.buffered() });
     const vs = compile(gl.GL_VERTEX_SHADER, w.buffered());
     w = .fixed(&src_buf);
-    genFs(k, &w) catch return null;
+    try genFs(k, &w);
     if (std.c.getenv("RECOMP_GL_DUMP") != null and k.ps != 0) std.debug.print("[GL] program {d}, pixel shader {d}:\n{s}\n", .{ progs.items.len, k.ps, w.buffered() });
     const fs = compile(gl.GL_FRAGMENT_SHADER, w.buffered());
-    if (vs == 0 or fs == 0) return null;
+    if (vs == 0 or fs == 0) return error.Compile;
     const prog = gl.glCreateProgram();
     gl.glAttachShader(prog, vs);
     gl.glAttachShader(prog, fs);
@@ -1193,14 +1223,13 @@ fn progGet(k: *const Key) ?*Prog {
         var n: gl.GLsizei = 0;
         gl.glGetProgramInfoLog(prog, log.len, &n, &log);
         std.debug.print("[GL] program does not link: {s}\n", .{log[0..@intCast(n)]});
-        return null;
+        return error.Link;
     }
     p.prog = prog;
     inline for (.{ "u_wv", "u_proj", "u_texm", "u_rhw", "u_fog", "u_fogcolor", "u_tf", "u_aref", "u_tscale", "u_c", "u_psc", "u_psf", "u_bump", "u_flow" }) |u|
         @field(p, u) = gl.glGetUniformLocation(prog, u);
     gl.glUseProgram(prog);
     for (0..4) |i| gl.glUniform1i(gl.glGetUniformLocation(prog, (std.fmt.bufPrintSentinel(&name, "u_tex{d}", .{i}, 0) catch unreachable).ptr), @intCast(i));
-    return p;
 }
 
 // ── The shader list: every program, built at start-up ──────────────────────
@@ -1260,16 +1289,26 @@ fn recAppend(k: *const Key) void {
 fn recKey(r: *const Rec) ?Key {
     var k = r.key;
     if (k.vs != 0) {
-        if (!inGuest(r.vs_func) or (r.vs_decl != 0 and !inGuest(r.vs_decl))) return null;
+        if (!inGuest(r.vs_func) or (r.vs_decl != 0 and !inGuest(r.vs_decl))) return recSkip("vertex program", r.vs_func, 0, r.vs_hash);
         k.vs = vsAdd(r.vs_decl, r.vs_func);
-        if (k.vs == 0 or programs.items[k.vs - 1].hash != r.vs_hash) return null;
+        if (k.vs == 0) return null;
+        const h = programs.items[k.vs - 1].hash;
+        if (h != r.vs_hash) return recSkip("vertex program", r.vs_func, h, r.vs_hash);
+        vsGlsl(&programs.items[k.vs - 1]) catch return null;
     }
     if (k.ps != 0) {
-        if (!inGuest(r.ps_def)) return null;
+        if (!inGuest(r.ps_def)) return recSkip("pixel shader", r.ps_def, 0, r.ps_hash);
         k.ps = psAdd(r.ps_def);
-        if (k.ps == 0 or psHash(&pixel_shaders.items[k.ps - 1]) != r.ps_hash) return null;
+        if (k.ps == 0) return null;
+        const h = psHash(&pixel_shaders.items[k.ps - 1]);
+        if (h != r.ps_hash) return recSkip("pixel shader", r.ps_def, h, r.ps_hash);
     }
     return k;
+}
+
+fn recSkip(what: []const u8, va: u32, have: u32, want: u32) ?Key {
+    std.debug.print("[SHADER] list entry skipped: the {s} at 0x{X:0>8} is {X:0>8}, the list has {X:0>8} (another version of the game?)\n", .{ what, va, have, want });
+    return null;
 }
 
 /// Build every listed program before the game starts, behind a progress bar,
@@ -1315,7 +1354,7 @@ fn warm() void {
     }
     warming = false;
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
-    std.debug.print("[GL] shaders: {d} of {d} listed programs ready in {d:.0} ms ({d} from the disk cache, {d} compiled)\n", .{ built, n, nowMs() - t0, blob_hits.load(.monotonic), blob_stores.load(.monotonic) });
+    std.debug.print("[SHADER] start-up: {d} of {d} listed programs ready in {d:.0} ms; disk cache gave {d} blobs and took {d} new ones\n", .{ built, n, nowMs() - t0, blob_hits.load(.monotonic), blob_stores.load(.monotonic) });
 }
 
 // ── Per-draw state ──────────────────────────────────────────────────────────
@@ -1966,16 +2005,20 @@ fn extend2d(verts: [*]const u8, stride: u32, n: u32, xprim: u32) ?[]const u8 {
     return ext_buf.items;
 }
 
+/// Translate a vertex program's microcode once; genVs needs the result.
+fn vsGlsl(h: *HostVs) !void {
+    if (h.glsl != null) return;
+    var w: std.Io.Writer = .fixed(&src_buf);
+    try d3d.vshBody(h.mc[0 .. h.nmc * 4], &w, &h.inputs, &h.uses_vp);
+    h.glsl = try alloc.dupe(u8, w.buffered());
+}
+
 fn prepareDraw() ?*Prog {
     const d = fr_d;
     var k: Key = .{};
     if (d.vsi != 0) {
         const h = &programs.items[d.vsi - 1];
-        if (h.glsl == null) {
-            var w: std.Io.Writer = .fixed(&src_buf);
-            d3d.vshBody(h.mc[0..h.nmc * 4], &w, &h.inputs, &h.uses_vp) catch return null;
-            h.glsl = alloc.dupe(u8, w.buffered()) catch return null;
-        }
+        vsGlsl(h) catch return null;
         k.vs = d.vsi;
     } else if (d.vs & 1 != 0) return null;
     if (d.ps != 0 and d.psi == 0) return null;

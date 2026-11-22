@@ -309,8 +309,19 @@
   `src/shaders.bin` on disk and every program the game needs that it lacks is appended. Play the stages,
   rebuild, commit the file. Changing `Key` invalidates it (a comptime size check catches a size change):
   empty the file and record again.
-- State on 2026-11-22: the list holds only the title screen's 6 programs. The whole-game count is not
-  measured yet; it takes a recorded playthrough.
+- A vertex program's microcode is translated the first time it is needed (`vsGlsl`), and `genVs` needs
+  the result. `warm()` must call it too: without it every listed program with a vertex shader was built
+  empty and the whole 3D world was missing (HUD and text still drew), with no error in the log.
+- Log lines, all `[SHADER]`: cache on / off / not available, a cache folder that cannot be written (once),
+  a list entry skipped with the hash found and the hash listed, one line for each program built (start-up
+  or "while playing, not on the list", its time, compiled or from disk; a failed one says what it draws is
+  missing) and the start-up total. A report with stutter should show "while playing" lines: those are the
+  programs to record.
+- State on 2026-11-22: the list holds 284 programs, recorded by warping to every stage (m000 to m027 and
+  m185, a minute each, with the pad script and the `warp` cheat) on a new game. m101 and m102 cannot be
+  reached by warp and are not covered, nor are cutscenes, the shop or late-game weapons and spells; what
+  they need is built on first use and cached. Dev PC, empty cache: 2.0 s on D3D11, 3.0 s on GL, 0.4 s on
+  Vulkan; cached: 0.4 to 0.8 s, 0.5 s, 0.1 s. D3D11 start-up time with a full cache varies run to run.
 
 ## Debug menu (F1)
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
