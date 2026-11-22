@@ -420,6 +420,8 @@
   control), A clicks the focused element, B goes to Play, LB/RB switch pages. Enter/Space click a focused button.
 - Settings: `setup/logic.zig` reads `settings.ini` into entries (key, value, the `;` lines above it as help) and
   rewrites one line on a change (`withValue`), keeping everything else. Known keys get chips, toggles or a stepper.
+  The fullscreen resolution lists the primary display's modes (`EnumDisplaySettingsW`, 1280x720 and up, largest
+  first, at most 10: the display the game changes), Desktop's (empty), and Custom, which shows a text field.
 - Saves: `%LOCALAPPDATA%\Otogi\UDATA\46530002\<id>\`, one folder per save; `SaveMeta.xbx` is UTF-16 with
   `Name=OTOGI01 LV02 00:02`; `game.xsv` marks a game save, `map.xsv` a stage's data. Back up copies `UDATA`.
 - Updates: a thread reads `api.github.com/repos/Guuzzeji/otogi-xunchain/releases` (`OTOGI_RELEASES_URL` overrides,

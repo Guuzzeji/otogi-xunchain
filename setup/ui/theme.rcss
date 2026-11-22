@@ -288,6 +288,8 @@ input.text:placeholder-shown { color: #5c6f52; }
 .setting.stack { display: block; }
 .setting.stack .what { margin: 0 0 10dp; }
 .setting input.text { width: 260dp; }
+.setting input.custom { margin-top: 4dp; }
+.hidden { display: none; }
 
 /* ── Progress ──────────────────────────────────────────────────────────── */
 progress {

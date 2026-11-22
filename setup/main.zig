@@ -242,6 +242,7 @@ pub fn main(init: std.process.Init) !void {
     }
     _ = ui_font("ShipporiMinchoB1-Bold.ttf", true); // also the fallback for 御伽
     if (!ui_load("launcher.rml")) return error.NoPage;
+    listModes();
     makeJob();
 
     var u: Ui = .{ .io = io, .gpa = gpa };
@@ -297,6 +298,8 @@ const Ui = struct {
     iso_state: enum { none, ok, wrong, unreadable } = .none,
     copied_at: u64 = 0,
     help_log: enum { game, build } = .game,
+    /// Custom picked for the fullscreen resolution: its text field stays open.
+    res_custom: bool = false,
     toast: [:0]const u8 = "",
     toast_at: u64 = 0,
     /// Refreshed every second: the game is built, its disc is extracted.
@@ -435,7 +438,13 @@ const Ui = struct {
         } else if (eql(u8, cmd, "open-settings")) {
             openOut("settings.ini");
         } else if (std.mem.startsWith(u8, cmd, "set:")) {
+            if (eql(u8, cmd, "set:resolution")) u.res_custom = false;
             u.setSetting(cmd[4..], val);
+        } else if (eql(u8, cmd, "res-custom")) {
+            u.res_custom = true;
+            u.loadSettings();
+        } else if (eql(u8, cmd, "res-text")) {
+            u.setSetting("resolution", val);
         } else if (std.mem.startsWith(u8, cmd, "toggle:")) {
             const on = for (u.entries()) |e| (if (eql(u8, e.key, cmd[7..])) break eql(u8, e.value, "1")) else false;
             u.setSetting(cmd[7..], if (on) "0" else "1");
@@ -676,7 +685,7 @@ const Ui = struct {
         for (es) |e| {
             const k = knownSetting(e.key);
             const kind = if (k) |x| x.kind else .text;
-            w.print("<div class=\"setting{s}\"><div class=\"what\"><div class=\"label\">{f}</div><div class=\"help\">{f}</div></div><div class=\"ctl\">", .{ if (kind == .chips or kind == .text) " stack" else "", esc(if (k) |x| x.label else e.key), esc(e.help) }) catch return;
+            w.print("<div class=\"setting{s}\"><div class=\"what\"><div class=\"label\">{f}</div><div class=\"help\">{f}</div></div><div class=\"ctl\">", .{ if (kind == .toggle or kind == .stepper) "" else " stack", esc(if (k) |x| x.label else e.key), esc(e.help) }) catch return;
             switch (kind) {
                 .chips => {
                     w.writeAll("<div class=\"chips\">") catch return;
@@ -691,6 +700,16 @@ const Ui = struct {
                 .toggle => w.print("<div class=\"toggle\" id=\"opt-{s}\" onclick=\"toggle:{s}\"><div class=\"knob\"/></div>", .{ e.key, e.key }) catch return,
                 .stepper => w.print("<div class=\"row stepper\"><div class=\"btn\" onclick=\"step:{s}\" value=\"-\">&#x2212;</div><div class=\"val\" id=\"val-{s}\"></div><div class=\"btn\" onclick=\"step:{s}\" value=\"+\">+</div></div>", .{ e.key, e.key, e.key }) catch return,
                 .text => w.print("<input type=\"text\" class=\"text\" id=\"opt-{f}\" onchange=\"set:{f}\" placeholder=\"default\"/>", .{ esc(e.key), esc(e.key) }) catch return,
+                // The monitor's own modes; Custom shows a field for any other.
+                .resolution => {
+                    w.writeAll("<div class=\"chips\"><div class=\"chip\" id=\"opt-resolution-desktop\" onclick=\"set:resolution\" value=\"\">Desktop's</div>") catch return;
+                    for (modes[0..modes_len]) |*m| {
+                        const t = std.mem.sliceTo(m, 0);
+                        const x = std.mem.indexOfScalar(u8, t, 'x').?;
+                        w.print("<div class=\"chip\" id=\"opt-resolution-{s}\" onclick=\"set:resolution\" value=\"{s}\">{s} &#x00D7; {s}</div>", .{ t, t, t[0..x], t[x + 1 ..] }) catch return;
+                    }
+                    w.writeAll("<div class=\"chip\" id=\"opt-resolution-custom\" onclick=\"res-custom\">Custom</div></div><input type=\"text\" class=\"text custom\" id=\"opt-resolution\" onchange=\"res-text\" placeholder=\"Width x height, such as 1920x1080\"/>") catch return;
+                },
             }
             w.writeAll("</div></div>") catch return;
         }
@@ -710,6 +729,15 @@ const Ui = struct {
                 .toggle => ui_class(z(&b, "opt-{s}", .{e.key}), "on", std.mem.eql(u8, e.value, "1")),
                 .stepper => set(z(&b, "val-{s}", .{e.key}), "{s}x", .{if (e.value.len == 0) "1" else e.value}),
                 .text => ui_value(z(&b, "opt-{s}", .{e.key}), z(b[100..], "{s}", .{e.value})),
+                .resolution => {
+                    const listed = e.value.len == 0 or for (modes[0..modes_len]) |*m| (if (std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value)) break true) else false;
+                    const custom = u.res_custom or !listed;
+                    ui_class("opt-resolution-desktop", "on", !custom and e.value.len == 0);
+                    for (modes[0..modes_len]) |*m| ui_class(z(&b, "opt-resolution-{s}", .{std.mem.sliceTo(m, 0)}), "on", !custom and std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value));
+                    ui_class("opt-resolution-custom", "on", custom);
+                    ui_class("opt-resolution", "hidden", !custom);
+                    ui_value("opt-resolution", z(&b, "{s}", .{e.value}));
+                },
             }
             if (k.summary) for (k.opts) |o| if (std.mem.eql(u8, o.v, e.value)) sum.print("{s}{s}", .{ if (sum.end == 0) "" else " &#x00B7; ", o.label }) catch {};
         }
@@ -876,13 +904,13 @@ const Ui = struct {
 const Known = struct {
     key: []const u8,
     label: []const u8,
-    kind: enum { chips, toggle, stepper, text },
+    kind: enum { chips, toggle, stepper, text, resolution },
     opts: []const struct { v: []const u8, label: []const u8 } = &.{},
     summary: bool = false, // on the Play page's Settings tile
 };
 const known = [_]Known{
     .{ .key = "window", .label = "Window mode", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Window" }, .{ .v = "1", .label = "Borderless" }, .{ .v = "2", .label = "Fullscreen" } } },
-    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .text },
+    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .resolution },
     .{ .key = "scale", .label = "Internal resolution", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "1", .label = "1x (640x480)" }, .{ .v = "2", .label = "2x" }, .{ .v = "3", .label = "3x" }, .{ .v = "4", .label = "4x" } } },
     .{ .key = "widescreen", .label = "Widescreen (16:9)", .kind = .toggle },
     .{ .key = "framerate", .label = "Frame rate", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Monitor's" }, .{ .v = "30", .label = "30 (original)" }, .{ .v = "60", .label = "60" }, .{ .v = "120", .label = "120" }, .{ .v = "144", .label = "144" } } },
@@ -900,6 +928,36 @@ const distances = [_]f32{ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8 };
 fn knownSetting(key: []const u8) ?Known {
     for (known) |k| if (std.mem.eql(u8, k.key, key)) return k;
     return null;
+}
+
+/// The primary display's modes, 1280x720 and up, largest first ("1920x1080"):
+/// the choices for the fullscreen resolution (the game sets it on that display).
+var modes: [10][12:0]u8 = undefined;
+var modes_len: usize = 0;
+extern "user32" fn EnumDisplaySettingsW(device: ?[*:0]const u16, mode: u32, dm: *[220]u8) callconv(.winapi) i32;
+
+fn listModes() void {
+    var all: [128][2]u32 = undefined;
+    var n: usize = 0;
+    var dm: [220]u8 = @splat(0); // DEVMODEW
+    std.mem.writeInt(u16, dm[68..70], dm.len, .little); // dmSize
+    var i: u32 = 0;
+    while (EnumDisplaySettingsW(null, i, &dm) != 0) : (i += 1) {
+        const wh: [2]u32 = .{ std.mem.readInt(u32, dm[172..176], .little), std.mem.readInt(u32, dm[176..180], .little) }; // dmPelsWidth, dmPelsHeight
+        if (wh[0] < 1280 or wh[1] < 720 or n == all.len) continue;
+        if (for (all[0..n]) |x| (if (x[0] == wh[0] and x[1] == wh[1]) break true) else false) continue; // one per refresh rate and depth
+        all[n] = wh;
+        n += 1;
+    }
+    std.mem.sort([2]u32, all[0..n], {}, struct {
+        fn gt(_: void, a: [2]u32, b: [2]u32) bool {
+            return @as(u64, a[0]) * a[1] > @as(u64, b[0]) * b[1];
+        }
+    }.gt);
+    for (all[0..@min(n, modes.len)]) |wh| {
+        _ = std.fmt.bufPrintSentinel(&modes[modes_len], "{d}x{d}", .{ wh[0], wh[1] }, 0) catch continue;
+        modes_len += 1;
+    }
 }
 
 const title_id = "46530002";
