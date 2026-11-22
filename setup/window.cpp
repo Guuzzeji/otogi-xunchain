@@ -242,7 +242,8 @@ static LRESULT WINAPI wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 extern "C" bool ui_init(const wchar_t* title, int w, int h) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    WNDCLASSEXW wc = {sizeof(wc), CS_HREDRAW | CS_VREDRAW, wndProc, 0, 0, GetModuleHandleW(nullptr), nullptr, LoadCursor(nullptr, IDC_ARROW), nullptr, nullptr, L"OtogiLauncher", nullptr};
+    // Icon 1 is setup/assets/otogi-xunchain.ico (setup/launcher.rc).
+    WNDCLASSEXW wc = {sizeof(wc), CS_HREDRAW | CS_VREDRAW, wndProc, 0, 0, GetModuleHandleW(nullptr), LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1)), LoadCursor(nullptr, IDC_ARROW), nullptr, nullptr, L"OtogiLauncher", nullptr};
     RegisterClassExW(&wc);
     float scale = GetDpiForSystem() / 96.0f;
     RECT work;

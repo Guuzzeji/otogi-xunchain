@@ -1,0 +1,2 @@
+// The launcher's icon (assets/make-icons.ps1 draws it).
+1 ICON "assets/otogi-xunchain.ico"

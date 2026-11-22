@@ -432,6 +432,11 @@
   Report opens `issues/new?labels=bug&body=...` (version and `machine()`: Windows, CPU, RAM, GPU) and copies the whole
   log to the clipboard, since a URL cannot carry a file. Questions go to Discussions. `onclick="url"` opens only
   `https://github.com/` links.
+- Icons: `setup/assets/make-icons.ps1` draws both `.ico` files; `setup/launcher.rc` and `src/otogi.rc` embed them as
+  icon 1 (`addWin32ResourceFile`, Zig's own resource compiler). The launcher's window class loads icon 1 (`window.cpp`);
+  SDL3 gives the game's window the exe's first icon by itself.
+- Zig caches the configure step: after `src/recomp/gen` appears, a `zig build` that configured without it still
+  links none of it (undefined `recomp_lookup`...). Changing an option (`-Doptimize=ReleaseFast`) reconfigures.
 - After a build the launcher copies itself to `<out>\otogi-xunchain.exe`. Started from a folder that has `otogi.exe`,
   `game\default.xbe` or `build\.stamps`, it takes that folder as the install folder; anywhere else, `<exe dir>\Otogi`.
 - Testing by script without stealing focus: `PrintWindow(hwnd, dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)` captures

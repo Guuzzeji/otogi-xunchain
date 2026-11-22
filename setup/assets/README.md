@@ -15,3 +15,8 @@ like the game before any disc is picked. They are FromSoftware/Sega's, shipped b
 - `brush.png`: `menu/fe_lo000.dds` (DXT3), the red brush stroke; PNG for its alpha.
 
 Decoded with a small DXT1/3/5 reader, saved as JPEG quality 90.
+
+`otogi-xunchain.ico` (the launcher's icon) and `src/otogi.ico` (the game's) are drawn by `make-icons.ps1`
+(System.Drawing, no tools to install): the logo's "O・" as an open ring, a ring inside it and the dot beside it,
+white on Xbox green for the launcher, the logo's blue with a red dot on black for the game. Each `.ico` holds
+PNGs from 16 to 256 px. Rerun the script after changing it; `setup/launcher.rc` and `src/otogi.rc` embed them.

@@ -159,6 +159,10 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 .cols { display: flex; flex-direction: row; }
 .cols .col { flex: 1; min-width: 0; }
 .cols .col + .col { margin-left: 16dp; }
+/* A column whose card grows to the other column's height (Install's log). */
+.col.fill { display: flex; flex-direction: column; }
+.col.fill > .card { flex: 1 1 auto; display: flex; flex-direction: column; }
+.col.fill #log { flex: 1 1 0; height: auto; min-height: 160dp; }
 .gap { height: 10dp; }
 
 /* ── Buttons ───────────────────────────────────────────────────────────── */
@@ -308,7 +312,7 @@ progress fill { border-radius: 2dp; background-color: #107c10; }
 @keyframes pulse { from { opacity: 0.4; } to { opacity: 1; } }
 
 /* ── Log ───────────────────────────────────────────────────────────────── */
-#log, .logview {
+.logview, #log {
 	height: 420dp;
 	overflow: auto;
 	padding: 10dp 12dp;

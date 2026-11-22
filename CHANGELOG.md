@@ -18,6 +18,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - Help & logs in the launcher: the game's and the build's logs, live, with Copy and Open;
   **Report on GitHub** opens a new issue with your version and PC filled in and copies the
   log to paste into it; **Open Discussions** is for questions that are not bugs.
+- Icons for the launcher (green) and the game (the logo's blue and red on black), in
+  Explorer, the taskbar and the title bar.
 
 ## [0.10.2] - 2026-11-23
 

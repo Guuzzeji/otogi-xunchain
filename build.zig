@@ -56,6 +56,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32" }) |l|
         mod.linkSystemLibrary(l, .{});
 
+    mod.addWin32ResourceFile(.{ .file = b.path("src/otogi.rc") }); // the icon
     const exe = b.addExecutable(.{ .name = "otogi", .root_module = mod });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
@@ -144,6 +145,7 @@ fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.M
     mod.addCSourceFiles(.{ .root = rml.path("Source/Core"), .files = files.items, .flags = cpp });
     mod.addCSourceFiles(.{ .root = rml.path("Backends"), .files = &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, .flags = cpp });
     mod.addCSourceFile(.{ .file = b.path("setup/window.cpp"), .flags = cpp });
+    mod.addWin32ResourceFile(.{ .file = b.path("setup/launcher.rc") }); // the icon
     mod.link_libcpp = true;
     for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
     return mod;

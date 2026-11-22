@@ -1,0 +1,2 @@
+// The game's icon (setup/assets/make-icons.ps1 draws it).
+1 ICON "otogi.ico"
