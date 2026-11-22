@@ -21,6 +21,18 @@
             .url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-devel-3.4.20-mingw.zip",
             .hash = "N-V-__8AAL9ILQGkesJ01FUn3IxjuW4Yn80-3DaH5ruILsb6",
         },
+        // The launcher's UI (RmlUi 6.3, MIT) and its font engine (FreeType, FTL).
+        // Lazy: the game build never asks for them.
+        .rmlui = .{
+            .url = "https://github.com/mikke89/RmlUi/archive/refs/tags/6.3.tar.gz",
+            .hash = "N-V-__8AAOeqTgGIBoPqL8FeLtgW_2WVN5w0ppBcqWRgC7ky",
+            .lazy = true,
+        },
+        .freetype = .{
+            .url = "https://github.com/freetype/freetype/archive/refs/tags/VER-2-14-3.tar.gz",
+            .hash = "N-V-__8AAGJsqgDtM-7hGxs3GiSanZStnUfFiuHmioYRK3hN",
+            .lazy = true,
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },
 }

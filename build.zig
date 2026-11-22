@@ -62,26 +62,28 @@ pub fn build(b: *std.Build) void {
     run.step.dependOn(b.getInstallStep());
     b.step("run", "Run the game").dependOn(&run.step);
 
-    // otogi-xunchain-setup.exe: builds the game from the player's ISO. It embeds a
-    // `git archive` of HEAD, so commit before `zig build setup`.
-    const setup_mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
-    addImgui(b, setup_mod, target, .ReleaseSmall, &.{ "win32", "dx11" });
-    setup_mod.addCSourceFile(.{ .file = b.path("setup/window.cpp"), .flags = &.{ "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-w" } });
-    setup_mod.addImport("xiso", b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = target }));
-    const archive = b.addSystemCommand(&.{ "git", "archive", "--format=zip", "-o" });
-    const source_zip = archive.addOutputFileArg("source.zip");
-    archive.addArg("HEAD");
-    archive.has_side_effects = true;
-    setup_mod.addAnonymousImport("source.zip", .{ .root_source_file = source_zip });
-    setup_mod.addOptions("build_info", info);
-    setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
-    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| setup_mod.linkSystemLibrary(l, .{});
-    const setup = b.addExecutable(.{ .name = "otogi-xunchain-setup", .root_module = setup_mod });
-    setup.subsystem = .windows;
-    b.step("setup", "Build otogi-xunchain-setup.exe").dependOn(&b.addInstallArtifact(setup, .{}).step);
-
+    // otogi-xunchain.exe, the launcher: builds the game from the player's ISO,
+    // plays it, edits settings, updates. It embeds a `git archive` of HEAD, so
+    // commit before `zig build setup`. Not in the player's own build (that copy
+    // has commit.txt): RmlUi and FreeType are then never fetched.
+    const setup_step = b.step("setup", "Build otogi-xunchain.exe (the launcher)");
     const test_step = b.step("test", "Run tests");
-    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig", "src/pacer.zig" }) |f| {
+    if (b.root.access(b.graph.io, "commit.txt", .{})) |_| {} else |_| if (launcherModule(b, target)) |setup_mod| {
+        setup_mod.addImport("xiso", b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = target }));
+        const archive = b.addSystemCommand(&.{ "git", "archive", "--format=zip", "-o" });
+        const source_zip = archive.addOutputFileArg("source.zip");
+        archive.addArg("HEAD");
+        archive.has_side_effects = true;
+        setup_mod.addAnonymousImport("source.zip", .{ .root_source_file = source_zip });
+        setup_mod.addOptions("build_info", info);
+        setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
+        const setup = b.addExecutable(.{ .name = "otogi-xunchain", .root_module = setup_mod });
+        setup.subsystem = .windows;
+        setup_step.dependOn(&b.addInstallArtifact(setup, .{}).step);
+    }
+
+    // setup/logic.zig: the launcher's settings.ini, release notes and versions.
+    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig", "src/pacer.zig", "setup/logic.zig" }) |f| {
         const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host, .link_libc = true }) });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
@@ -116,6 +118,50 @@ fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTar
     tc.addIncludePath(imgui.path(""));
     mod.addImport("imgui", tc.createModule());
 }
+
+/// The launcher's module: setup/main.zig, its Win32 + D3D11 host (setup/window.cpp),
+/// RmlUi's core with its Win32 platform and DX11 renderer, and FreeType.
+/// Null until the lazy packages are fetched (zig fetches them and reruns this).
+fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Module {
+    const rml = b.lazyDependency("rmlui", .{}) orelse return null;
+    const ft = b.lazyDependency("freetype", .{}) orelse return null;
+    const mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
+    mod.addCMacro("RMLUI_STATIC_LIB", "");
+    mod.addCMacro("RMLUI_FONT_ENGINE_FREETYPE", "");
+    mod.addCMacro("FT2_BUILD_LIBRARY", "");
+    for ([_]std.Build.LazyPath{ rml.path("Include"), rml.path("Backends"), ft.path("include") }) |p| mod.addIncludePath(p);
+    mod.addCSourceFiles(.{ .root = ft.path("src"), .files = &freetype_c, .flags = &.{ "-std=c99", "-Os", "-w" } });
+
+    const cpp: []const []const u8 = &.{ "-std=c++17", "-Os", "-w", "-DRMLUI_VERSION=\"6.3\"", "-D_WIN32_WINNT=0x0A00" };
+    var files: std.ArrayList([]const u8) = .empty;
+    const core_path = rml.builder.root.join(b.allocator, "Source/Core") catch @panic("OOM");
+    var core = core_path.root_dir.handle.openDir(b.graph.io, core_path.sub_path, .{ .iterate = true }) catch @panic("RmlUi: no Source/Core");
+    defer core.close(b.graph.io);
+    var walk = core.walk(b.allocator) catch @panic("OOM");
+    while (walk.next(b.graph.io) catch null) |e| {
+        if (e.kind == .file and std.mem.endsWith(u8, e.basename, ".cpp")) files.append(b.allocator, b.dupe(e.path)) catch @panic("OOM");
+    }
+    mod.addCSourceFiles(.{ .root = rml.path("Source/Core"), .files = files.items, .flags = cpp });
+    mod.addCSourceFiles(.{ .root = rml.path("Backends"), .files = &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, .flags = cpp });
+    mod.addCSourceFile(.{ .file = b.path("setup/window.cpp"), .flags = cpp });
+    mod.link_libcpp = true;
+    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
+    return mod;
+}
+
+/// FreeType with its default module list (include/freetype/config/ftmodule.h).
+const freetype_c = [_][]const u8{
+    "base/ftsystem.c",   "base/ftinit.c",     "base/ftdebug.c",     "base/ftbase.c",
+    "base/ftbbox.c",     "base/ftbdf.c",      "base/ftbitmap.c",    "base/ftcid.c",
+    "base/ftfstype.c",   "base/ftgasp.c",     "base/ftglyph.c",     "base/ftgxval.c",
+    "base/ftmm.c",       "base/ftotval.c",    "base/ftpatent.c",    "base/ftpfr.c",
+    "base/ftstroke.c",   "base/ftsynth.c",    "base/fttype1.c",     "base/ftwinfnt.c",
+    "autofit/autofit.c", "bdf/bdf.c",         "cff/cff.c",          "cid/type1cid.c",
+    "gzip/ftgzip.c",     "lzw/ftlzw.c",       "pcf/pcf.c",          "pfr/pfr.c",
+    "psaux/psaux.c",     "pshinter/pshinter.c", "psnames/psnames.c", "raster/raster.c",
+    "sdf/sdf.c",         "sfnt/sfnt.c",       "smooth/smooth.c",    "svg/svg.c",
+    "truetype/truetype.c", "type1/type1.c",   "type42/type42.c",    "winfonts/winfnt.c",
+};
 
 /// Lifted C from `tools.recomp --gen-dir src/recomp/gen` (gitignored, absent on a fresh clone).
 fn addGenerated(b: *std.Build, mod: *std.Build.Module) void {

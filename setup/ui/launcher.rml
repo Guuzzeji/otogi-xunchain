@@ -1,0 +1,182 @@
+<rml>
+<head>
+	<title>Otogi XUnchain</title>
+	<link type="text/rcss" href="theme.rcss"/>
+</head>
+<body>
+	<div id="titlebar">
+		<span class="mark">御伽</span>
+		<span class="name">OTOGI XUNCHAIN</span>
+		<span class="ver" id="title-ver"></span>
+		<div class="grow"></div>
+		<div class="winbtn" onclick="win:min">&#xE921;</div>
+		<div class="winbtn" onclick="win:max">&#xE922;</div>
+		<div class="winbtn close" onclick="win:close">&#xE8BB;</div>
+	</div>
+
+	<div id="main">
+		<div id="sidebar">
+			<div class="navitem on" id="nav-play" onclick="page" value="play"><span class="icon">&#xE768;</span><span class="label">Play</span></div>
+			<div class="navitem" id="nav-install" onclick="page" value="install"><span class="icon">&#xE896;</span><span class="label">Install</span></div>
+			<div class="navitem" id="nav-settings" onclick="page" value="settings"><span class="icon">&#xE713;</span><span class="label">Settings</span></div>
+			<div class="navitem" id="nav-saves" onclick="page" value="saves"><span class="icon">&#xE74E;</span><span class="label">Saves</span></div>
+			<div class="navitem" id="nav-news" onclick="page" value="news"><span class="icon">&#xE789;</span><span class="label">What's new</span><span class="badge" id="news-badge">NEW</span></div>
+			<div class="grow"></div>
+			<div class="foot">
+				<p id="foot-ver"></p>
+				<p id="foot-gpu"></p>
+				<p>Controller: LB / RB switch pages</p>
+			</div>
+		</div>
+
+		<div id="content">
+			<!-- Play -->
+			<div class="page full shown" id="page-play">
+				<div id="hero">
+					<div class="raikoh"></div>
+					<div class="band"></div>
+					<div class="light" style="left: 8%; top: 380dp; animation: 9s 0s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 17%; top: 420dp; animation: 11s 2.5s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 26%; top: 360dp; animation: 8s 5s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 35%; top: 410dp; animation: 12s 1.2s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 44%; top: 390dp; animation: 10s 6.5s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 53%; top: 430dp; animation: 9.5s 3.3s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 62%; top: 370dp; animation: 13s 7.7s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 71%; top: 415dp; animation: 10.5s 0.8s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 80%; top: 395dp; animation: 8.5s 4.4s linear-in-out infinite rise;"></div>
+					<div class="light" style="left: 89%; top: 425dp; animation: 11.5s 2s linear-in-out infinite rise;"></div>
+					<div class="floor"></div>
+					<div class="sub">Myth of Demons &#x2014; on PC</div>
+					<div class="cta">
+						<div class="play" id="play-btn" onclick="play-main">PLAY</div>
+						<div class="status" id="play-status"></div>
+					</div>
+				</div>
+				<div class="tiles">
+					<div class="tile" onclick="page" value="news">
+						<span class="icon">&#xE789;</span>
+						<div class="kicker">WHAT'S NEW</div>
+						<div class="big" id="tile-news-title">Release notes</div>
+						<div class="muted small" id="tile-news-text">Checking GitHub...</div>
+					</div>
+					<div class="tile" onclick="page" value="saves">
+						<span class="icon">&#xE74E;</span>
+						<div class="kicker">SAVES</div>
+						<div class="big" id="tile-saves-title">No saves yet</div>
+						<div class="muted small" id="tile-saves-text"></div>
+					</div>
+					<div class="tile" onclick="page" value="settings">
+						<span class="icon">&#xE713;</span>
+						<div class="kicker">SETTINGS</div>
+						<div class="big" id="tile-settings-title">Display</div>
+						<div class="muted small" id="tile-settings-text"></div>
+					</div>
+				</div>
+				<div class="card release" id="play-notes" style="margin: 0 32dp 28dp;"></div>
+			</div>
+
+			<!-- Install -->
+			<div class="page" id="page-install">
+				<h1>Install</h1>
+				<div class="lede">Builds the game from your own disc: extracts it, translates the Xbox code to C and compiles it for Windows.</div>
+				<div class="cols">
+					<div class="col">
+						<div class="card">
+							<h3>Your disc image</h3>
+							<div class="muted small">An ISO of your own Otogi: Myth of Demons (USA) disc.</div>
+							<div class="gap"></div>
+							<div class="row">
+								<input class="text grow" type="text" id="iso" onchange="iso" placeholder="C:\path\to\otogi.iso"/>
+								<div class="gap"></div>
+								<div class="btn" style="margin: 0 0 0 8dp;" onclick="pick-iso">Browse</div>
+							</div>
+							<div class="gap"></div>
+							<div class="small" id="iso-status"></div>
+						</div>
+						<div class="card">
+							<h3>Install folder</h3>
+							<div class="muted small">The game goes here. Nothing is installed anywhere else.</div>
+							<div class="gap"></div>
+							<div class="row">
+								<input class="text grow" type="text" id="out" onchange="out"/>
+								<div class="btn" style="margin: 0 0 0 8dp;" onclick="pick-out">Browse</div>
+							</div>
+							<div class="gap"></div>
+							<div class="small" id="out-status"></div>
+						</div>
+						<div class="play wide" id="build" onclick="build">BUILD THE GAME</div>
+						<div class="muted small" id="eta" style="text-align: center; margin-top: 8dp;"></div>
+						<div class="gap"></div>
+						<div class="card">
+							<h3>Progress</h3>
+							<div class="small" id="progress-label"></div>
+							<progress id="progress" value="0"></progress>
+							<div class="steps" id="steps"></div>
+							<div id="build-result"></div>
+						</div>
+					</div>
+					<div class="col">
+						<div class="card">
+							<h3>Log</h3>
+							<div class="row">
+								<div class="btn" onclick="copy-log">Copy log</div>
+								<div class="btn" onclick="open-log">Open log file</div>
+								<div class="muted small grow" id="copied">Send this with any problem report.</div>
+							</div>
+							<div class="gap"></div>
+							<div class="muted small" id="sysline"></div>
+							<div class="gap"></div>
+							<div id="log" class="follow"></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Settings -->
+			<div class="page" id="page-settings">
+				<h1>Settings</h1>
+				<div class="lede">Saved to settings.ini as you change them. They take effect the next time the game starts.</div>
+				<div class="card">
+					<div class="row">
+						<div class="path grow" id="settings-path"></div>
+						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-settings">Open file</div>
+					</div>
+					<div id="settings-list"></div>
+				</div>
+			</div>
+
+			<!-- Saves -->
+			<div class="page" id="page-saves">
+				<h1>Saves</h1>
+				<div class="lede">Your memory unit lives on this PC. Back it up, or copy it to another PC's same folder.</div>
+				<div class="card">
+					<div class="row">
+						<div class="path grow" id="saves-path"></div>
+						<div class="btn" style="margin: 0 0 0 8dp;" onclick="open-saves">Open folder</div>
+						<div class="btn primary" style="margin: 0 0 0 8dp;" onclick="backup-saves">Back up...</div>
+					</div>
+					<div class="gap"></div>
+					<div id="saves-list"></div>
+				</div>
+			</div>
+
+			<!-- What's new -->
+			<div class="page" id="page-news">
+				<h1>What's new</h1>
+				<div class="lede">Every release, from GitHub. Updating rebuilds the game from your disc, keeping your settings and saves.</div>
+				<div class="card" id="banner">
+					<div class="row">
+						<div class="grow">
+							<h3 id="banner-title"></h3>
+							<div class="muted small" id="banner-text"></div>
+						</div>
+						<div class="play" style="width: 220dp;" id="update-btn" onclick="update">UPDATE</div>
+					</div>
+				</div>
+				<div id="releases"></div>
+			</div>
+		</div>
+		<div id="toast"></div>
+	</div>
+</body>
+</rml>
