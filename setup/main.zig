@@ -494,8 +494,13 @@ const Ui = struct {
         ui_class("play-btn", "busy", busy);
         set("play-btn", "{s}", .{if (busy) "BUILDING" else if (u.built) "PLAY" else "INSTALL"});
         var eta: [32]u8 = undefined;
+        const update = news.update.load(.acquire);
         if (busy)
             set("play-status", "Building: <strong>{s}</strong>, {s} left", .{ steps[@min(step_at.load(.acquire), steps.len - 1)], approx(&eta, secsLeft()) })
+        else if (update == .downloading)
+            set("play-status", "Downloading the update...", .{})
+        else if (update == .failed)
+            set("play-status", "<span class=\"bad\">{f}</span>", .{esc(updateError())})
         else if (u.built)
             set("play-status", "<strong>Ready</strong> &#x2014; {s}", .{"v" ++ build_info.version})
         else
@@ -834,10 +839,14 @@ const Ui = struct {
     fn drawNews(u: *Ui) void {
         const update = news.update.load(.acquire);
         switch (update) {
-            .downloading => set("update-btn", "UPDATING", .{}),
+            .downloading => {
+                set("update-btn", "UPDATING", .{});
+                set("play-update", "UPDATING", .{});
+            },
             .failed => {
                 set("update-btn", "TRY AGAIN", .{});
-                set("banner-text", "<span class=\"bad\">{f}</span>", .{esc(if (update_err[0] != 0) std.mem.sliceTo(&update_err, 0) else "The download is not a launcher exe. Try again later.")});
+                set("play-update", "TRY AGAIN", .{});
+                set("banner-text", "<span class=\"bad\">{f}</span>", .{esc(updateError())});
             },
             else => set("update-btn", "UPDATE", .{}),
         }
@@ -882,6 +891,8 @@ const Ui = struct {
             const tag = std.mem.trimStart(u8, l.tag_name, "v");
             ui_class("banner", "shown", true);
             ui_class("news-badge", "shown", true);
+            ui_class("play-update", "hidden", false);
+            set("play-update", "UPDATE TO v{f}", .{esc(tag)});
             set("banner-title", "v{f} is out", .{esc(tag)});
             set("banner-text", "You have v{s}. Update downloads the new launcher, then rebuilds the game from your disc (translate and compile again, about 8 minutes). Your saves and settings stay.", .{build_info.version});
             set("tile-news-title", "v{f} is out", .{esc(tag)});
@@ -1091,6 +1102,9 @@ fn fetchNews(io: Io, gpa: std.mem.Allocator) void {
 /// The new launcher to <exe>.new, then swapped in: the running exe can be
 /// renamed (to .old, deleted at the next start), not overwritten.
 var update_err: [160:0]u8 = @splat(0);
+fn updateError() []const u8 {
+    return if (update_err[0] != 0) std.mem.sliceTo(&update_err, 0) else "The download is not a launcher exe. Try again later.";
+}
 
 fn downloadUpdate(io: Io, gpa: std.mem.Allocator) void {
     const ok = swapIn(io, gpa) catch |e| blk: {

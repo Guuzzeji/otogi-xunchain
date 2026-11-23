@@ -214,6 +214,9 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 .play.busy:hover { background-color: #9e322a; }
 .play.off { background-color: #252d24; color: #8a9684; }
 .play.wide { width: auto; font-size: 15dp; }
+/* Beside PLAY when a newer release is out: same height, quieter. */
+.play.update { width: auto; margin-left: 12dp; padding: 0 24dp; font-size: 14dp; color: #9bf00b; background-color: #1b2a16; }
+.play.update:hover { background-color: #24391d; }
 
 /* ── Form controls ─────────────────────────────────────────────────────── */
 input.text {

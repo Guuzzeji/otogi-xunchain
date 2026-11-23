@@ -50,6 +50,7 @@
 					<div class="sub">Myth of Demons &#x2014; on PC</div>
 					<div class="cta">
 						<div class="play" id="play-btn" onclick="play-main">PLAY</div>
+						<div class="play update hidden" id="play-update" onclick="update"></div>
 						<div class="status" id="play-status"></div>
 					</div>
 				</div>
