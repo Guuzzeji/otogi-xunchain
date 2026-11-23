@@ -7,11 +7,30 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- Fire no longer looks like flat boxes with `framerate` above 30: torch flames and other animated sprites
+  showed two halves of their animation side by side on the in-between frames.
+
+## [0.10.0] - 2026-11-23
+
+### Added
+- The mouse pointer is hidden over the game while a controller is connected. The new setting
+  `show_mouse = 1` keeps it shown; the debug menu (F1) shows it either way.
+
+## [0.9.1] - 2026-11-23
+
+### Fixed
+- Shaders are compiled once per PC, not once per run: they are kept in a `shader_cache` folder beside
+  `otogi.exe`, so the short stutters when an effect first appears do not come back after the first time.
+  The folder is safe to delete.
+- The game compiles the shaders it knows about before the title screen, behind a progress bar when it
+  takes a moment, instead of in the middle of play.
+
+## [0.9.0] - 2026-11-23
+
 ### Added
 - PlayStation and Switch controllers work directly, without DS4Windows or Steam Input, and any
   controller can be plugged in, unplugged or swapped while playing. Rumble works on all of them.
-- The mouse pointer is hidden over the game while a controller is connected. The new setting
-  `show_mouse = 1` keeps it shown; the debug menu (F1) shows it either way.
 
 ### Changed
 - The window and input now run on SDL3 (`SDL3.dll` sits beside `otogi.exe`). The picture is drawn
@@ -19,18 +38,15 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - The frame rate follows the monitor the window is on, also after moving it to another one.
 
 ### Fixed
-- Fire no longer looks like flat boxes with `framerate` above 30: torch flames and other animated sprites
-  showed two halves of their animation side by side on the in-between frames.
 - Keyboard controls work (issue #8): they were listed in the README but never reached the game.
 - A controller is found whichever slot Windows gave it; before, only the first slot was read.
+
+## [0.8.1] - 2026-11-23
+
+### Fixed
 - The game no longer stays at 30 shown frames a second after one slow moment (opening the
   pause menu, skipping a cutscene, loading a stage). It used to need a restart to get the
   higher frame rate back (issues #15 and #1).
-- Shaders are compiled once per PC, not once per run: they are kept in a `shader_cache` folder beside
-  `otogi.exe`, so the short stutters when an effect first appears do not come back after the first time.
-  The folder is safe to delete.
-- The game compiles the shaders it knows about before the title screen, behind a progress bar when it
-  takes a moment, instead of in the middle of play.
 
 ## [0.8.0] - 2026-11-15
 
