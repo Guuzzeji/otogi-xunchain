@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-23
+
 ### Fixed
 - The game no longer stays at 30 shown frames a second after one slow moment (opening the
   pause menu, skipping a cutscene, loading a stage). It used to need a restart to get the
