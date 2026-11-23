@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-23
+
 ### Fixed
 - Fire no longer looks like flat boxes with `framerate` above 30: torch flames and other animated sprites
   showed two halves of their animation side by side on the in-between frames.
