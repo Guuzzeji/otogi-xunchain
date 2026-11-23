@@ -17,6 +17,10 @@
             .url = "https://github.com/dearimgui/dear_bindings/releases/download/DearBindings_v0.27_ImGui_v1.93.0/DearBindings_v0.27_ImGui_v1.93.0.zip",
             .hash = "N-V-__8AAAyPKATC1EDo719mRKC0M_H8gtItzVFv4u_RbaYt",
         },
+        .sdl = .{
+            .url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-devel-3.4.20-mingw.zip",
+            .hash = "N-V-__8AAL9ILQGkesJ01FUn3IxjuW4Yn80-3DaH5ruILsb6",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },
 }

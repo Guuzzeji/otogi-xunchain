@@ -27,6 +27,8 @@ const gl = @import("gl");
 const d3d = @import("d3d.zig");
 const debug_menu = @import("debug_menu.zig");
 const pacer = @import("pacer.zig");
+const sdl = @import("sdl");
+const input = @import("input.zig");
 
 const arg = d3d.arg;
 const mem32 = d3d.mem32;
@@ -36,70 +38,12 @@ extern threadlocal var g_edx: u32;
 extern threadlocal var g_eax: u32;
 
 // ── Window ──────────────────────────────────────────────────────────────────
-// Our own Win32 window on the render thread, pumped at each shown frame. Its keys and
-// mouse drive only the debug menu (F1); the game reads the controller.
+// An SDL3 window on the render thread, pumped at each shown frame. SDL is the
+// window, its events and the pads (input.zig) only: ANGLE draws into the
+// window's HWND, and SDL's own GL and swap calls are not used.
 
-const HWND = *opaque {};
-const WNDCLASSEXW = extern struct {
-    cbSize: u32 = @sizeOf(WNDCLASSEXW),
-    style: u32 = 0,
-    lpfnWndProc: *const fn (HWND, u32, usize, isize) callconv(.winapi) isize,
-    cbClsExtra: i32 = 0,
-    cbWndExtra: i32 = 0,
-    hInstance: ?*anyopaque = null,
-    hIcon: ?*anyopaque = null,
-    hCursor: ?*anyopaque = null,
-    hbrBackground: ?*anyopaque = null,
-    lpszMenuName: ?[*:0]const u16 = null,
-    lpszClassName: [*:0]const u16,
-    hIconSm: ?*anyopaque = null,
-};
-const MSG = extern struct { hwnd: ?HWND, message: u32, wParam: usize, lParam: isize, time: u32, pt: [2]i32, private: u32 };
-const RECT = extern struct { left: i32 = 0, top: i32 = 0, right: i32 = 0, bottom: i32 = 0 };
-extern "user32" fn RegisterClassExW(*const WNDCLASSEXW) callconv(.winapi) u16;
-extern "user32" fn CreateWindowExW(u32, [*:0]const u16, [*:0]const u16, u32, i32, i32, i32, i32, ?HWND, ?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) ?HWND;
-extern "user32" fn DefWindowProcW(HWND, u32, usize, isize) callconv(.winapi) isize;
-extern "user32" fn PeekMessageW(*MSG, ?HWND, u32, u32, u32) callconv(.winapi) i32;
-extern "user32" fn TranslateMessage(*const MSG) callconv(.winapi) i32;
-extern "user32" fn DispatchMessageW(*const MSG) callconv(.winapi) isize;
-extern "user32" fn AdjustWindowRect(*RECT, u32, i32) callconv(.winapi) i32;
-extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) i32;
 extern "kernel32" fn ExitProcess(u32) callconv(.winapi) noreturn;
-extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) i32;
-extern "user32" fn SetWindowLongPtrW(HWND, i32, isize) callconv(.winapi) isize;
-extern "user32" fn SetWindowPos(HWND, isize, i32, i32, i32, i32, u32) callconv(.winapi) i32;
-extern "user32" fn ShowWindow(HWND, i32) callconv(.winapi) i32;
-extern "user32" fn MonitorFromWindow(HWND, u32) callconv(.winapi) ?*anyopaque;
-extern "user32" fn GetMonitorInfoW(?*anyopaque, *MONITORINFO) callconv(.winapi) i32;
-extern "user32" fn ChangeDisplaySettingsW(?*const DEVMODEW, u32) callconv(.winapi) i32;
-const MONITORINFO = extern struct { cbSize: u32 = @sizeOf(MONITORINFO), rcMonitor: RECT = .{}, rcWork: RECT = .{}, dwFlags: u32 = 0 };
-const DEVMODEW = extern struct {
-    dmDeviceName: [32]u16 = @splat(0),
-    dmSpecVersion: u16 = 0,
-    dmDriverVersion: u16 = 0,
-    dmSize: u16 = @sizeOf(DEVMODEW),
-    dmDriverExtra: u16 = 0,
-    dmFields: u32 = 0,
-    _pos: [16]u8 = @splat(0),
-    _print: [5]i16 = @splat(0),
-    dmFormName: [32]u16 = @splat(0),
-    dmLogPixels: u16 = 0,
-    dmBitsPerPel: u32 = 0,
-    dmPelsWidth: u32 = 0,
-    dmPelsHeight: u32 = 0,
-    _rest: [10]u32 = @splat(0),
-};
-comptime {
-    std.debug.assert(@sizeOf(DEVMODEW) == 220);
-}
-
-const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
-const WS_POPUP: u32 = 0x80000000;
-const WS_VISIBLE: u32 = 0x10000000;
-const WM_CLOSE: u32 = 0x0010;
-const WM_ACTIVATEAPP: u32 = 0x001C;
-const WM_SYSKEYDOWN: u32 = 0x0104;
-const WM_SYSCHAR: u32 = 0x0106;
+extern fn SDL_SetMainReady() void; // SDL_main.h, which also renames main
 
 /// RECOMP_WINDOW: 0 = a window, 1 = borderless (a window covering the
 /// monitor), 2 = fullscreen (on top of everything, minimized when switched
@@ -107,73 +51,60 @@ const WM_SYSCHAR: u32 = 0x0106;
 /// switches between a window and fullscreen (borderless when started windowed).
 var window_mode: u8 = 0;
 var full = false;
-var windowed_rect: RECT = .{};
+var window: ?*sdl.SDL_Window = null;
 
 fn setFull(on: bool) void {
-    const h = hwnd.?;
-    const exclusive = window_mode == 2;
-    if (on and !full) _ = GetWindowRect(h, &windowed_rect);
     full = on;
-    if (!on) {
-        if (exclusive) _ = ChangeDisplaySettingsW(null, 0);
-        _ = SetWindowLongPtrW(h, -16, WS_OVERLAPPEDWINDOW | WS_VISIBLE); // GWL_STYLE
-        const r = windowed_rect;
-        _ = SetWindowPos(h, -2, r.left, r.top, r.right - r.left, r.bottom - r.top, 0x0020); // HWND_NOTOPMOST, SWP_FRAMECHANGED
-        return;
-    }
-    if (exclusive) setResolution();
-    var mi: MONITORINFO = .{};
-    _ = GetMonitorInfoW(MonitorFromWindow(h, 2), &mi); // MONITOR_DEFAULTTONEAREST
-    const r = mi.rcMonitor;
-    _ = SetWindowLongPtrW(h, -16, WS_POPUP | WS_VISIBLE);
-    // HWND_TOPMOST for fullscreen, HWND_TOP for borderless; SWP_FRAMECHANGED | SWP_SHOWWINDOW
-    _ = SetWindowPos(h, if (exclusive) -1 else 0, r.left, r.top, r.right - r.left, r.bottom - r.top, 0x0060);
+    var mode: sdl.SDL_DisplayMode = undefined;
+    // No mode is borderless.
+    _ = sdl.SDL_SetWindowFullscreenMode(window, if (on and window_mode == 2 and fullMode(&mode)) &mode else null);
+    _ = sdl.SDL_SetWindowFullscreen(window, on);
 }
 
-/// RECOMP_RESOLUTION=WxH for fullscreen; Windows puts the desktop back when
-/// the game ends (CDS_FULLSCREEN).
-fn setResolution() void {
-    const s = std.mem.span(std.c.getenv("RECOMP_RESOLUTION") orelse return);
-    var it = std.mem.tokenizeAny(u8, s, "x* ");
-    const w = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
-    const ht = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
-    const dm: DEVMODEW = .{ .dmFields = 0x80000 | 0x100000, .dmPelsWidth = w, .dmPelsHeight = ht }; // DM_PELSWIDTH | DM_PELSHEIGHT
-    const rc = ChangeDisplaySettingsW(&dm, 4); // CDS_FULLSCREEN
-    if (rc != 0) std.debug.print("[GL] resolution {d}x{d} failed ({d}); keeping the desktop's\n", .{ w, ht, rc });
+/// The fullscreen mode: RECOMP_RESOLUTION=WxH, or the desktop's.
+fn fullMode(mode: *sdl.SDL_DisplayMode) bool {
+    const display = sdl.SDL_GetDisplayForWindow(window);
+    const desk = sdl.SDL_GetDesktopDisplayMode(display) orelse return false;
+    var w = desk.*.w;
+    var h = desk.*.h;
+    if (std.c.getenv("RECOMP_RESOLUTION")) |s| {
+        var it = std.mem.tokenizeAny(u8, std.mem.span(s), "x* ");
+        const rw = std.fmt.parseInt(c_int, it.next() orelse "", 10) catch 0;
+        const rh = std.fmt.parseInt(c_int, it.next() orelse "", 10) catch 0;
+        if (rw > 0 and rh > 0) {
+            w = rw;
+            h = rh;
+        }
+    }
+    if (sdl.SDL_GetClosestFullscreenDisplayMode(display, w, h, 0, false, mode)) return true;
+    std.debug.print("[GL] resolution {d}x{d} failed ({s}); borderless instead\n", .{ w, h, sdl.SDL_GetError() });
+    return false;
 }
 
-fn wndProc(wnd: HWND, msg: u32, wp: usize, lp: isize) callconv(.winapi) isize {
-    if (msg == WM_CLOSE) ExitProcess(0); // closing the window ends the game
-    // Alt+Enter, not auto-repeat; its WM_SYSCHAR would beep.
-    if (msg == WM_SYSKEYDOWN and wp == 0x0D and (lp & (1 << 29)) != 0 and (lp & (1 << 30)) == 0) {
-        if (window_mode == 0) window_mode = 1;
-        setFull(!full);
-        return 0;
+/// Window, key and pad events, then the pads' state for the game (input.zig).
+fn pumpEvents() void {
+    var e: sdl.SDL_Event = undefined;
+    while (sdl.SDL_PollEvent(&e)) {
+        switch (e.type) {
+            sdl.SDL_EVENT_QUIT => ExitProcess(0), // closing the window ends the game
+            sdl.SDL_EVENT_KEY_DOWN => if (!e.key.repeat and e.key.scancode == sdl.SDL_SCANCODE_RETURN and e.key.mod & sdl.SDL_KMOD_ALT != 0) {
+                if (window_mode == 0) window_mode = 1;
+                setFull(!full);
+                continue;
+            },
+            // Another monitor, or another mode on this one.
+            sdl.SDL_EVENT_WINDOW_DISPLAY_CHANGED, sdl.SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED => frRate(),
+            else => {},
+        }
+        if (!debug_menu.event(&e)) input.event(&e);
     }
-    if (msg == WM_SYSCHAR and wp == 0x0D) return 0;
-    // Fullscreen gives the desktop back while another app is in front.
-    if (msg == WM_ACTIVATEAPP and full and window_mode == 2) {
-        if (wp == 0) {
-            _ = ChangeDisplaySettingsW(null, 0);
-            _ = ShowWindow(wnd, 6); // SW_MINIMIZE
-        } else setFull(true);
-    }
-    if (debug_menu.wndProc(wnd, msg, wp, lp)) return 1;
-    return DefWindowProcW(wnd, msg, wp, lp);
-}
-
-fn pumpMessages() void {
-    var m: MSG = undefined;
-    while (PeekMessageW(&m, null, 0, 0, 1) != 0) { // PM_REMOVE
-        _ = TranslateMessage(&m);
-        _ = DispatchMessageW(&m);
-    }
+    input.poll();
 }
 
 fn clientSize() [2]i32 {
-    var r: RECT = .{};
-    _ = GetClientRect(hwnd.?, &r);
-    return .{ r.right, r.bottom };
+    var sz: [2]c_int = .{ 1, 1 };
+    _ = sdl.SDL_GetWindowSizeInPixels(window, &sz[0], &sz[1]);
+    return sz;
 }
 
 // ── EGL and the host back buffer ───────────────────────────────────────────
@@ -241,7 +172,6 @@ fn addCopy(data: u32) void {
     bb_copy_next = (bb_copy_next + 1) % bb_copies.len;
 }
 
-pub var hwnd: ?HWND = null;
 var dpy: gl.EGLDisplay = null;
 var surf: gl.EGLSurface = null;
 var state: enum { none, ready, failed } = .none;
@@ -255,7 +185,7 @@ var fbo_depth: gl.GLuint = 0;
 var samplers: [4]gl.GLuint = @splat(0);
 
 // HWNDs need not be aligned; translate-c types EGLNativeWindowType as a struct pointer.
-extern fn eglCreateWindowSurface(gl.EGLDisplay, gl.EGLConfig, ?HWND, ?*const gl.EGLint) gl.EGLSurface;
+extern fn eglCreateWindowSurface(gl.EGLDisplay, gl.EGLConfig, ?*anyopaque, ?*const gl.EGLint) gl.EGLSurface;
 
 fn hasExt(name: []const u8) bool {
     var n: gl.GLint = 0;
@@ -289,11 +219,16 @@ extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
 /// Window, context and back buffer. RECOMP_GFX=d3d11 (default), vulkan or gl.
 fn glInit() bool {
     if (std.c.getenv("RECOMP_SCALE")) |s| scale = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(s), 10) catch 2, 1, 4);
-    const class = std.unicode.utf8ToUtf16LeStringLiteral("OtogiRecomp");
-    _ = RegisterClassExW(&.{ .lpfnWndProc = wndProc, .lpszClassName = class });
-    var r: RECT = .{ .right = @intCast(bbw() * scale), .bottom = @intCast(480 * scale) };
-    _ = AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, 0);
-    hwnd = CreateWindowExW(0, class, std.unicode.utf8ToUtf16LeStringLiteral("Otogi: Myth of Demons"), WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, r.right - r.left, r.bottom - r.top, null, null, null, null) orelse return false;
+    // ponytail: SDL lives on this thread, not the process's first. Fine on
+    // Windows; macOS wants its windows on the main thread, so a port moves
+    // the game to a thread of its own instead.
+    SDL_SetMainReady();
+    if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMEPAD)) {
+        std.debug.print("[GL] SDL_Init failed: {s}\n", .{sdl.SDL_GetError()});
+        return false;
+    }
+    window = sdl.SDL_CreateWindow("Otogi: Myth of Demons", @intCast(bbw() * scale), @intCast(480 * scale), sdl.SDL_WINDOW_RESIZABLE) orelse return false;
+    const hwnd = sdl.SDL_GetPointerProperty(sdl.SDL_GetWindowProperties(window), sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
     if (std.c.getenv("RECOMP_WINDOW")) |m| window_mode = std.math.clamp(m[0] -| '0', 0, 2);
     if (window_mode != 0) setFull(true);
 
@@ -2193,28 +2128,23 @@ fn wake() void {
     WakeAllConditionVariable(&cond);
 }
 
-extern "gdi32" fn GetDeviceCaps(hdc: ?*anyopaque, index: c_int) callconv(.winapi) c_int;
-extern "user32" fn GetDC(wnd: ?HWND) callconv(.winapi) ?*anyopaque;
-extern "user32" fn EnumDisplaySettingsW(?[*:0]const u16, u32, *DEVMODEW) callconv(.winapi) i32;
-
-/// The refresh rate of the monitor the window is on; the primary's when that
-/// cannot be read.
-fn refreshHz() u32 {
-    var mi: extern struct { mi: MONITORINFO, dev: [32]u16 } = .{ .mi = .{ .cbSize = @sizeOf(MONITORINFO) + 64 }, .dev = @splat(0) }; // MONITORINFOEXW
-    var dm: DEVMODEW = .{};
-    if (GetMonitorInfoW(MonitorFromWindow(hwnd.?, 2), &mi.mi) != 0 and
-        EnumDisplaySettingsW(@ptrCast(&mi.dev), 0xFFFFFFFF, &dm) != 0 and dm._rest[1] > 1) // ENUM_CURRENT_SETTINGS; dmDisplayFrequency
-        return dm._rest[1];
-    return @intCast(@max(GetDeviceCaps(GetDC(null), 116), 30)); // VREFRESH
+/// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
+/// the refresh rate of the monitor the window is on (59.94 and such
+/// included), again whenever that changes; 30 is off.
+fn frRate() void {
+    var hz: f64 = 0;
+    if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseFloat(f64, std.mem.span(e)) catch 0;
+    if (hz == 0) {
+        const m = sdl.SDL_GetCurrentDisplayMode(sdl.SDL_GetDisplayForWindow(window));
+        hz = if (m != null and m.*.refresh_rate > 1) m.*.refresh_rate else 60;
+    }
+    const step = if (hz > 30) 1000.0 / hz else present_period;
+    if (step != fr_step) std.debug.print("[GL] showing {d:.2} frames a second\n", .{1000.0 / step});
+    fr_step = step;
 }
 
-/// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
-/// the monitor's refresh rate; 30 is off.
 fn frInit() void {
-    var hz: u32 = 0;
-    if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
-    if (hz == 0) hz = refreshHz();
-    if (hz > 30) fr_step = 1000.0 / @as(f64, @floatFromInt(hz));
+    frRate();
     for (&hold) |*h| {
         gl.glGenTextures(1, &h.tex);
         gl.glBindTexture(gl.GL_TEXTURE_2D, h.tex);
@@ -2223,7 +2153,6 @@ fn frInit() void {
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, h.fbo);
         gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, h.tex, 0);
     }
-    if (hz > 30) std.debug.print("[GL] frame interpolation: {d} frames a second\n", .{hz});
 }
 
 /// Record a draw into the frame being built (game thread).
@@ -2704,7 +2633,7 @@ fn renderThread() void {
             const idle = sync_req == null;
             if (idle) wait(10);
             unlock();
-            if (idle) pumpMessages() else serveSync();
+            if (idle) pumpEvents() else serveSync();
             lock();
         }
         returned = fr_prev;
@@ -2836,7 +2765,7 @@ fn swapWindow() void {
     const now = nowMs();
     if (swap_at != 0) swap_gap = @max(swap_gap, now - swap_at);
     swap_at = now;
-    pumpMessages();
+    pumpEvents();
 }
 
 /// The back buffer `src` to the window, letterboxed to its aspect and flipped:
@@ -2857,7 +2786,7 @@ fn blitWindow(src: gl.GLuint) void {
     const y = @divTrunc(sz[1] - h, 2);
     gl.glBlitFramebuffer(0, 0, bw * @as(i32, @intCast(scale)), @intCast(480 * scale), x, y + h, x + w, y, gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0);
-    debug_menu.draw(hwnd.?);
+    debug_menu.draw(window.?);
 }
 
 /// RECOMP_SHOT=120,600: write the window at those frames to logs\frame_N.bmp.

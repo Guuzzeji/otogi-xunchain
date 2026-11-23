@@ -44,7 +44,7 @@
   5. `sub_000C81A0` (per-frame XMV step) returns "movie ended". XMV's clock (`sub_00146D25`) stays 0 until its decode/audio pipeline starts the clock, so it would Sleep(2) forever. M4 replaces this.
   6. XAPI input HLE: XInitDevices `sub_0016E924`, XGetDevices `E929`, XGetDeviceChanges `E94B`, XInputOpen `EA1A`, XInputClose `EA70`,
      XInputGetCapabilities `EA7C`, XInputGetState `EC54`, XInputSetState `ECC7` (`0x16DB4C` = gamepad type). They feed
-     `usb_gamepad_report` (host XInput pad, keyboard, `RECOMP_PAD_SCRIPT`). Port 0 only; it "arrives" on the first
+     `usb_gamepad_report` (host pads through SDL3, keyboard, `RECOMP_PAD_SCRIPT`). Port 0 only; it "arrives" on the first
      XGetDeviceChanges, as on hardware. XAPI's own USB stack hung, then crashed in `sub_000DB930`, on the toolkit OHCI model.
   7. `RECOMP_AC97_READY` on by default. Without DirectSound the game never starts its sound-stream worker
      (`sub_00072DA0`, started through vtable `0x18432C`+4), and the main menu spins in `0x78037` waiting on it.
@@ -86,12 +86,29 @@
   at once when late) and the game steps once per frame, so Swap is held to 30 Hz on a vblank grid. Holding 60 ran
   the game at twice its speed. `zig build` defaults to `-Doptimize=fast`: the Debug renderer could not keep up.
   `RECOMP_FPS=1` prints presents per second every 5 s.
-- Input: controller only (keyboard/mouse dropped for now). The game reads its pad in `0x44060`: `(raw + 0.5) / 32767.5`,
+- Input: pads and keyboard through SDL3 (`src/input.zig`, below). The game reads its pad in `0x44060`: `(raw + 0.5) / 32767.5`,
   a 40% dead zone per axis, buttons pressed above 0x1E. Controls (Options > Controller Config, Type A): LT lock-on,
   RT dash, A jump, B small attack, X spell, Y great attack. `src/pad.zig` adapts a modern pad: LB/RB also press
   LT/RT (Otogi does not use Black/White), the right stick is inverted on both axes (Otogi orbits the camera;
   `RECOMP_CAM_INVERT=0` keeps it) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
-  pad (`XInputSetState`, motors at feedback+66).
+  pad (`XInputSetState`, motors at feedback+66; `SDL_RumbleGamepad` on the host).
+- SDL3 is the window, its events and the pads; nothing else. ANGLE still draws (the window is made without SDL's GL
+  flag and EGL gets its HWND from `SDL_PROP_WINDOW_WIN32_HWND_POINTER`), XAudio2 still plays. The prebuilt
+  `SDL3.dll` is pinned in `build.zig.zon` like ANGLE. All SDL calls are on the render thread, which calls
+  `SDL_SetMainReady` itself; that is fine on Windows and not on macOS.
+  - `src/input.zig` replaces the toolkit's `input/xinput_device.c` (left out of the build, not edited) and exports
+    the same five `xbox_Input*` functions, so `usb_gamepad_report` is unchanged. Before this the pad was XInput
+    slot 0 only, and the keyboard was dead: nothing called `xbox_InputKeySet` and `RECOMP_KEYBOARD` was never set
+    (issue #8). Now `main.zig` sets it, and key events map SDL scancodes to the Windows key codes of the
+    toolkit's key map.
+  - Every host pad plays the one guest pad (`pad.merge`: buttons OR-ed, each axis from the pad pushing it
+    furthest). That removes the "which slot" question, and a pad that shows up twice (the real one plus a
+    DS4Windows or Steam Input copy) does no harm. The render thread polls after each event pump; the game
+    thread reads the last state under a lock.
+  - Fullscreen is `SDL_SetWindowFullscreenMode`: no mode = borderless, a mode (the desktop's or
+    `RECOMP_RESOLUTION`) = exclusive, which SDL minimizes on focus loss. `fr_step` is recomputed when the window
+    changes monitor or the monitor changes mode, and takes fractional rates (59.94).
+  - While the debug menu wants the keyboard, key presses stay out of the game; releases always go through.
 - Audio: already worked through the emulated APU and XAudio2 (`RECOMP_AC97_READY`); title music and movie sound play.
 - Saves: `xbox_path_init("game", "%LOCALAPPDATA%\Otogi")`. Create, list (with thumbnail) and load were tested.
 - Movie: `otogi_us_promo.xmv` is the attract-mode trailer (title idle ~25 s), not an intro. `sub_000C81A0` now runs the
@@ -275,7 +292,7 @@
 - Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
   sources and backends and exposes `dcimgui.h` as module `imgui`. Backend functions are hand-declared externs.
 - `src/debug_menu.zig`: drawn at the end of `blitWindow` (so shots include it), on the GL thread, through
-  `imgui_impl_opengl3` (GLES 3) and `imgui_impl_win32`. Closed, it costs nothing. `RECOMP_DEBUG_MENU=1` opens it at
+  `imgui_impl_opengl3` (GLES 3) and `imgui_impl_sdl3`. Closed, it costs nothing. `RECOMP_DEBUG_MENU=1` opens it at
   boot. Window layout in `debug_menu.ini`.
 - Render tab: renderer, settings, game/shown fps, guest work time per frame (from the end of one Swap to the start of the
   next) with a graph and a count of frames over 33.3 ms, last frame's draws/clears/CopyRects/texture uploads

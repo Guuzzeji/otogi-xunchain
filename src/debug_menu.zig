@@ -9,9 +9,10 @@ const cheats = @import("cheats.zig");
 const build_info = @import("build_info");
 const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 
-extern fn cImGui_ImplWin32_InitForOpenGL(hwnd: *anyopaque) bool;
-extern fn cImGui_ImplWin32_NewFrame() void;
-extern fn cImGui_ImplWin32_WndProcHandler(hwnd: *anyopaque, msg: u32, wp: usize, lp: isize) isize;
+const sdl = @import("sdl");
+extern fn cImGui_ImplSDL3_InitForOther(window: *sdl.SDL_Window) bool;
+extern fn cImGui_ImplSDL3_NewFrame() void;
+extern fn cImGui_ImplSDL3_ProcessEvent(event: *const sdl.SDL_Event) bool;
 extern fn cImGui_ImplOpenGL3_InitEx(glsl_version: ?[*:0]const u8) bool;
 extern fn cImGui_ImplOpenGL3_NewFrame() void;
 extern fn cImGui_ImplOpenGL3_RenderDrawData(data: *im.ImDrawData) void;
@@ -27,9 +28,6 @@ extern fn xbox_ContiguousInUseBytes() u32;
 extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
 extern "c" fn fclose(*anyopaque) c_int;
 
-const VK_F1 = 0x70;
-const WM_KEYDOWN = 0x0100;
-
 /// RECOMP_DEBUG_MENU=1 opens it at boot.
 var open = false;
 var open_checked = false;
@@ -37,13 +35,17 @@ var inited = false;
 var paused = false;
 var step = false;
 
-/// Window messages: F1 toggles the menu; while it is open ImGui gets the rest.
-pub fn wndProc(wnd: anytype, msg: u32, wp: usize, lp: isize) bool {
-    if (msg == WM_KEYDOWN and wp == VK_F1 and (lp & (1 << 30)) == 0) { // not auto-repeat
-        open = !open;
+/// Window events: F1 toggles the menu; while it is open ImGui sees them all.
+/// True for a key press the game must not also get: one typed into the menu.
+pub fn event(e: *const sdl.SDL_Event) bool {
+    const press = e.type == sdl.SDL_EVENT_KEY_DOWN;
+    if (press and e.key.scancode == sdl.SDL_SCANCODE_F1) {
+        if (!e.key.repeat) open = !open;
         return true;
     }
-    return inited and open and cImGui_ImplWin32_WndProcHandler(@ptrCast(wnd), msg, wp, lp) != 0;
+    if (!inited or !open) return false;
+    _ = cImGui_ImplSDL3_ProcessEvent(e);
+    return press and im.ImGui_GetIO().*.WantCaptureKeyboard;
 }
 
 /// Swap holds the current frame while paused; a step lets one through.
@@ -118,7 +120,7 @@ fn env(name: [*:0]const u8) []const u8 {
     return std.mem.span(std.c.getenv(name) orelse "default");
 }
 
-pub fn draw(hwnd: anytype) void {
+pub fn draw(window: *sdl.SDL_Window) void {
     sampleRates();
     cheats.tick();
     if (!open_checked) {
@@ -134,12 +136,12 @@ pub fn draw(hwnd: anytype) void {
         const style = im.ImGui_GetStyle();
         im.ImGuiStyle_ScaleAllSizes(style, 1.5);
         style.*.FontScaleMain = 1.5;
-        _ = cImGui_ImplWin32_InitForOpenGL(@ptrCast(hwnd));
+        _ = cImGui_ImplSDL3_InitForOther(window);
         _ = cImGui_ImplOpenGL3_InitEx("#version 300 es");
         inited = true;
     }
     cImGui_ImplOpenGL3_NewFrame();
-    cImGui_ImplWin32_NewFrame();
+    cImGui_ImplSDL3_NewFrame();
     im.ImGui_NewFrame();
     im.ImGui_SetNextWindowPos(.{ .x = 20, .y = 20 }, im.ImGuiCond_FirstUseEver);
     im.ImGui_SetNextWindowSize(.{ .x = 760, .y = 640 }, im.ImGuiCond_FirstUseEver);

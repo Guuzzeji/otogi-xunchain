@@ -116,7 +116,7 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 **Exit check:** the title screen and menu render correctly.
 
 ## M4: Playable — items 1-5 working; full stage 1 run not yet verified (skipped to M5 at the user's request)
-1. Input: XInput plus `mkb.ini` (reuse `xboxrecomp/src/input/mkb_input.c`).
+1. Input: XInput plus `mkb.ini` (reuse `xboxrecomp/src/input/mkb_input.c`). (2026-11-22: host pads and keyboard now come through SDL3, `src/input.zig`; `mkb_input.c` is still reused.)
 2. Audio: APU to XAudio2.
 3. XMV intro movie.
 4. Saves in `%LOCALAPPDATA%`.

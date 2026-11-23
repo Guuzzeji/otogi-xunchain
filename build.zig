@@ -44,8 +44,16 @@ pub fn build(b: *std.Build) void {
     mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
     inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
         b.getInstallStep().dependOn(&b.addInstallBinFile(angle.path("bin/" ++ dll), dll).step);
-    addImgui(b, mod, target, optimize, &.{ "win32", "opengl3" });
-    for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "xinput1_4", "dbghelp", "gdi32", "user32" }) |l|
+    // SDL3 (window, events, gamepads): the official prebuilt DLL beside the exe.
+    const sdl_dir = b.dependency("sdl", .{}).path("x86_64-w64-mingw32");
+    const sdl = b.addTranslateC(.{ .root_source_file = b.path("src/sdl.h"), .target = target, .optimize = optimize });
+    sdl.addIncludePath(sdl_dir.path(b, "include"));
+    mod.addImport("sdl", sdl.createModule());
+    mod.addIncludePath(sdl_dir.path(b, "include")); // for ImGui's SDL3 backend
+    mod.addObjectFile(sdl_dir.path(b, "lib/libSDL3.dll.a"));
+    b.getInstallStep().dependOn(&b.addInstallBinFile(sdl_dir.path(b, "bin/SDL3.dll"), "SDL3.dll").step);
+    addImgui(b, mod, target, optimize, &.{ "sdl3", "opengl3" });
+    for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32" }) |l|
         mod.linkSystemLibrary(l, .{});
 
     const exe = b.addExecutable(.{ .name = "otogi", .root_module = mod });
@@ -125,6 +133,7 @@ fn addGenerated(b: *std.Build, mod: *std.Build.Module) void {
 }
 
 // Windows source set from xboxrecomp's CMakeLists (minus the SDL/POSIX-only files).
+// input/xinput_device.c is left out too: src/input.zig (SDL3) stands in for it.
 const toolkit_c = [_][]const u8{
     "platform/host_time.c",       "platform/recomp_exit_hook.c",
     "kernel/kernel_path.c",       "kernel/kernel_pool.c",
@@ -151,8 +160,8 @@ const toolkit_c = [_][]const u8{
     "nv2a/nv2a_pgraph_d3d11.c",   "nv2a/nv2a_pb_replay.c",
     "nv2a/nv2a_mmio_hook.c",      "nv2a/nv2a_pb_test.c",
     "usb/ohci.c",                 "usb/usb_gamepad.c",
-    "input/input_map.c",          "input/xinput_device.c",
-    "input/keyboard.c",           "input/mkb_input.c",
-    "video/video_player.c",       "video/video_pump.c",
-    "video/fb_present.c",         "video/gpu_present.c",
+    "input/input_map.c",          "input/keyboard.c",
+    "input/mkb_input.c",          "video/video_player.c",
+    "video/video_pump.c",         "video/fb_present.c",
+    "video/gpu_present.c",
 };
