@@ -8,10 +8,20 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 ## [Unreleased]
 
 ### Added
+- The launcher builds from a folder of the disc's files too (as an Xbox 360 or HDD rip
+  leaves them): pick the `default.xbe` in it, or type the folder's path.
 - Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
   up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
 
+### Changed
+- A dump of the USA disc whose `default.xbe` differs from the known good one no longer
+  blocks the build: the launcher warns that it was modified or misread, and you can still
+  build. A different game, or the Japanese release, is still refused.
+
 ### Fixed
+- XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
+  patches one byte of `default.xbe` (the media check). The launcher now recognises that
+  patch, accepts the disc as verified and puts the original byte back for the build.
 - Forbidden Mansion (stage 2): the path no longer flips between grass and a hard-edged
   square of dirt as the camera turns; the dirt blends softly into the grass as on the Xbox.
   The same fix applies to any map layer the game draws see-through.

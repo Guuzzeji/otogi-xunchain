@@ -47,7 +47,6 @@ const asset_name = "otogi-xunchain.exe";
 /// Bug reports go to issues; questions to discussions (setup/ui/launcher.rml).
 const issues_url = "https://github.com/Guuzzeji/otogi-xunchain/issues";
 
-const xbe_sha1 = "abf12bb66fcbd9f694c223419a2309c1a5f72293";
 /// <exe dir>\otogi-setup-iso.txt: the path of the last disc image that checked out.
 var remembered_buf: [1100]u8 = undefined;
 var remembered: []const u8 = "otogi-setup-iso.txt";
@@ -295,7 +294,7 @@ const Ui = struct {
     page: Page = .play,
     log: std.ArrayList(u8) = .empty,
     log_off: u64 = 0,
-    iso_state: enum { none, ok, wrong, unreadable } = .none,
+    disc: union(enum) { none, unreadable, read: logic.Xbe } = .none,
     copied_at: u64 = 0,
     help_log: enum { game, build } = .game,
     /// Custom picked for the fullscreen resolution: its text field stays open.
@@ -325,10 +324,10 @@ const Ui = struct {
         if (Io.Dir.cwd().readFile(u.io, remembered, &buf)) |last| {
             _ = std.fmt.bufPrintSentinel(&iso_buf, "{s}", .{last}, 0) catch {};
             u.checkIso();
-            if (u.iso_state == .ok) return;
+            if (u.usable()) return;
         } else |_| {}
         @memset(&iso_buf, 0);
-        u.iso_state = .none;
+        u.disc = .none;
         var dir = Io.Dir.cwd().openDir(u.io, exe_dir, .{ .iterate = true }) catch return;
         defer dir.close(u.io);
         var it = dir.iterate();
@@ -336,24 +335,31 @@ const Ui = struct {
             if (e.kind != .file or !std.ascii.endsWithIgnoreCase(e.name, ".iso")) continue;
             _ = std.fmt.bufPrintSentinel(&iso_buf, "{s}\\{s}", .{ exe_dir, e.name }, 0) catch continue;
             u.checkIso();
-            if (u.iso_state == .ok) return;
+            if (u.usable()) return;
         }
         @memset(&iso_buf, 0);
-        u.iso_state = .none;
+        u.disc = .none;
     }
 
     fn checkIso(u: *Ui) void {
         const path = std.mem.sliceTo(&iso_buf, 0);
         if (path.len == 0) {
-            u.iso_state = .none;
+            u.disc = .none;
             return;
         }
-        const hex = xbeSha1(u.io, u.gpa, path) catch {
-            u.iso_state = .unreadable;
+        var arena: std.heap.ArenaAllocator = .init(u.gpa);
+        defer arena.deinit();
+        const data = readXbe(u.io, arena.allocator(), path) catch {
+            u.disc = .unreadable;
             return;
         };
-        u.iso_state = if (std.mem.eql(u8, &hex, xbe_sha1)) .ok else .wrong;
-        if (u.iso_state == .ok) Io.Dir.cwd().writeFile(u.io, .{ .sub_path = remembered, .data = path }) catch {};
+        u.disc = .{ .read = logic.checkXbe(data) };
+        if (u.usable()) Io.Dir.cwd().writeFile(u.io, .{ .sub_path = remembered, .data = path }) catch {};
+    }
+
+    /// Otogi (USA): the build may start (with a warning for an unknown dump).
+    fn usable(u: *Ui) bool {
+        return u.disc == .read and u.disc.read != .wrong_game;
     }
 
     fn start(u: *Ui) void {
@@ -418,7 +424,7 @@ const Ui = struct {
             const now = GetTickCount64();
             if (busy) {
                 if (now - cancel_armed_at < 3000) stopBuild() else cancel_armed_at = now;
-            } else if (u.iso_state == .ok or u.extracted) u.start();
+            } else if (u.usable() or u.extracted) u.start();
         } else if (eql(u8, cmd, "copy-log")) {
             _ = u.copyLog("setup.log");
             u.copied_at = GetTickCount64();
@@ -534,11 +540,15 @@ const Ui = struct {
         ui_value("out", &out_buf);
         ui_attr("iso", "disabled", if (busy) "" else null);
         ui_attr("out", "disabled", if (busy) "" else null);
-        set("iso-status", "{s}", .{switch (u.iso_state) {
-            .none => if (u.extracted) "<span class=\"good\">Already extracted: the disc is not needed again.</span>" else "<span class=\"muted\">Pick the .iso file.</span>",
-            .ok => "<span class=\"good\">Otogi (USA): verified</span>",
-            .wrong => "<span class=\"bad\">Not the Otogi (USA) disc this build supports (default.xbe does not match).</span>",
-            .unreadable => "<span class=\"bad\">Cannot read an Xbox game from this file.</span>",
+        set("iso-status", "{s}", .{switch (u.disc) {
+            .none => if (u.extracted) "<span class=\"good\">Already extracted: the disc is not needed again.</span>" else "<span class=\"muted\">Pick the .iso file, or the default.xbe in a folder of the disc's files.</span>",
+            .unreadable => "<span class=\"bad\">Cannot read an Xbox game from this. Pick an .iso (redump or XISO), or the default.xbe in a folder of the disc's files.</span>",
+            .read => |x| switch (x) {
+                .match => "<span class=\"good\">Otogi (USA): verified</span>",
+                .media_patched => "<span class=\"good\">Otogi (USA): verified. Its default.xbe has the media patch XISO tools add; the build undoes it.</span>",
+                .other_dump => "<span class=\"gold\">Otogi (USA), but its default.xbe differs from the known good dump: it was modified or misread. You can still build, and it usually plays fine. If the build fails or the game misbehaves, try a fresh dump, and say so if you report it.</span>",
+                .wrong_game => "<span class=\"bad\">Not Otogi: Myth of Demons (USA). Other games and the Japanese release are not supported.</span>",
+            },
         }});
         if (u.free_gb) |f|
             set("out-status", "<span class=\"{s}\">{d} GB free on this drive, {d} GB needed.</span>{s}", .{ if (f < need_gb) "bad" else "muted", f, need_gb, if (ram_gb != 0 and ram_gb < 16) " <span class=\"gold\">Under 16 GB of RAM: the compile runs one job at a time and takes longer.</span>" else "" })
@@ -546,7 +556,7 @@ const Ui = struct {
             set("out-status", "", .{});
 
         const armed = busy and now - cancel_armed_at < 3000;
-        const can = busy or u.iso_state == .ok or u.extracted;
+        const can = busy or u.usable() or u.extracted;
         ui_class("build", "busy", busy);
         ui_class("build", "off", !can);
         set("build", "{s}", .{if (busy and cancel.load(.acquire)) "STOPPING..." else if (armed) "CLICK AGAIN TO STOP" else if (busy) "STOP THE BUILD" else if (!can) "PICK YOUR DISC IMAGE FIRST" else if (result == .failed) "TRY AGAIN" else if (u.built) "BUILD AGAIN" else "BUILD THE GAME"});
@@ -1229,20 +1239,33 @@ fn httpGet(io: Io, gpa: std.mem.Allocator, url: []const u8, w: *std.Io.Writer) !
     return res.status;
 }
 
-/// SHA-1 of default.xbe on the disc image, lower-case hex.
-fn xbeSha1(io: Io, gpa: std.mem.Allocator, iso_path: []const u8) ![40]u8 {
-    const iso = try Io.Dir.cwd().openFile(io, iso_path, .{});
+/// A folder of the disc's files (an HDD rip): picked as the folder or as its
+/// default.xbe. Null for a disc image.
+fn discFolder(io: Io, path: []const u8) ?[]const u8 {
+    if (std.ascii.endsWithIgnoreCase(path, ".xbe")) return std.fs.path.dirname(path);
+    var d = Io.Dir.cwd().openDir(io, path, .{}) catch return null;
+    d.close(io);
+    return path;
+}
+
+/// default.xbe from a disc image (redump or XISO) or a folder of the disc's files.
+fn readXbe(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (discFolder(io, path)) |dir| {
+        const p = try std.fmt.allocPrint(gpa, "{s}\\default.xbe", .{dir});
+        defer gpa.free(p);
+        return Io.Dir.cwd().readFileAlloc(io, p, gpa, .limited(64 << 20));
+    }
+    const iso = try Io.Dir.cwd().openFile(io, path, .{});
     defer iso.close(io);
     const img = try xiso.Image.open(io, iso);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     for (try img.readDir(arena.allocator(), img.root_sector, img.root_size)) |e| {
-        if (!std.mem.eql(u8, e.name, "default.xbe")) continue;
-        const data = try arena.allocator().alloc(u8, e.size);
+        if (!std.ascii.eqlIgnoreCase(e.name, "default.xbe")) continue;
+        const data = try gpa.alloc(u8, e.size);
+        errdefer gpa.free(data);
         if (try img.file.readPositionalAll(io, data, img.base + @as(u64, e.sector) * 2048) != e.size) return error.Truncated;
-        var h: [20]u8 = undefined;
-        std.crypto.hash.Sha1.hash(data, &h, .{});
-        return std.fmt.bytesToHex(h, .lower);
+        return data;
     }
     return error.NoXbe;
 }
@@ -1387,28 +1410,45 @@ fn pipeline(c: *Ctx) !void {
     try next(c, 0);
     const iso_path = std.mem.sliceTo(&iso_buf, 0);
     const extracted = if (cwd.access(io, c.path("{s}\\.stamps\\extract", .{c.work}), .{})) |_| true else |_| false;
+    var restored: ?[]u8 = null; // default.xbe with the media patch undone
     if (extracted) {
         c.say("game files already extracted; the disc is not needed", .{});
     } else {
-        const hex = xbeSha1(io, c.gpa, iso_path) catch |e| {
+        const data = readXbe(io, c.gpa, iso_path) catch |e| {
             fail("{s}", .{"Cannot read an Xbox game from the disc image."});
             return e;
         };
-        c.say("default.xbe SHA-1 {s}", .{&hex});
-        if (!std.mem.eql(u8, &hex, xbe_sha1)) {
-            fail("{s}", .{"This is not the Otogi (USA) disc this build supports (default.xbe does not match)."});
-            return error.WrongDisc;
+        c.say("default.xbe SHA-1 {s}", .{&logic.sha1Hex(data)});
+        switch (logic.checkXbe(data)) {
+            .match => {},
+            .media_patched => {
+                c.say("default.xbe has extract-xiso's media patch; game\\default.xbe gets the original byte back", .{});
+                restored = data;
+            },
+            .other_dump => c.say("WARNING: default.xbe is Otogi (USA) but not the known dump (SHA-1 {s}); building anyway", .{logic.xbe_sha1}),
+            .wrong_game => {
+                fail("{s}", .{"This is not Otogi: Myth of Demons (USA). Other games and the Japanese release are not supported."});
+                return error.WrongDisc;
+            },
         }
     }
 
     try next(c, 1);
     if (!c.done("extract")) {
-        const iso = try cwd.openFile(io, iso_path, .{});
-        defer iso.close(io);
-        const img = try xiso.Image.open(io, iso);
-        var game = try cwd.createDirPathOpen(io, c.path("{s}\\game", .{c.out}), .{});
-        defer game.close(io);
-        c.say("extracted {d} files", .{try img.unpack(c.gpa, game, img.root_sector, img.root_size)});
+        const game_path = c.path("{s}\\game", .{c.out});
+        if (discFolder(io, iso_path)) |dir| {
+            // ponytail: same-folder check by spelling only; picking the install's own game\ is the case it guards.
+            if (!std.ascii.eqlIgnoreCase(dir, game_path)) try copyTree(io, c.gpa, dir, game_path);
+            c.say("copied the game files from {s}", .{dir});
+        } else {
+            const iso = try cwd.openFile(io, iso_path, .{});
+            defer iso.close(io);
+            const img = try xiso.Image.open(io, iso);
+            var game = try cwd.createDirPathOpen(io, game_path, .{});
+            defer game.close(io);
+            c.say("extracted {d} files", .{try img.unpack(c.gpa, game, img.root_sector, img.root_size)});
+        }
+        if (restored) |d| try cwd.writeFile(io, .{ .sub_path = c.path("{s}\\default.xbe", .{game_path}), .data = d });
         c.stamp("extract");
     }
 
