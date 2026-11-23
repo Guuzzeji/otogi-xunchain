@@ -947,19 +947,20 @@ fn genFs(k: *const Key, w: *std.Io.Writer) !void {
         // eye against Xbox footage, not the game's maths (additive layers fogged to a light colour
         // stack to flat white). v_eyez is the strip's v, 0 at its top edge, 1 at the bottom. Two
         // layers of the ripple texture flow down (u_flow), stretched as falling water speeds up
-        // (sqrt of the drop); whole-number u scales keep the wrap round the tower seamless. Solid
-        // white near the top, breaking into streaks with gaps lower down; faded in at the top
-        // edge and out towards the bottom. The same at any distance.
+        // (a power of the drop); whole-number u scales keep the wrap round the tower seamless, and
+        // whole-number flow scales the wrap of u_flow. Pure white: solid at the top but for the
+        // texture's dark grain, thinning to fine soft streaks and mist lower down. The fade-in at
+        // the top edge is short, so a strip meets the solid white above it without a band.
         try w.writeAll(if (k.fog == 2)
             "  vec3 L = vec3(0.299, 0.587, 0.114);\n" ++
-            "  float fall = sqrt(max(v_eyez, 0.0));\n" ++
-            "  vec2 uv1 = vec2(v_t0.x, fall - u_flow.x);\n" ++
-            "  vec2 uv2 = vec2(v_t0.x * 2.0 + 0.31, fall * 0.8 - u_flow.y + 0.47);\n" ++
+            "  float fall = pow(max(v_eyez, 0.0), 0.7);\n" ++
+            "  vec2 uv1 = vec2(v_t0.x * 2.0, (fall - u_flow.x) * 3.0);\n" ++
+            "  vec2 uv2 = vec2(v_t0.x * 3.0 + 0.31, fall * 2.6 - u_flow.y * 3.0 + 0.47);\n" ++
             "  float lum = 0.5 * (dot(texture(u_tex0, uv1).rgb, L) + dot(texture(u_tex0, uv2).rgb, L));\n" ++
-            "  float edge = smoothstep(0.0, 0.15, v_eyez) * (1.0 - smoothstep(0.4, 1.0, v_eyez));\n" ++
-            "  float st = smoothstep(0.15, 0.85, v_eyez);\n" ++
-            "  float a = smoothstep(mix(-1.5, 0.0, st), mix(0.2, 0.8, st), lum) * edge;\n" ++
-            "  cur = vec4(mix(u_fogcolor.rgb, vec3(1.0), 0.9) * mix(mix(0.75, 0.4, st), 1.0, lum) * a, a);\n"
+            "  float edge = smoothstep(0.0, 0.05, v_eyez) * (1.0 - smoothstep(0.5, 1.0, v_eyez));\n" ++
+            "  float st = smoothstep(0.05, 0.7, v_eyez);\n" ++
+            "  float a = smoothstep(mix(-0.3, 0.15, st), mix(0.45, 0.95, st), lum) * edge;\n" ++
+            "  cur = vec4(a);\n"
         else
             "  cur.rgb = mix(u_fogcolor.rgb, cur.rgb, clamp(f, 0.0, 1.0));\n");
     }
@@ -1547,8 +1548,9 @@ fn uploadUniforms(p: *Prog) void {
     }
     if (p.u_flow >= 0) {
         // The waterfall's flow (genFs): game frames at 30 a second, 0.35 texture lengths a second,
-        // wrapped here in f64 so the phase never jumps (the game's own scroll wraps at 1).
-        const t = @as(f64, @floatFromInt(frame)) / 30.0 * 0.35;
+        // wrapped here in f64 so the phase never jumps (the game's own scroll wraps at 1). fr_t
+        // is the part of a game frame an in-between frame is at, so it flows on those too.
+        const t = (@as(f64, @floatFromInt(frame)) + fr_t) / 30.0 * 0.35;
         const v = [2]f32{ @floatCast(@mod(t, 1.0)), @floatCast(@mod(t * 0.73, 1.0)) };
         if (uniNew(p, &v)) gl.glUniform2fv(p.u_flow, 1, &v);
     }
@@ -2725,6 +2727,7 @@ fn setTarget(t: Tgt) void {
 fn frameReplay(prev: ?*const Frame, cur: *Frame, from: usize, to: usize, t: f32) void {
     const t0 = nowMs();
     fid = cur.id;
+    fr_t = t;
     logging = fr_final and drawlog_frame == frame + 1;
     const bytes = cur.bytes.items.ptr;
     var from0: [4]u32 = @splat(no_op);
@@ -2852,6 +2855,7 @@ fn waitServing(t: f64) void {
 
 /// Game frames shown (render thread).
 pub var frame: u32 = 0;
+var fr_t: f32 = 1; // how far into the game frame the replay being drawn is
 
 /// Frame whose draws are logged: RECOMP_GL_DRAWLOG=<frame>, or the frame after
 /// logs\drawlog appears (deleted at once; also takes a RECOMP_SHOT-style shot).

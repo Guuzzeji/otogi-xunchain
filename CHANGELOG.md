@@ -7,6 +7,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- Tower of Water's waterfall looks closer to the Xbox: bright white with fine grain at the top, thinning to
+  soft streaks and mist lower down, without the bright band where its strips meet. With `framerate` above 30
+  it now flows on every shown frame, not in 30-a-second steps.
+
 ## [0.10.1] - 2026-11-23
 
 ### Fixed

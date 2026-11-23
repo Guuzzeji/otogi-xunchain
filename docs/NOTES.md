@@ -246,9 +246,16 @@
   (cull off, the game's fog), the layers stack to flat white, unlike Xbox footage. So the draw (m007 is story stage 7,
   the stage's only fogged additive layer: fog key 2) gets our own shader instead, tuned by eye against that footage:
   cull off, premultiplied alpha blend, two layers of the ripple texture flowing down on a clock of our own (the game's
-  scroll wraps at 1 and jumps if rescaled), v mapped through sqrt for falling water, whole-number u scales so the wrap
-  round the tower is seamless; solid near the top of each strip, streaky with gaps lower, faded in over the top 15%
-  and out over the lower 60%; no distance terms, so it looks the same close up.
+  scroll wraps at 1 and jumps if rescaled; the clock adds the part of a game frame an in-between frame is at, `fr_t`,
+  so it flows at the shown frame rate), v mapped through a power (0.7) for falling water, whole-number u scales so the
+  wrap round the tower is seamless; solid near the top of each strip, soft fine streaks lower, faded in over the top 5%
+  and out over the lower half; no distance terms, so it looks the same close up.
+- Waterfall retune (against footage at 1:03:43): the game's own maths without fog (texture x diffuse, added) is nearly
+  invisible, texture x diffuse is near black and both alphas are 1. The ripple texture's rgb alone is white with dark
+  veins: the grain the Xbox shows. So the shader draws pure white with alpha from that luminance, at 2x3 and 3x2.6
+  repeats (the first tuning's 1x1 gave long cloth-like streaks), threshold -0.3..0.45 at the top (solid but for the
+  darkest grain) to 0.15..0.95 at the bottom (mist). The first tuning's 15% fade-in, then solid white, showed as a
+  bright band at each strip's top; 5% under the solid white of the strip above does not.
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.
