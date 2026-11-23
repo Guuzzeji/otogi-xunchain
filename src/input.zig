@@ -99,12 +99,23 @@ fn read(g: *sdl.SDL_Gamepad) pad.Pad {
 }
 
 /// Read the pads and send them the rumble (render thread, after the events).
-pub fn poll() void {
+pub fn poll(menu_open: bool) void {
     var m: pad.Pad = .{};
     var any = false;
     for (pads) |p| {
         pad.merge(&m, read(p orelse continue));
         any = true;
+    }
+    // With a pad in hand the pointer over the game is in the way: hide it.
+    // settings.ini show_mouse = 1 keeps it; the debug menu sets its own.
+    const S = struct {
+        var show: ?bool = null;
+    };
+    if (S.show == null) S.show = if (std.c.getenv("RECOMP_SHOW_MOUSE")) |e| e[0] != '0' else false;
+    const hide = any and !S.show.?;
+    if (!menu_open and sdl.SDL_CursorVisible() == hide) {
+        _ = if (hide) sdl.SDL_HideCursor() else sdl.SDL_ShowCursor();
+        std.debug.print("[INPUT] mouse pointer {s}\n", .{if (hide) "hidden: a pad is connected" else "shown"});
     }
     AcquireSRWLockExclusive(&mtx);
     now = m;
