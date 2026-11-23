@@ -7,6 +7,10 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- The ripple over the title screen when you press Start (as it turns grey and the
+  New Game / Load Game menu comes in) shows again; nothing was drawn before (#16).
+
 ## [0.11.0] - 2026-11-23
 
 ### Added

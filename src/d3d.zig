@@ -58,6 +58,12 @@ fn stateWord(n: u32) u32 {
 pub fn rs(i: Rs) u32 {
     return stateWord(128 + @intFromEnum(i));
 }
+/// Word i of the render state's pixel shader block (D3DRS_PSALPHAINPUTS0 on),
+/// laid out as D3DPIXELSHADERDEF: SetPixelShader copies the definition there
+/// and SetPixelShaderConstant changes its constants.
+pub fn psState(i: u32) u32 {
+    return stateWord(128 + i);
+}
 pub fn tss(stage: u32, i: Tss) u32 {
     return stateWord(32 * stage + @intFromEnum(i));
 }
