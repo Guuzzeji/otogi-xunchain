@@ -22,6 +22,9 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 - XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
   patches one byte of `default.xbe` (the media check). The launcher now recognises that
   patch, accepts the disc as verified and puts the original byte back for the build.
+- Forbidden Mansion (stage 2): the path no longer flips between grass and a hard-edged
+  square of dirt as the camera turns; the dirt blends softly into the grass as on the Xbox.
+  The same fix applies to any map layer the game draws see-through.
 - In widescreen, the trailer that plays when you wait on the title screen no longer has
   smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
   bars at the sides (issue #9).
