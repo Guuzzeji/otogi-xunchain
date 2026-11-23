@@ -106,7 +106,7 @@
   a 40% dead zone per axis, buttons pressed above 0x1E. Controls (Options > Controller Config, Type A): LT lock-on,
   RT dash, A jump, B small attack, X spell, Y great attack. `src/pad.zig` adapts a modern pad: LB/RB also press
   LT/RT (Otogi does not use Black/White), the right stick is inverted on both axes (Otogi orbits the camera;
-  `RECOMP_CAM_INVERT=0` keeps it) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
+  `RECOMP_CAM_INVERT=0` keeps it; `RECOMP_CAM_INVERT_Y=1` flips the vertical back, issue #17) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
   pad (`XInputSetState`, motors at feedback+66; `SDL_RumbleGamepad` on the host).
 - SDL3 is the window, its events and the pads; nothing else. ANGLE still draws (the window is made without SDL's GL
   flag and EGL gets its HWND from `SDL_PROP_WINDOW_WIN32_HWND_POINTER`), XAudio2 still plays. The prebuilt
@@ -170,6 +170,11 @@
   - A full-width `CopyRects` of the back buffer squeezes the whole wide buffer into its 640 columns. A full-width draw
     of such a copy (pause blur, menu desaturate) stretches back; a draw kept in the middle (the title logo's
     refraction) samples it remapped to its 4:3 position (`uploadTscale`, `u_tscale.zw` offset).
+  - The movie (issue #9) stays 4:3 with black sides: extending its full-screen draw of the movie target
+    (X8R8G8B8, filled from the YUY2 frame) only smeared the clamped edge columns into streaks. A target a
+    YUY2/UYVY texture was drawn into in the last 30 frames is the movie target (`isMovie`); a draw sampling it
+    (or a YUY2 texture itself) skips the edge rules. The trailer is the only XMV on the disc; cutscenes are in-engine.
+    Filling 16:9 would mean cropping a quarter of its height.
   - Known: in the pause menu a full-width overlay's clamped texture edge darkens the left pillar a little. Cutscene
     letterbox bars are handled by the full-width rule but were not seen in a test run.
 - Pad script that reaches stage 1 from boot: `RECOMP_PAD_SCRIPT=15000:start,18000:start,21000:a,23000:a,...,61000:a`
@@ -187,7 +192,7 @@
   `game\default.xbe` it switches to the exe's folder first (setup's Play starts it from elsewhere).
 - Setup writes `settings.ini` beside otogi.exe: a header with the version and that version's CHANGELOG.md section,
   then the repo's `settings.ini` as the template (a comment per setting). Values already in the player's file are kept,
-  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, show_mouse,
+  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, cam_invert_y, show_mouse,
   debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
@@ -254,6 +259,16 @@
   texture kept last frame's full scene (the glow's back buffer copy uses the same texture); adding it back each frame ran
   away to white. CopyRects now reads any surface that has a host target. A target that widened 3D is drawn into counts
   as a wide copy, so its copy stretches across the 16:9 screen instead of being extended.
+- Raikoh invisible in dash attacks (discussion #18; R with B or Y, all backends and frame rates, game frames too):
+  during the move the game draws him only into a 640x480 after-image target (`0x80D62000`), set with the back
+  buffer's own Z surface (`0x10681C`), then CopyRects it to `0x80AD5000` and draws that over the screen twice
+  (alpha blended, then added); a black quad at alpha 0x40 into the target (no Z) each frame fades the trail.
+  On the Xbox the target draws against the scene's depth, cleared with the back buffer; ours had its own depth
+  buffer that nothing cleared (zero), so every character draw failed the depth test and only his shadow and the
+  sword trail (drawn on the back buffer) showed. SetRenderTarget now starts such a target's depth and stencil
+  from a copy of the back buffer's (a `copy` op with `depth`: scaled blit, the whole wide view when 3D is
+  widened). The depth he draws there does not go back to the back buffer. He shows as a faint dark ghost, as the
+  game's alpha (about 0.8 on the body) and the fade give; not compared with Xbox footage.
 - Tower of Water (m007) waterfall: vertex program 0x1D93961 with fixed-function stage 0 (ripple texture x diffuse),
   added (SRCALPHA, ONE) as stacked strip layers, vertex fog: c158 = (-4e-6, 1), fog colour FFBCC7D7 (`0x18170`, table
   `0x20A3D8`); D3D's fog setup (`0xFC220`) for FOGTABLEMODE NONE is LINEAR (1, 1), and the final combiner
@@ -272,6 +287,33 @@
   repeats (the first tuning's 1x1 gave long cloth-like streaks), threshold -0.3..0.45 at the top (solid but for the
   darkest grain) to 0.15..0.95 at the bottom (mist). The first tuning's 15% fade-in, then solid white, showed as a
   bright band at each strip's top; 5% under the solid white of the strip above does not.
+- Forbidden Mansion (m001, story stage 1, "stage 2" to players) path flipping between grass and a hard-edged
+  dirt square as the camera turned (issue #14): the ground is a grass base (pushbuffer drawing texture 34)
+  with detail chunks and two dirt/grass overlay layers (textures 77, 80) on top, all vertex program
+  `1D93501` / pixel shader `1E91DA0` (t0/t1 mixed by `oT3.w` = v3.z, 7 combiners). The map recorder
+  (`0x25640`) sets ALPHABLENDENABLE 1, BLENDOP, SRCBLEND and DESTBLEND inside the recording for materials
+  with flag bit 0 (`0x258BB`). The state before BeginPushBuffer already held those values, so the replay
+  ("recorded where it changed, live elsewhere") took the live state, and that is whatever the game set
+  before each RunPushBuffer: 0 when the detail chunks had just been drawn, which depends on what is in
+  view. The overlay then drew opaque: the dirt square. Now `recordDraw` scans the guest pushbuffer since the
+  last draw for simple render state methods (`d3d.statesSet`, NV2A method per D3DRS 57-81) and a state
+  the recording set wins even when it equals the old value. Checked by camera turns on the path (draw logs:
+  the overlays blended in every frame, were opaque in the bad ones before) and in m007.
+- The Green Cave (m009, "stage 10" to players; the hub's stage menu names it) missing its ceiling, a white sky
+  showing through, and walls reduced to brown slabs (issue #14): the same replay leak, through CULLMODE. The
+  recorder calls `SetRenderState_CullMode` inside the recording (`0x25AD1`; NONE for the cave's
+  inward-facing chunks), the value it had at BeginPushBuffer, so the replay used the live cull mode (CCW, left
+  by the draw before) and dropped the ceiling and the inner faces of the walls. Found by replaying with all
+  recorded render states (fixed it), then by group and by index; none of the textures were wrong (dumped:
+  t0 mossy rock, t1 green rock, t2 a 32x32 black additive layer). `d3d.statesSet` now also knows the complex
+  states that write a method of their own, read from each setter in the title: CULLMODE 0x308 (always) and
+  0x39C, FRONTFACE 0x3A0, ZENABLE 0x30C, STENCILENABLE 0x32C, STENCILFAIL 0x370, FOGCOLOR 0x2A8, VERTEXBLEND
+  0x328, FILLMODE 0x38C, BACKFILLMODE 0x390, NORMALIZENORMALS 0x3A4 (the mask is a u128 over D3DRS 57-149).
+  Left live on purpose, as the Xbox does: ZWRITEENABLE and FOGENABLE, which the replay caller `0x254E0` sets
+  per object before each RunPushBuffer and the recorder does not touch (forcing the recorded Z write off
+  showed the pillar hall through the cave wall). Still not covered: deferred states (fog enable, texture
+  stages) and ZBIAS/TEXTUREFACTOR set to the value they had. Checked in m009 (D3D11 and Vulkan), m000,
+  m001, m007.
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.
@@ -378,7 +420,7 @@
 - `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
   zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in
   `setup/main.zig`. `otogi-xunchain-setup.exe <iso> <out>` starts at once (for tests).
-- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` SHA-1 in the
+- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` in the
   ISO (`src/xiso.zig`), extract to `<out>\game`, unpack the source to `<out>\build`, download Zig 0.17.0, Python
   3.14.7 embeddable and the Capstone 5.0.9 wheel (SHA-256 pinned in `setup/main.zig`, kept in
   `<out>\build\downloads`), lift (xbe_parser, disasm, func_id, abi_analysis, recomp), `zig build --prefix <out>
@@ -406,6 +448,19 @@
   downloads run in-process and finish their step first. Tested: stop during the compile left no processes.
 - The last disc image that checked out is remembered in `otogi-setup-iso.txt` beside the exe; without one, setup
   tries the first `.iso` beside the exe.
+- Dumps (issue #11, discussion #3; `checkXbe` in `setup/logic.zig`). Sources: a redump ISO (XDVDFS at 0x18300000),
+  an XISO (at 0; `Image.open` already tried that base), or a folder of the disc's files (picked as the folder or its
+  `default.xbe`; copied with `copyTree`). `default.xbe` is then one of: the redump's (SHA-1 `abf12bb6...`); the
+  same with extract-xiso's media patch, which XISOs and repacked HDD rips carry: `E8 CA FD FF FF 85 C0 7D`
+  (`call; test eax,eax; jge`) at file offset 0xD5955 becomes `... EB` (`jmp`), the only byte that differs in the
+  owner's XISO (SHA-1 `25f42754...`); setup undoes it in memory, the hash then matches, and the restored file
+  goes into `game\` so the lift is the verified one; any other bytes with the certificate's title ID 0x46530002
+  and a game region with North America (bit 0): a warning, the build goes on (a player's mismatched dump built and
+  played); anything else (another game, region 2 = Japan) is refused.
+- Downloads (issue #1, "stops when IMG-GUI cannot be fetched"): already front-loaded. Step 3 runs `zig build
+  --fetch` (ANGLE, Dear ImGui, dear_bindings, SDL3; the lazy RmlUi/FreeType are not needed by the player's build),
+  step 4 Python and Capstone, all before the lift; each is tried 3 times, finished downloads are kept by hash and
+  steps by stamp, so Try again resumes.
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
   `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
 
