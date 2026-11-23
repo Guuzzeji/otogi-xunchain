@@ -19,6 +19,9 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - The frame rate follows the monitor the window is on, also after moving it to another one.
 
 ### Fixed
+- Tower of Water's waterfall looks closer to the Xbox: bright white with fine grain at the top, thinning to
+  soft streaks and mist lower down, without the bright band where its strips meet. With `framerate` above 30
+  it now flows on every shown frame, not in 30-a-second steps.
 - Fire no longer looks like flat boxes with `framerate` above 30: torch flames and other animated sprites
   showed two halves of their animation side by side on the in-between frames.
 - Keyboard controls work (issue #8): they were listed in the README but never reached the game.
