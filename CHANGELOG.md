@@ -7,6 +7,8 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-23
+
 ### Added
 - Settings in game: **F10**, or **Back+Start** on a controller, opens a settings page with
   every option of `settings.ini` and its explanation. The game waits while it is open.
