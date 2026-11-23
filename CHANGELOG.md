@@ -7,6 +7,13 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- Shaders are compiled once per PC, not once per run: they are kept in a `shader_cache` folder beside
+  `otogi.exe`, so the short stutters when an effect first appears do not come back after the first time.
+  The folder is safe to delete.
+- The game compiles the shaders it knows about before the title screen, behind a progress bar when it
+  takes a moment, instead of in the middle of play.
+
 ## [0.9.0] - 2026-11-23
 
 ### Added
