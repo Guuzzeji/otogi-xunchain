@@ -1,25 +1,19 @@
 // Win32 window + D3D11 for the launcher, drawn by RmlUi (its Win32 platform
 // and DX11 renderer, Backends/). Zig owns the state: it sets markup by element
-// id (ui_set, ui_attr, ...) and gets every on* attribute's value as a command
-// (ui_event). The documents, stylesheets, art and fonts live in the exe
-// (ui_file, setup/main.zig).
+// id (ui_set, ui_attr, ...; ui_common.h) and gets every on* attribute's value
+// as a command (ui_event). The documents, stylesheets, art and fonts live in
+// the exe (ui_file, setup/main.zig).
 #include "RmlUi_Include_Windows.h"
 #include "RmlUi_Platform_Win32.h"
 #include "RmlUi_Renderer_DX11.h"
-#include <RmlUi/Core.h>
+#include "ui_common.h"
 #include <commdlg.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <wincodec.h>
 #include <xinput.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unordered_map>
-
-extern "C" void ui_event(const char* cmd, const char* value);           // setup/main.zig
-extern "C" const unsigned char* ui_file(const char* path, size_t* len); // setup/main.zig
 
 static HWND hwnd;
 static ID3D11Device* dev;
@@ -46,50 +40,6 @@ public:
         return true;
     }
 };
-
-// ── Files: embedded first (setup/ui, setup/assets), else the disk (Windows fonts)
-struct MemFile {
-    const unsigned char* p;
-    size_t n, at;
-    FILE* f;
-};
-class Files : public Rml::FileInterface {
-public:
-    Rml::FileHandle Open(const Rml::String& path) override {
-        size_t n = 0;
-        const char* name = path.c_str();
-        while (*name == '/') name++;
-        if (const unsigned char* p = ui_file(name, &n)) return (Rml::FileHandle) new MemFile{p, n, 0, nullptr};
-        FILE* f = fopen(path.c_str(), "rb");
-        return f ? (Rml::FileHandle) new MemFile{nullptr, 0, 0, f} : 0;
-    }
-    void Close(Rml::FileHandle h) override {
-        MemFile* m = (MemFile*)h;
-        if (m->f) fclose(m->f);
-        delete m;
-    }
-    size_t Read(void* buf, size_t size, Rml::FileHandle h) override {
-        MemFile* m = (MemFile*)h;
-        if (m->f) return fread(buf, 1, size, m->f);
-        size = Rml::Math::Min(size, m->n - m->at);
-        memcpy(buf, m->p + m->at, size);
-        m->at += size;
-        return size;
-    }
-    bool Seek(Rml::FileHandle h, long off, int origin) override {
-        MemFile* m = (MemFile*)h;
-        if (m->f) return fseek(m->f, off, origin) == 0;
-        long base = origin == SEEK_SET ? 0 : origin == SEEK_CUR ? (long)m->at : (long)m->n;
-        if (base + off < 0 || base + off > (long)m->n) return false;
-        m->at = base + off;
-        return true;
-    }
-    size_t Tell(Rml::FileHandle h) override {
-        MemFile* m = (MemFile*)h;
-        return m->f ? ftell(m->f) : m->at;
-    }
-};
-static Files files;
 
 // ── Images: JPG/PNG through WIC, the codecs Windows ships ──────────────────
 static bool decodeImage(const void* data, size_t len, Rml::Vector<Rml::byte>& px, UINT& w, UINT& h) {
@@ -302,9 +252,6 @@ extern "C" bool ui_init(const wchar_t* title, int w, int h) {
     return true;
 }
 
-// A font from the exe (ui_file) or from disk.
-extern "C" bool ui_font(const char* path, bool fallback) { return Rml::LoadFontFace(path, fallback); }
-
 extern "C" bool ui_load(const char* path) {
     doc = context->LoadDocument(path);
     if (doc) doc->Show();
@@ -374,45 +321,7 @@ extern "C" bool ui_frame() {
     return true;
 }
 
-// ── Zig sets the page by element id. Unchanged values cost nothing. ─────────
-static std::unordered_map<Rml::String, Rml::String> last;
 static Rml::Element* byId(const char* id) { return doc ? doc->GetElementById(id) : nullptr; }
-
-// Inner markup. Elements with class "follow" (the log) stay scrolled to the end
-// while they are at it.
-extern "C" void ui_set(const char* id, const char* rml) {
-    Rml::Element* el = byId(id);
-    if (!el) return;
-    auto it = last.find(id);
-    if (it != last.end() && it->second == rml) return;
-    last[id] = rml;
-    const bool follow = el->IsClassSet("follow") && el->GetScrollTop() + el->GetClientHeight() >= el->GetScrollHeight() - 4;
-    el->SetInnerRML(rml);
-    if (follow) {
-        doc->UpdateDocument();
-        el->SetScrollTop(el->GetScrollHeight());
-    }
-}
-
-extern "C" void ui_attr(const char* id, const char* name, const char* value) {
-    Rml::Element* el = byId(id);
-    if (!el) return;
-    if (!value) return el->RemoveAttribute(name);
-    if (!el->HasAttribute(name) || el->GetAttribute<Rml::String>(name, "") != value) el->SetAttribute(name, Rml::String(value));
-}
-
-extern "C" void ui_class(const char* id, const char* cls, bool on) {
-    if (Rml::Element* el = byId(id))
-        if (el->IsClassSet(cls) != on) el->SetClass(cls, on);
-}
-
-// A form control's value, unless the player is typing in it.
-extern "C" void ui_value(const char* id, const char* value) {
-    Rml::Element* el = byId(id);
-    if (!el || el == context->GetFocusElement()) return;
-    auto* fc = rmlui_dynamic_cast<Rml::ElementFormControl*>(el);
-    if (fc && fc->GetValue() != value) fc->SetValue(value);
-}
 
 extern "C" void ui_clipboard(const char* text) { sys->SetClipboardText(text); }
 

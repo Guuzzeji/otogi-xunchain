@@ -115,7 +115,17 @@ pub fn poll(menu_open: bool) void {
     if (combo) combo_held = true;
     if (m.buttons & 0x30 == 0) combo_held = false;
     if (combo_held) m.buttons &= ~@as(u16, 0x30);
-    if (settings_menu.open) m = .{};
+    if (settings_menu.open) {
+        // The page's: d-pad or left stick moves, A picks, B closes.
+        var dirs = m.buttons & 0xF;
+        const dead = 16000;
+        if (m.axes[1] > dead) dirs |= 1; // up (read() flips SDL's Y)
+        if (m.axes[1] < -dead) dirs |= 2;
+        if (m.axes[0] < -dead) dirs |= 4;
+        if (m.axes[0] > dead) dirs |= 8;
+        settings_menu.pad(dirs, m.analog[0] != 0, m.analog[1] != 0);
+        m = .{};
+    }
     // With a pad in hand the pointer over the game is in the way: hide it.
     // settings.ini show_mouse = 1 keeps it; the menus set their own.
     const show = if (std.c.getenv("RECOMP_SHOW_MOUSE")) |e| e[0] != '0' else false;

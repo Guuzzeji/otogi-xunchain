@@ -53,7 +53,7 @@ Then:
 
 <p align="center"><img src="docs/img/launcher.png" alt="The launcher's Play page: the Otogi logo on red brocade, Raikoh, a green Play button, and tiles for what's new, saves and settings" width="49%"> <img src="docs/img/launcher-news.png" alt="The launcher's What's new page: every release's notes from GitHub" width="49%"></p>
 
-The launcher checks your disc and extracts the game files. It then downloads everything the build needs (Zig, Python and Capstone, plus the ANGLE, SDL3 and Dear ImGui libraries, each checked against a pinned hash), and only then translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, build again and it carries on from where it stopped.
+The launcher checks your disc and extracts the game files. It then downloads everything the build needs (Zig, Python and Capstone, plus the ANGLE, SDL3, RmlUi and FreeType libraries, each checked against a pinned hash), and only then translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, build again and it carries on from where it stopped.
 
 The launcher also:
 
@@ -83,6 +83,8 @@ The launcher's Settings page edits `settings.ini` beside `otogi.exe`, which has 
 | `cam_invert` | 1 = modern right stick, 0 = original |
 | `cam_invert_y` | 1 = flip the right stick's up/down from what `cam_invert` gives (inverted look) |
 | `show_mouse` | 0 = pointer hidden while a controller is connected, 1 = always shown |
+| `metrics` | see-through metrics while playing: 0 off, 1 frames per second, 2 also frame time, the game's steps and work, draws, backend and resolution |
+| `metrics_corner` | 0 top right, 1 top left, 2 bottom right, 3 bottom left |
 
 Each line can also be set as an environment variable with a `RECOMP_` prefix (`RECOMP_SCALE=4`), which wins over the file.
 
@@ -157,7 +159,7 @@ If you enjoy playing Otogi on PC, please support xboxrecomp: star the repo, repo
 
 ## License
 
-The project's own code and docs are under the [MIT License](LICENSE). The vendored toolkit (`xboxrecomp/`), Dear ImGui, RmlUi, FreeType and the Shippori Mincho font (`setup/assets/`, SIL OFL 1.1) keep their own licenses; the launcher's notices are in `setup/assets/THIRD-PARTY-NOTICES.txt`. Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved. The screenshots in `docs/img/` show FromSoftware's game.
+The project's own code and docs are under the [MIT License](LICENSE). The vendored toolkit (`xboxrecomp/`), RmlUi, FreeType and the Shippori Mincho font (`setup/assets/`, SIL OFL 1.1) keep their own licenses; the notices for the launcher and the game (both use RmlUi, FreeType and the font) are in `setup/assets/THIRD-PARTY-NOTICES.txt`. Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved. The screenshots in `docs/img/` show FromSoftware's game.
 
 ---
 

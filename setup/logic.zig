@@ -89,7 +89,8 @@ pub const known = [_]Known{
     .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle, .live = true },
     .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper, .live = true },
     .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper, .live = true },
-    .{ .key = "fps_counter", .label = "Frame rate counter", .kind = .toggle, .live = true },
+    .{ .key = "metrics", .label = "Metrics while playing", .kind = .chips, .live = true, .opts = &.{ .{ .v = "0", .label = "Off" }, .{ .v = "1", .label = "Frame rate" }, .{ .v = "2", .label = "Full" } } },
+    .{ .key = "metrics_corner", .label = "Metrics corner", .kind = .chips, .live = true, .opts = &.{ .{ .v = "0", .label = "Top right" }, .{ .v = "1", .label = "Top left" }, .{ .v = "2", .label = "Bottom right" }, .{ .v = "3", .label = "Bottom left" } } },
     .{ .key = "debug_menu", .label = "Debug menu at start (F1)", .kind = .toggle },
     .{ .key = "log", .label = "Write otogi.log", .kind = .toggle },
 };
@@ -115,6 +116,140 @@ test stepDistance {
     try std.testing.expectEqual(0.75, stepDistance("", false));
     try std.testing.expectEqual(8, stepDistance("8", true));
     try std.testing.expectEqual(0.25, stepDistance("0.25", false));
+}
+
+/// A row's control: the table's, else a toggle for 0 or 1, a text field for anything else.
+pub fn kindOf(e: Entry) @FieldType(Known, "kind") {
+    if (knownSetting(e.key)) |k| return k.kind;
+    return if (std.mem.eql(u8, e.value, "0") or std.mem.eql(u8, e.value, "1")) .toggle else .text;
+}
+
+/// The settings form (setup/ui/theme.rcss), one row per entry: the launcher's
+/// Settings page and the game's F10 page. Only its shape: values go on by id
+/// (formValues), so a change keeps the controller's focus where it is.
+/// `restart` marks the rows the game applies only at its next start. Clicks
+/// come back as formCommand's commands. `modes` are "1920x1080".
+pub fn formRml(w: *std.Io.Writer, es: []const Entry, modes: []const [12:0]u8, restart: bool) !void {
+    for (es) |e| {
+        const k = knownSetting(e.key);
+        const kind = kindOf(e);
+        const later = restart and !(if (k) |x| x.live else false);
+        try w.print("<div class=\"setting{s}\"><div class=\"what\"><div class=\"label\">{f}{s}</div><div class=\"help\">{f}</div></div><div class=\"ctl\">", .{
+            if (kind == .toggle or kind == .stepper) "" else " stack",
+            esc(if (k) |x| x.label else e.key),
+            if (later) "<span class=\"restart\">applies after restart</span>" else "",
+            esc(e.help),
+        });
+        const key = esc(e.key);
+        switch (kind) {
+            .chips => {
+                try w.writeAll("<div class=\"chips\">");
+                var listed = false;
+                for (k.?.opts) |o| {
+                    listed = listed or std.mem.eql(u8, o.v, e.value);
+                    try w.print("<div class=\"chip\" id=\"opt-{f}-{s}\" onclick=\"set:{f}\" value=\"{s}\">{s}</div>", .{ key, o.v, key, o.v, o.label });
+                }
+                if (!listed) try w.print("<div class=\"chip\" id=\"opt-{f}-{f}\" onclick=\"set:{f}\" value=\"{f}\">{f}</div>", .{ key, esc(e.value), key, esc(e.value), esc(e.value) });
+                try w.writeAll("</div>");
+            },
+            .toggle => try w.print("<div class=\"toggle\" id=\"opt-{f}\" onclick=\"toggle:{f}\"><div class=\"knob\"/></div>", .{ key, key }),
+            .stepper => try w.print("<div class=\"row stepper\"><div class=\"btn\" onclick=\"step:{f}\" value=\"-\">&#x2212;</div><div class=\"val\" id=\"val-{f}\"></div><div class=\"btn\" onclick=\"step:{f}\" value=\"+\">+</div></div>", .{ key, key, key }),
+            .text => try w.print("<input type=\"text\" class=\"text\" id=\"opt-{f}\" onchange=\"set:{f}\" placeholder=\"default\"/>", .{ key, key }),
+            // The monitor's own modes; Custom shows a field for any other.
+            .resolution => {
+                try w.writeAll("<div class=\"chips\"><div class=\"chip\" id=\"opt-resolution-desktop\" onclick=\"set:resolution\" value=\"\">Desktop's</div>");
+                for (modes) |*m| {
+                    const t = std.mem.sliceTo(m, 0);
+                    const x = std.mem.indexOfScalar(u8, t, 'x') orelse continue;
+                    try w.print("<div class=\"chip\" id=\"opt-resolution-{s}\" onclick=\"set:resolution\" value=\"{s}\">{s} &#x00D7; {s}</div>", .{ t, t, t[0..x], t[x + 1 ..] });
+                }
+                try w.writeAll("<div class=\"chip\" id=\"opt-resolution-custom\" onclick=\"res-custom\">Custom</div></div><input type=\"text\" class=\"text custom\" id=\"opt-resolution\" onchange=\"res-text\" placeholder=\"Width x height, such as 1920x1080\"/>");
+            },
+        }
+        try w.writeAll("</div></div>");
+    }
+}
+
+// Both UI hosts have these (setup/window.cpp, src/ui.cpp): by element id, the
+// markup inside, a class on or off, a text field's value. Unchanged costs nothing.
+extern fn ui_set(id: [*:0]const u8, rml: [*:0]const u8) void;
+extern fn ui_class(id: [*:0]const u8, class: [*:0]const u8, on: bool) void;
+extern fn ui_value(id: [*:0]const u8, value: [*:0]const u8) void;
+
+/// formRml's controls set to the values. `custom`: the resolution's Custom
+/// field is open.
+pub fn formValues(es: []const Entry, modes: []const [12:0]u8, custom: bool) void {
+    const Ui = struct {
+        const class = ui_class;
+        const value = ui_value;
+        const text = ui_set;
+    };
+    for (es) |e| {
+        var b: [160]u8 = undefined;
+        var v: [160]u8 = undefined;
+        const z = std.fmt.bufPrintSentinel;
+        const val = z(&v, "{s}", .{e.value}, 0) catch continue;
+        switch (kindOf(e)) {
+            .chips => for (knownSetting(e.key).?.opts) |o| {
+                Ui.class(z(&b, "opt-{s}-{s}", .{ e.key, o.v }, 0) catch continue, "on", std.mem.eql(u8, o.v, e.value));
+            },
+            .toggle => Ui.class(z(&b, "opt-{s}", .{e.key}, 0) catch continue, "on", std.mem.eql(u8, e.value, "1")),
+            .stepper => Ui.text(z(&b, "val-{s}", .{e.key}, 0) catch continue, z(&v, "{s}x", .{if (e.value.len == 0) "1" else e.value}, 0) catch continue),
+            .text => Ui.value(z(&b, "opt-{s}", .{e.key}, 0) catch continue, val),
+            .resolution => {
+                const listed = e.value.len == 0 or for (modes) |*m| (if (std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value)) break true) else false;
+                const open = custom or !listed;
+                Ui.class("opt-resolution-desktop", "on", !open and e.value.len == 0);
+                for (modes) |*m| {
+                    const t = std.mem.sliceTo(m, 0);
+                    Ui.class(z(&b, "opt-resolution-{s}", .{t}, 0) catch continue, "on", !open and std.mem.eql(u8, t, e.value));
+                }
+                Ui.class("opt-resolution-custom", "on", open);
+                Ui.class("opt-resolution", "hidden", !open);
+                Ui.value("opt-resolution", val);
+            },
+        }
+    }
+}
+
+/// A form click (formRml's on* commands) as the key and value to save, or null
+/// for any other command. `buf` holds a stepped value.
+pub fn formCommand(es: []const Entry, cmd: []const u8, val: []const u8, buf: []u8) ?[2][]const u8 {
+    const now = struct {
+        fn f(list: []const Entry, key: []const u8) []const u8 {
+            return for (list) |e| (if (std.mem.eql(u8, e.key, key)) break e.value) else "";
+        }
+    }.f;
+    if (std.mem.startsWith(u8, cmd, "set:")) return .{ cmd[4..], val };
+    if (std.mem.eql(u8, cmd, "res-text")) return .{ "resolution", val };
+    if (std.mem.startsWith(u8, cmd, "toggle:")) return .{ cmd[7..], if (std.mem.eql(u8, now(es, cmd[7..]), "1")) "0" else "1" };
+    if (std.mem.startsWith(u8, cmd, "step:"))
+        return .{ cmd[5..], std.fmt.bufPrint(buf, "{d}", .{stepDistance(now(es, cmd[5..]), !std.mem.eql(u8, val, "-"))}) catch return null };
+    return null;
+}
+
+test formCommand {
+    const es = [_]Entry{ .{ .key = "vsync", .value = "1", .help = "" }, .{ .key = "draw_distance", .value = "1", .help = "" } };
+    var b: [16]u8 = undefined;
+    const t = formCommand(&es, "toggle:vsync", "", &b).?;
+    try std.testing.expectEqualStrings("vsync", t[0]);
+    try std.testing.expectEqualStrings("0", t[1]);
+    try std.testing.expectEqualStrings("1.25", formCommand(&es, "step:draw_distance", "+", &b).?[1]);
+    try std.testing.expectEqualStrings("60", formCommand(&es, "set:framerate", "60", &b).?[1]);
+    try std.testing.expectEqual(null, formCommand(&es, "close", "", &b));
+}
+
+test formRml {
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const es = [_]Entry{ .{ .key = "framerate", .value = "60", .help = "Frames <shown>" }, .{ .key = "scale", .value = "2", .help = "" }, .{ .key = "new_one", .value = "0", .help = "" } };
+    try formRml(&w, &es, &.{}, true);
+    const s = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, s, "id=\"opt-framerate-60\" onclick=\"set:framerate\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Frames &lt;shown&gt;") != null);
+    // scale and the unknown key are not live; an unknown 0/1 key is a toggle.
+    try std.testing.expectEqual(2, std.mem.count(u8, s, "applies after restart"));
+    try std.testing.expect(std.mem.indexOf(u8, s, "class=\"toggle\" id=\"opt-new_one\"") != null);
 }
 
 /// SHA-1 of default.xbe on the redump of the USA disc: the build is made from it.
@@ -185,6 +320,17 @@ pub fn escape(w: *std.Io.Writer, s: []const u8) !void {
         '"' => try w.writeAll("&quot;"),
         else => try w.writeByte(c),
     };
+}
+
+/// Text made safe in markup: "{f}" with esc(s).
+pub const Esc = struct {
+    s: []const u8,
+    pub fn format(e: Esc, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try escape(w, e.s);
+    }
+};
+pub fn esc(s: []const u8) Esc {
+    return .{ .s = s };
 }
 
 /// A release body (CHANGELOG.md's section: `### Added`, `- item`, `**bold**`,

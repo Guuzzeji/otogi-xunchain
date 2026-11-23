@@ -1,0 +1,49 @@
+<rml>
+<head>
+	<title>Settings</title>
+	<link type="text/rcss" href="theme.rcss"/>
+	<style>
+		/* The launcher's look over the game: the held frame dimmed behind a
+		   panel. The rows are the launcher's (logic.formRml). src/settings_menu.zig fills it. */
+		body { display: block; background-color: transparent; }
+		/* The metrics overlay: see-through text in a corner, outlined so it reads over
+		   bright and dark scenes. ui.zig's corner box must hold it (130 x 40 dp, 380 x 80). */
+		#metrics { position: absolute; font-size: 13dp; line-height: 17dp; color: #f2f6ee; font-effect: outline(1.5dp #000000cc); white-space: nowrap; }
+		#metrics .more { font-size: 11dp; color: #d6e2cf; }
+		#metrics.c0 { right: 10dp; top: 6dp; text-align: right; }
+		#metrics.c1 { left: 10dp; top: 6dp; }
+		#metrics.c2 { right: 10dp; bottom: 6dp; text-align: right; }
+		#metrics.c3 { left: 10dp; bottom: 6dp; }
+		#page { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; justify-content: center; align-items: center; background-color: #000000a6; }
+		#page.hidden { display: none; }
+		#panel { box-sizing: border-box; width: 780dp; max-width: 94%; height: 90%; display: flex; flex-direction: column; background-color: #0a1108f2; border: 1dp #1d3215; border-top: 3dp #107c10; border-radius: 6dp; }
+		#head { flex: 0 0 auto; display: flex; flex-direction: row; align-items: baseline; padding: 16dp 26dp 0; }
+		#head .mark { font-family: "Shippori Mincho B1"; font-size: 22dp; color: #9bf00b; margin-right: 12dp; }
+		#head h1 { margin: 0; }
+		#panel .lede { flex: 0 0 auto; padding: 0 26dp; margin-bottom: 6dp; }
+		#status { flex: 0 0 auto; padding: 0 26dp; }
+		#list { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 0 26dp; }
+		#foot { flex: 0 0 auto; padding: 10dp 26dp 14dp; border-top: 1dp #182813; }
+		#foot .hint { font-size: 12dp; color: #7f9076; }
+		/* Every control under its label, at the left: up and down on a pad go row by row. */
+		#list .setting { display: block; }
+		#list .setting .what { margin: 0 0 10dp; }
+		.restart { margin-left: 10dp; font-size: 11dp; color: #d4a84b; }
+	</style>
+</head>
+<body>
+	<div id="metrics" class="hidden c0"></div>
+	<div id="page" class="hidden">
+		<div id="panel">
+			<div id="head"><span class="mark">御伽</span><h1>Settings</h1></div>
+			<div class="lede">Saved to settings.ini as you change them; the game waits meanwhile.</div>
+			<div class="bad small" id="status"></div>
+			<div id="list"></div>
+			<div id="foot" class="row">
+				<div class="hint grow">D-pad or arrows move &#x00B7; A, Enter or Space picks &#x00B7; B, Esc, Back+Start or F10 closes</div>
+				<div class="btn" onclick="close">Close</div>
+			</div>
+		</div>
+	</div>
+</body>
+</rml>

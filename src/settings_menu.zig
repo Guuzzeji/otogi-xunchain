@@ -1,18 +1,18 @@
 //! The settings page (F10, or Back+Start on a pad): settings.ini as a form,
-//! for players. Each change is saved at once (setup/logic.zig, the launcher's
-//! own, keeps the file's comments) and put in the environment, where the game
-//! reads its settings; the ones logic.known marks live apply at once, the rest
-//! at the next start. The game is held while it is open (debug_menu.holdFrame).
-//! Also the frame rate counter (fps_counter). Drawn inside the debug menu's
-//! ImGui frame, on the render thread; text scales with the window's height.
+//! for players, with the launcher's look and controls (setup/ui/theme.rcss,
+//! logic.formRml). Each change is saved at once (setup/logic.zig, the
+//! launcher's own, keeps the file's comments) and put in the environment,
+//! where the game reads its settings; the ones logic.known marks live apply at
+//! once, the rest at the next start. The game is held while it is open
+//! (debug_menu.holdFrame). Also the metrics overlay (metrics, metrics_corner).
+//! RmlUi context 0 (src/ui/settings.rml), on the render thread.
 const std = @import("std");
-const im = @import("imgui");
 const sdl = @import("sdl");
 const logic = @import("logic");
+const ui = @import("ui.zig");
 const gl_hle = @import("gl_hle.zig");
 const cheats = @import("cheats.zig");
 const debug_menu = @import("debug_menu.zig");
-const text = debug_menu.text;
 
 extern fn _putenv(s: [*:0]const u8) c_int;
 extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
@@ -22,49 +22,54 @@ extern "c" fn fclose(*anyopaque) c_int;
 
 pub var open = false;
 var shown = false; // open last frame
-var counter: ?bool = null; // fps_counter, read again when it changes
+var metrics: ?[2]u8 = null; // metrics, metrics_corner; read again when one changes
 
 var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 var ini: []const u8 = &.{};
 var entries: []logic.Entry = &.{};
-var bufs: [32][128:0]u8 = undefined; // text fields, by entry
 var status: []const u8 = "";
-// A change, made after the rows are drawn: saving reloads `entries`.
-var change_key: [64]u8 = undefined;
-var change_val: [128]u8 = undefined;
-var change: ?[2]usize = null;
+var custom = false; // the resolution's Custom field is open
 var modes: [10][12:0]u8 = undefined; // the display's resolutions, as "1920x1080"
 var modes_len: usize = 0;
 
-/// The page or the counter wants an ImGui frame.
-pub fn wanted() bool {
-    if (counter == null) counter = if (std.c.getenv("RECOMP_FPS_COUNTER")) |e| e[0] == '1' else false;
-    return open or counter.?;
+/// The metrics overlay (settings.ini metrics, metrics_corner): level 0 off,
+/// 1 frames per second, 2 more; corner 0 top right, 1 top left, 2 bottom
+/// right, 3 bottom left.
+pub fn overlay() [2]u8 {
+    if (metrics == null) metrics = .{ envDigit("RECOMP_METRICS", 2), envDigit("RECOMP_METRICS_CORNER", 3) };
+    return metrics.?;
 }
 
+fn envDigit(name: [*:0]const u8, max: u8) u8 {
+    const e = std.c.getenv(name) orelse return 0;
+    return if (e[0] >= '0' and e[0] <= '0' + max) e[0] - '0' else 0;
+}
+
+/// The page or the overlay wants drawing.
+pub fn wanted() bool {
+    return open or overlay()[0] != 0;
+}
+
+/// settings.ini again, and the form to match it (only its values change, so
+/// the focus stays where it is).
 fn load() void {
     _ = arena.reset(.retain_capacity);
     const a = arena.allocator();
     ini = &.{};
     entries = &.{};
-    const f = fopen("settings.ini", "rb") orelse return;
-    const buf = a.alloc(u8, 64 * 1024) catch return;
-    ini = buf[0..fread(buf.ptr, 1, buf.len, f)];
-    _ = fclose(f);
-    entries = logic.entries(a, ini) catch &.{};
-    const n = @min(entries.len, bufs.len);
-    for (entries[0..n], bufs[0..n]) |e, *b| {
-        @memset(b, 0);
-        @memcpy(b[0..@min(e.value.len, b.len)], e.value[0..@min(e.value.len, b.len)]);
+    if (fopen("settings.ini", "rb")) |f| {
+        const buf = a.alloc(u8, 64 * 1024) catch return;
+        ini = buf[0..fread(buf.ptr, 1, buf.len, f)];
+        _ = fclose(f);
+        entries = logic.entries(a, ini) catch &.{};
     }
-}
-
-fn set(key: []const u8, value: []const u8) void {
-    const n = @min(key.len, change_key.len);
-    const m = @min(value.len, change_val.len);
-    @memcpy(change_key[0..n], key[0..n]);
-    @memcpy(change_val[0..m], value[0..m]);
-    change = .{ n, m };
+    var out: std.Io.Writer.Allocating = .init(a);
+    if (entries.len == 0) out.writer.writeAll("<p class=\"muted\">No settings.ini beside otogi.exe.</p>") catch return;
+    logic.formRml(&out.writer, entries, modes[0..modes_len], true) catch return;
+    out.writer.writeByte(0) catch return;
+    ui.ui_set("list", @ptrCast(out.written().ptr));
+    logic.formValues(entries, modes[0..modes_len], custom);
+    ui.set("status", "{s}", .{status});
 }
 
 /// Save a change to the file as it is now, put it in the environment and
@@ -75,7 +80,7 @@ pub fn save(key: []const u8, value: []const u8) void {
     defer std.heap.page_allocator.free(new);
     const f = fopen("settings.ini", "wb") orelse {
         status = "Could not write settings.ini.";
-        return;
+        return load();
     };
     const ok = fwrite(new.ptr, 1, new.len, f) == new.len;
     _ = fclose(f);
@@ -90,7 +95,7 @@ pub fn save(key: []const u8, value: []const u8) void {
     if (eql(u8, key, "vsync")) gl_hle.applyVsync();
     if (eql(u8, key, "window") or eql(u8, key, "resolution")) gl_hle.applyWindow();
     if (eql(u8, key, "draw_distance") or eql(u8, key, "fog_distance")) cheats.scales_read = false;
-    if (eql(u8, key, "fps_counter")) counter = null;
+    if (eql(u8, key, "metrics") or eql(u8, key, "metrics_corner")) metrics = null;
     // cam_invert and show_mouse are read from the environment as they are used.
     load();
 }
@@ -113,123 +118,51 @@ fn listModes(window: *sdl.SDL_Window) void {
     }
 }
 
-/// Dimmed and wrapped.
-fn note(s: []const u8) void {
-    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Text, im.ImGui_GetStyle().*.Colors[im.ImGuiCol_TextDisabled]);
-    im.ImGui_PushTextWrapPos(0);
-    im.ImGui_TextUnformattedEx(s.ptr, s.ptr + s.len);
-    im.ImGui_PopTextWrapPos();
-    im.ImGui_PopStyleColor();
-}
-
-/// A choice of several, on the line before while it fits.
-fn chip(first: bool, label: [*:0]const u8, on: bool) bool {
-    if (!first) im.ImGui_SameLine();
-    if (!first and im.ImGui_GetContentRegionAvail().x < im.ImGui_CalcTextSize(label).x + im.ImGui_GetFrameHeight() * 1.5) im.ImGui_NewLine();
-    return im.ImGui_RadioButton(label, on);
-}
-
-fn row(i: usize, e: logic.Entry) void {
-    const k = logic.knownSetting(e.key);
-    const eql = std.mem.eql;
-    const Kind = @FieldType(logic.Known, "kind");
-    const kind: Kind = if (k) |x| x.kind else if (eql(u8, e.value, "0") or eql(u8, e.value, "1")) .toggle else .text;
-    var b: [160]u8 = undefined;
-    im.ImGui_PushIDStr(e.key.ptr, e.key.ptr + e.key.len);
-    defer im.ImGui_PopID();
-    text("{s}", .{if (k) |x| x.label else e.key});
-    if (!(if (k) |x| x.live else false)) {
-        im.ImGui_SameLine();
-        im.ImGui_TextDisabled("(applies after restart)");
-    }
-    if (e.help.len != 0) note(e.help);
-    switch (kind) {
-        .chips => {
-            var listed = false;
-            for (k.?.opts, 0..) |o, n| {
-                listed = listed or eql(u8, o.v, e.value);
-                if (chip(n == 0, @ptrCast(std.fmt.bufPrintSentinel(&b, "{s}", .{o.label}, 0) catch return), eql(u8, o.v, e.value))) set(e.key, o.v);
-            }
-            if (!listed) _ = chip(false, @ptrCast(std.fmt.bufPrintSentinel(&b, "{s}", .{e.value}, 0) catch return), true);
-        },
-        .resolution => {
-            if (chip(true, "Desktop's", e.value.len == 0)) set(e.key, "");
-            var listed = e.value.len == 0;
-            for (modes[0..modes_len]) |*m| {
-                const v = std.mem.sliceTo(m, 0);
-                listed = listed or eql(u8, v, e.value);
-                if (chip(false, m, eql(u8, v, e.value))) set(e.key, v);
-            }
-            if (!listed) _ = chip(false, @ptrCast(std.fmt.bufPrintSentinel(&b, "{s}", .{e.value}, 0) catch return), true);
-        },
-        .toggle => {
-            var on = eql(u8, e.value, "1");
-            if (im.ImGui_Checkbox("On", &on)) set(e.key, if (on) "1" else "0");
-        },
-        .stepper => {
-            if (im.ImGui_Button(" - ")) set(e.key, std.fmt.bufPrint(&b, "{d}", .{logic.stepDistance(e.value, false)}) catch return);
-            im.ImGui_SameLine();
-            text("{s}x", .{if (e.value.len == 0) "1" else e.value});
-            im.ImGui_SameLine();
-            if (im.ImGui_Button(" + ")) set(e.key, std.fmt.bufPrint(&b, "{d}", .{logic.stepDistance(e.value, true)}) catch return);
-        },
-        .text => if (i < bufs.len) {
-            im.ImGui_SetNextItemWidth(im.ImGui_GetFontSize() * 12);
-            _ = im.ImGui_InputText("##v", &bufs[i], bufs[i].len, 0);
-            if (im.ImGui_IsItemDeactivatedAfterEdit()) set(e.key, std.mem.sliceTo(&bufs[i], 0));
-        },
-    }
-    im.ImGui_Spacing();
-    im.ImGui_Separator();
-}
-
-/// Inside the ImGui frame (debug_menu.draw).
-pub fn draw(window: *sdl.SDL_Window) void {
-    const io = im.ImGui_GetIO();
-    const vp = im.ImGui_GetMainViewport();
-    const st = im.ImGui_GetStyle();
-    // About 27 px at 1080p, 36 at 1440p, 54 at 4K.
-    const fs = @max(16, vp.*.Size.y / 40);
-    im.ImGui_PushFontFloat(null, fs / st.*.FontScaleMain);
-    defer im.ImGui_PopFont();
-    _ = wanted(); // reads fps_counter
-    if (counter.?) {
-        im.ImGui_SetNextWindowPosEx(.{ .x = vp.*.Pos.x + vp.*.Size.x - fs * 0.5, .y = vp.*.Pos.y + fs * 0.5 }, im.ImGuiCond_Always, .{ .x = 1, .y = 0 });
-        im.ImGui_SetNextWindowBgAlpha(0.4);
-        if (im.ImGui_Begin("##fps", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_AlwaysAutoResize | im.ImGuiWindowFlags_NoInputs | im.ImGuiWindowFlags_NoFocusOnAppearing | im.ImGuiWindowFlags_NoSavedSettings)) text("{d:.0} fps", .{debug_menu.shown_fps});
-        im.ImGui_End();
-    }
-    // Arrows / d-pad move, Enter / Space / A pick; mouse too.
-    const nav = im.ImGuiConfigFlags_NavEnableKeyboard | im.ImGuiConfigFlags_NavEnableGamepad;
-    io.*.ConfigFlags = if (open) io.*.ConfigFlags | nav else io.*.ConfigFlags & ~@as(c_int, nav);
-    defer shown = open;
-    if (!open) return;
-    if (!shown) {
+/// A click on the page (ui.take). False if it is not the page's.
+pub fn command(cmd: []const u8, val: []const u8) bool {
+    var b: [16]u8 = undefined;
+    if (logic.formCommand(entries, cmd, val, &b)) |kv| {
+        if (std.mem.eql(u8, cmd, "set:resolution")) custom = false;
+        save(kv[0], kv[1]);
+    } else if (std.mem.eql(u8, cmd, "res-custom")) {
+        custom = true;
         load();
+    } else if (std.mem.eql(u8, cmd, "close")) {
+        open = false;
+    } else return false;
+    return true;
+}
+
+/// Keys while the page is open: Esc closes, or leaves a text field first.
+pub fn keyEvent(e: *const sdl.SDL_Event) void {
+    if (e.type == sdl.SDL_EVENT_KEY_DOWN and e.key.scancode == sdl.SDL_SCANCODE_ESCAPE) {
+        if (ui.ui_typing(ui.page)) ui.ui_blur(ui.page) else open = false;
+        return;
+    }
+    ui.ui_input(ui.page, e);
+}
+
+/// The pads' buttons while the page is open (input.poll): d-pad and left stick
+/// move, A picks, B closes.
+pub fn pad(dirs: u16, a: bool, b: bool) void {
+    const bits: c_int = @as(c_int, dirs & 0xF) | (@as(c_int, @intFromBool(a)) << 4) | (@as(c_int, @intFromBool(b)) << 5);
+    if (ui.ui_pad(ui.page, bits) & 32 != 0) open = false;
+}
+
+/// Each frame something is drawn (debug_menu.draw), before ui.frame.
+pub fn draw(window: *sdl.SDL_Window) void {
+    const m = overlay();
+    ui.ui_show(ui.page, open or m[0] != 0);
+    ui.ui_class("metrics", "hidden", m[0] == 0);
+    inline for (0..4) |c| ui.ui_class("metrics", &[_:0]u8{ 'c', '0' + c }, m[1] == c);
+    if (m[0] != 0) debug_menu.metricsText(m[0], window);
+    ui.ui_class("page", "hidden", !open);
+    defer shown = open;
+    if (open and !shown) {
+        custom = false;
         listModes(window);
-        im.ImGui_SetNextWindowFocus();
+        load();
+        ui.ui_focus_first(ui.page);
     }
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_WindowPadding, .{ .x = fs, .y = fs * 0.6 });
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_FramePadding, .{ .x = fs * 0.4, .y = fs * 0.2 });
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_ItemSpacing, .{ .x = fs * 0.6, .y = fs * 0.35 });
-    im.ImGui_PushStyleVar(im.ImGuiStyleVar_ScrollbarSize, fs * 0.6);
-    defer im.ImGui_PopStyleVarEx(4);
-    im.ImGui_SetNextWindowPosEx(.{ .x = vp.*.Pos.x + vp.*.Size.x / 2, .y = vp.*.Pos.y + vp.*.Size.y / 2 }, im.ImGuiCond_Always, .{ .x = 0.5, .y = 0.5 });
-    im.ImGui_SetNextWindowSize(.{ .x = @min(vp.*.Size.x * 0.92, fs * 34), .y = vp.*.Size.y * 0.88 }, im.ImGuiCond_Always);
-    const flags = im.ImGuiWindowFlags_NoCollapse | im.ImGuiWindowFlags_NoResize | im.ImGuiWindowFlags_NoMove | im.ImGuiWindowFlags_NoSavedSettings;
-    if (im.ImGui_Begin("Settings###settings", &open, flags)) {
-        note("Saved to settings.ini as you change them; the game waits meanwhile. Back+Start, F10, B or Esc closes.");
-        if (status.len != 0) text("{s}", .{status});
-        if (entries.len == 0) text("No settings.ini beside otogi.exe.", .{});
-        im.ImGui_Separator();
-        for (entries, 0..) |e, i| row(i, e);
-        // B or Esc closes, unless it is leaving a text field.
-        if (im.ImGui_IsWindowFocused(im.ImGuiFocusedFlags_RootAndChildWindows) and !im.ImGui_IsAnyItemActive() and
-            (im.ImGui_IsKeyPressedEx(im.ImGuiKey_Escape, false) or im.ImGui_IsKeyPressedEx(im.ImGuiKey_GamepadFaceRight, false))) open = false;
-    }
-    im.ImGui_End();
-    if (change) |c| {
-        change = null;
-        save(change_key[0..c[0]], change_val[0..c[1]]);
-    }
+    if (!open and shown) ui.ui_blur(ui.page);
 }
