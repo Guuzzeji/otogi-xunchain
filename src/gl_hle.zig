@@ -166,6 +166,20 @@ fn isCopy(tex: u32) bool {
     return tex != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(tex)) != null;
 }
 
+/// The offscreen target the movie (XMV) last drew a YUY2/UYVY frame into, and
+/// when. The movie is 4:3: drawn to the screen it keeps its place in the middle
+/// with black at the sides, as extending it only smears its edge columns (issue #9).
+var movie_rt: u32 = 0;
+var movie_frame: u32 = 0xFFFF_0000;
+
+fn isYuv(xfmt: u32) bool {
+    return xfmt == 0x24 or xfmt == 0x25;
+}
+
+fn isMovie(data: u32, xfmt: u32) bool {
+    return isYuv(xfmt) or (data == movie_rt and gframe -% movie_frame <= 30);
+}
+
 fn addCopy(data: u32) void {
     if (std.mem.indexOfScalar(u32, &bb_copies, data) != null) return;
     bb_copies[bb_copy_next] = data;
@@ -457,6 +471,7 @@ const TexRef = struct {
     cube: bool = false,
     copy: bool = false, // holds the whole wide view (isCopy)
     still: bool = false, // maybe a screen still (stills)
+    movie: bool = false, // a video frame (isMovie): stays 4:3
     fmt: u8 = 0,
     lin: [2]f32 = .{ 0, 0 }, // texel size of a linear texture, whose coordinates the title gives in texels
     gl: gl.GLuint = 0, // the render thread's, once it has the frame (frameResolve)
@@ -524,7 +539,7 @@ fn texRef(res: u32) TexRef {
     const size = mem32(res + 0x10);
     const dims = d3d.surfDims(res);
     const xfmt = (format >> 8) & 0xFF;
-    var r: TexRef = .{ .cube = (format >> 2) & 1 != 0, .fmt = @truncate(xfmt), .copy = isCopy(res) };
+    var r: TexRef = .{ .cube = (format >> 2) & 1 != 0, .fmt = @truncate(xfmt), .copy = isCopy(res), .movie = isMovie(data, xfmt) };
     if (data == d3d.resData(backBuffer())) return .{}; // ponytail: sampling the back buffer is not done
     for (rt_keys.items, 1..) |k, i| if (k.data == data and !k.locked) {
         if (size != 0) r.lin = .{ @floatFromInt(dims.w), @floatFromInt(dims.h) }; // linear: texel coordinates
@@ -2160,7 +2175,8 @@ fn drawGl(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_
         // 2D at a screen edge reaches the wide buffer's edge (backgrounds, banners, tiled
         // pictures, fades, letterbox bars); one spanning the width that extend2d cannot
         // edit, or that draws a back buffer copy back (it holds the whole buffer), stretches.
-        if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639)) {
+        // A movie frame stays 4:3 (isMovie).
+        if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639) and !d.tex[0].movie) {
             const copy = for (d.tex) |t| {
                 if (t.copy or (xs[0] <= 0.5 and xs[1] >= 639 and t.still)) break true;
             } else false;
@@ -2430,6 +2446,10 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
         .key = 0,
     };
     for (&d.tex, stage_tex) |*r, t| r.* = texRef(t);
+    if (target_rt != 0 and isYuv(d.tex[0].fmt)) {
+        movie_rt = d3d.resData(render_target);
+        movie_frame = gframe;
+    }
     // An offscreen target holds the whole wide view like a back buffer copy when
     // it is drawn from one, or when widened 3D is drawn into it (m027's after-images).
     const rhw = vshader & 1 == 0 and vshader & 0xE == 4;

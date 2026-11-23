@@ -3,7 +3,7 @@
 All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/). The version lives in `build.zig.zon`;
-merging a PR runs the Release workflow, which moves "Unreleased" into a new version section.
+running the Release workflow by hand moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
@@ -20,6 +20,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
   patches one byte of `default.xbe` (the media check). The launcher now recognises that
   patch, accepts the disc as verified and puts the original byte back for the build.
+- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
+  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
+- In widescreen, the trailer that plays when you wait on the title screen no longer has
+  smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
+  bars at the sides (issue #9).
 
 ## [0.11.0] - 2026-11-23
 

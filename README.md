@@ -81,6 +81,7 @@ The launcher's Settings page edits `settings.ini` beside `otogi.exe`, which has 
 | `vsync` | 1 on, 0 off |
 | `gfx` | `d3d11`, `vulkan` or `gl` |
 | `cam_invert` | 1 = modern right stick, 0 = original |
+| `cam_invert_y` | 1 = flip the right stick's up/down from what `cam_invert` gives (inverted look) |
 | `show_mouse` | 0 = pointer hidden while a controller is connected, 1 = always shown |
 
 Each line can also be set as an environment variable with a `RECOMP_` prefix (`RECOMP_SCALE=4`), which wins over the file.

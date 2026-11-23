@@ -982,6 +982,7 @@ const known = [_]Known{
     .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
     .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
     .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle },
+    .{ .key = "cam_invert_y", .label = "Invert camera up/down", .kind = .toggle },
     .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle },
     .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper },
     .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper },
