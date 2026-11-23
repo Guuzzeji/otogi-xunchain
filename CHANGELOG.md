@@ -7,6 +7,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- Raikoh disappeared during dash attacks (dash with light or heavy attack): only the sword
+  trail and his shadow showed. He now shows through the move, drawn with the game's
+  fading after-image effect.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added

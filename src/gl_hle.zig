@@ -621,6 +621,7 @@ const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 /// The back buffer surface: the render target the device sets first (at
 /// CreateDevice). Swap rotates its Data; the surface object stays.
 var back_buffer: u32 = 0;
+var back_z: u32 = 0; // Data of the Z surface set with it
 fn backBuffer() u32 {
     return back_buffer;
 }
@@ -2295,8 +2296,9 @@ const FDraw = struct {
     joined: bool = false, // merged into the draw before it
     seen: bool = false, // drawn once already
 };
-/// `copy`: CopyRects of host pixels `s` (x1, y1, x2, y2) of target `src` over all of target `dst`.
-const FOp = union(enum) { draw: FDraw, clear: struct { c: Clear, tgt: Tgt }, copy: struct { src: u32, s: [4]i32, dst: u32, d: [2]i32 } };
+/// `copy`: CopyRects of host pixels `s` (x1, y1, x2, y2) of target `src` over all of target `dst`;
+/// `depth`: its depth and stencil instead (setRenderTarget).
+const FOp = union(enum) { draw: FDraw, clear: struct { c: Clear, tgt: Tgt }, copy: struct { src: u32, s: [4]i32, dst: u32, d: [2]i32, depth: bool = false } };
 const Frame = struct {
     ops: std.ArrayList(FOp) = .empty,
     bytes: std.ArrayList(u8) = .empty,
@@ -2739,11 +2741,17 @@ fn frameReplay(prev: ?*const Frame, cur: *Frame, from: usize, to: usize, t: f32)
         },
         .copy => |c| {
             flushBatch();
+            if (c.depth) setTarget(.{ .rt = c.dst, .z = true }); // attaches its depth buffer
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, if (c.src == 0) fbo else rts.items[c.src - 1].fbo);
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, rts.items[c.dst - 1].fbo);
             gl.glDisable(gl.GL_SCISSOR_TEST);
             gl.glColorMask(1, 1, 1, 1);
-            gl.glBlitFramebuffer(c.s[0], c.s[1], c.s[2], c.s[3], 0, 0, c.d[0], c.d[1], gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
+            gl.glDepthMask(1);
+            gl.glStencilMask(0xFF);
+            if (c.depth)
+                gl.glBlitFramebuffer(c.s[0], c.s[1], c.s[2], c.s[3], 0, 0, c.d[0], c.d[1], gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT, gl.GL_NEAREST)
+            else
+                gl.glBlitFramebuffer(c.s[0], c.s[1], c.s[2], c.s[3], 0, 0, c.d[0], c.d[1], gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR);
         },
         .draw => |*d| {
             setTarget(d.tgt);
@@ -3286,7 +3294,11 @@ fn rtCreate(w: u32, h: u32) void {
 /// viewport to the whole new target. An offscreen target gets its own depth
 /// buffer while the title passes one, and none while it passes NULL (the
 /// movie does), so depth tests then pass as they do without a Z surface.
-/// ponytail: the title's Z surface itself is not shared between targets.
+/// Passed the back buffer's Z surface (the dash's after-image pass draws
+/// Raikoh so), its depth starts as a copy of the back buffer's: the game never
+/// clears it, as on the Xbox it is the scene's, and the character failed every
+/// depth test against our own, never-cleared one.
+/// ponytail: the depth the target draws does not go back to the back buffer.
 export fn sub_000F7CF0() void {
     const s = arg(0);
     const z = arg(1);
@@ -3297,11 +3309,18 @@ export fn sub_000F7CF0() void {
     target_rt = 0;
     target_size = .{ 640, 480 };
     target_z = z != 0;
+    const zd = if (z != 0) d3d.resData(z) else 0;
+    if (s == back_buffer) back_z = zd;
     if (s != back_buffer) {
         const dims = d3d.surfDims(s);
         target_rt = rtIndex(s);
         rt_keys.items[target_rt - 1].locked = false;
         target_size = .{ dims.w, dims.h };
+        if (zd != 0 and zd == back_z) {
+            // Widened 3D fills the target as it fills the back buffer; otherwise its 4:3 middle.
+            const off = if (wideNow()) 0 else (bbw() - 640) / 2 * scale;
+            build.ops.append(alloc, .{ .copy = .{ .src = 0, .s = .{ @intCast(off), 0, @intCast(bbw() * scale - off), @intCast(480 * scale) }, .dst = target_rt, .d = .{ @intCast(dims.w * scale), @intCast(dims.h * scale) }, .depth = true } }) catch @panic("OOM");
+        }
     }
     vp = .{ .w = target_size[0], .h = target_size[1] };
 }
