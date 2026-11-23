@@ -1,30 +1,37 @@
-//! otogi-xunchain-setup.exe: builds the game from the player's own disc image.
-//! Checks the ISO, extracts game\, fetches pinned Zig, the build's packages
-//! (ANGLE, Dear ImGui) and Python (+ Capstone), all before the long steps,
-//! lifts the XBE to C, builds, and leaves a playable folder:
-//!   <out>\otogi.exe, the ANGLE DLLs, settings.ini, game\
+//! otogi-xunchain.exe, the launcher. Builds the game from the player's own disc
+//! image, plays it, edits settings.ini, lists the saves, and updates itself from
+//! GitHub releases (then rebuilds).
+//! The build checks the ISO, extracts game\, fetches pinned Zig, the build's
+//! packages (ANGLE, Dear ImGui) and Python (+ Capstone), all before the long
+//! steps, lifts the XBE to C, builds, and leaves a playable folder:
+//!   <out>\otogi.exe, the ANGLE DLLs, settings.ini, game\, otogi-xunchain.exe
 //! Work files go to <out>\build; each finished step leaves a stamp in
 //! <out>\build\.stamps, so a rerun picks up where it stopped. Once a step runs,
 //! every later step runs too.
+//! The window is RmlUi (setup/window.cpp): setup/ui/launcher.rml and theme.rcss,
+//! filled in by id from here.
 const std = @import("std");
 const Io = std.Io;
 const w32 = std.os.windows;
-const im = @import("imgui");
 const xiso = @import("xiso");
+const logic = @import("logic.zig");
 
-extern fn win_init(title: [*:0]const u16, w: c_int, h: c_int) bool;
-extern fn win_begin() bool;
-extern fn win_end() void;
+extern fn ui_init(title: [*:0]const u16, w: c_int, h: c_int) bool;
+extern fn ui_font(path: [*:0]const u8, fallback: bool) bool;
+extern fn ui_load(path: [*:0]const u8) bool;
+extern fn ui_frame() bool;
+extern fn ui_set(id: [*:0]const u8, rml: [*:0]const u8) void;
+extern fn ui_attr(id: [*:0]const u8, name: [*:0]const u8, value: ?[*:0]const u8) void;
+extern fn ui_class(id: [*:0]const u8, class: [*:0]const u8, on: bool) void;
+extern fn ui_value(id: [*:0]const u8, value: [*:0]const u8) void;
+extern fn ui_clipboard(text: [*:0]const u8) void;
 extern fn win_pick_iso(buf: [*]u8, len: c_int) bool;
 extern fn win_pick_folder(buf: [*]u8, len: c_int) bool;
 extern fn win_open(path: [*:0]const u8) void;
 extern fn win_gpu_name() [*:0]const u8;
-extern fn win_texture_image(data: [*]const u8, len: c_int, w: *c_int, h: *c_int) ?*anyopaque;
-extern fn win_font_memory(data: *const anyopaque, len: c_int) ?*im.ImFont;
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn SetEnvironmentVariableA(name: [*:0]const u8, value: [*:0]const u8) callconv(.winapi) c_int;
 extern "kernel32" fn GetDiskFreeSpaceExA(dir: [*:0]const u8, avail: *u64, total: ?*u64, free: ?*u64) callconv(.winapi) c_int;
-extern "kernel32" fn GetFileAttributesA(path: [*:0]const u8) callconv(.winapi) u32;
 
 /// Release-time `git archive` of the repo (build.zig), and its commit.
 const source_zip = @embedFile("source.zip");
@@ -32,6 +39,13 @@ const build_info = @import("build_info");
 const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 /// "v0.6.0 (abc1234)": the version in build.zig.zon and the commit built.
 const version = "v" ++ build_info.version ++ " (" ++ commit ++ ")";
+
+/// Where releases are listed; OTOGI_RELEASES_URL overrides it (to test updates).
+const releases_url = "https://api.github.com/repos/Guuzzeji/otogi-xunchain/releases";
+/// The launcher's asset name in each release.
+const asset_name = "otogi-xunchain.exe";
+/// Bug reports go to issues; questions to discussions (setup/ui/launcher.rml).
+const issues_url = "https://github.com/Guuzzeji/otogi-xunchain/issues";
 
 const xbe_sha1 = "abf12bb66fcbd9f694c223419a2309c1a5f72293";
 /// <exe dir>\otogi-setup-iso.txt: the path of the last disc image that checked out.
@@ -80,7 +94,7 @@ var step_left: [steps.len]f32 = step_secs;
 
 /// Cancel: the worker stops at the next step; tools die with the job.
 var cancel = std.atomic.Value(bool).init(false);
-var cancel_armed_at: f64 = -10;
+var cancel_armed_at: u64 = 0;
 var job: ?w32.HANDLE = null;
 extern "kernel32" fn CreateJobObjectA(sa: ?*anyopaque, name: ?[*:0]const u8) callconv(.winapi) ?w32.HANDLE;
 extern "kernel32" fn SetInformationJobObject(job: w32.HANDLE, class: c_int, info: *const anyopaque, len: u32) callconv(.winapi) c_int;
@@ -88,7 +102,7 @@ extern "kernel32" fn AssignProcessToJobObject(job: w32.HANDLE, process: w32.HAND
 extern "kernel32" fn TerminateJobObject(job: w32.HANDLE, code: u32) callconv(.winapi) c_int;
 
 /// Tools and everything they start live in one job. KILL_ON_JOB_CLOSE: when
-/// setup exits (or is closed mid-build) they all die with it.
+/// the launcher exits (or is closed mid-build) they all die with it.
 fn makeJob() void {
     job = CreateJobObjectA(null, null);
     var info: [144]u8 = @splat(0); // JOBOBJECT_EXTENDED_LIMIT_INFORMATION
@@ -108,153 +122,100 @@ fn secsLeft() f32 {
 }
 
 /// "about 6 min", "about 40 s".
-fn approx(buf: []u8, secs: f32) [:0]const u8 {
+fn approx(buf: []u8, secs: f32) []const u8 {
     const s_: u32 = @intFromFloat(@max(secs, 0));
-    if (s_ >= 90) return std.fmt.bufPrintSentinel(buf, "about {d} min", .{(s_ + 30) / 60}, 0) catch "";
-    return std.fmt.bufPrintSentinel(buf, "about {d} s", .{@max(5, (s_ + 4) / 5 * 5)}, 0) catch "";
+    if (s_ >= 90) return std.fmt.bufPrint(buf, "about {d} min", .{(s_ + 30) / 60}) catch "";
+    return std.fmt.bufPrint(buf, "about {d} s", .{@max(5, (s_ + 4) / 5 * 5)}) catch "";
 }
+
+const stamp_names = [_][]const u8{ "", "extract", "source", "zig", "python", "lift", "build", "" };
 
 /// Before a run: steps whose stamps exist cost nothing.
 fn estimateFromStamps(io: Io) f32 {
     var total: f32 = 0;
-    const names = [_][]const u8{ "", "extract", "source", "zig", "python", "lift", "build", "" };
     var redo = false;
-    for (step_secs, names) |secs, name| {
-        var p: [1200]u8 = undefined;
-        const stamp = std.fmt.bufPrint(&p, "{s}\\build\\.stamps\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch continue;
-        const have = name.len != 0 and !redo and if (Io.Dir.cwd().access(io, stamp, .{})) |_| true else |_| false;
+    for (step_secs, stamp_names) |secs, name| {
+        const have = name.len != 0 and !redo and hasStamp(io, name);
         if (name.len != 0 and !have) redo = true;
         if (!have) total += secs * slowFactor(name);
     }
     return total;
 }
 
+fn hasStamp(io: Io, name: []const u8) bool {
+    var p: [1200]u8 = undefined;
+    const stamp = std.fmt.bufPrint(&p, "{s}\\build\\.stamps\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+    return if (Io.Dir.cwd().access(io, stamp, .{})) |_| true else |_| false;
+}
+
 fn slowFactor(name: []const u8) f32 {
     return if (std.mem.eql(u8, name, "build") and ram_gb != 0 and ram_gb < 16) 2.5 else 1;
 }
 
-// ── Look: the title screen's indigo, crimson, gold, washi cream and the
-// blue spirit lights; seigaiha waves on the bands ───────────────────────────
-fn rgb(hex: u24) im.ImVec4 {
-    return .{ .x = @as(f32, @floatFromInt(hex >> 16)) / 255, .y = @as(f32, @floatFromInt((hex >> 8) & 0xFF)) / 255, .z = @as(f32, @floatFromInt(hex & 0xFF)) / 255, .w = 1 };
-}
-fn col32(hex: u24) u32 { // ImU32 is ABGR
-    return colA(hex, 1);
-}
-fn colA(hex: u24, a: f32) u32 {
-    const alpha: u32 = @intFromFloat(std.math.clamp(a, 0, 1) * 255);
-    return alpha << 24 | @as(u32, hex & 0xFF) << 16 | @as(u32, hex & 0xFF00) | @as(u32, hex >> 16);
-}
-const indigo = 0x140808; // the cover's red-black
-const panel = 0x1E1E3C;
-const crimson = 0x9E2B25;
-const band = 0x5A1713;
-const gold = 0xD4A84B;
-const gold_dim = 0x7A6230;
-const cream = 0xEFE6D2;
-const muted = 0xBDB19A;
-const spirit = 0x8FD0FF;
-const good = 0x8DBF6B;
-const bad = 0xE0604F;
+// ── The page's files, all inside the exe (window.cpp asks through ui_file) ──
+// setup/assets/art: the game's own menu textures, ripped from the disc so the
+// launcher looks like the game before any disc is picked; an OFL font
+// (Shippori Mincho B1 Bold, subset) for headings.
+const embedded = .{
+    .{ "launcher.rml", @embedFile("ui/launcher.rml") },
+    .{ "theme.rcss", @embedFile("ui/theme.rcss") },
+    .{ "art/title.jpg", @embedFile("assets/art/title.jpg") },
+    .{ "art/raikoh.jpg", @embedFile("assets/art/raikoh.jpg") },
+    .{ "art/brush.png", @embedFile("assets/art/brush.png") },
+    .{ "ShipporiMinchoB1-Bold.ttf", @embedFile("assets/ShipporiMinchoB1-Bold.ttf") },
+};
 
-// ── Art, all inside the exe (setup/assets): the game's own menu textures,
-// ripped from the disc to JPEG/PNG so setup looks like the game before any
-// disc is picked, and an OFL font (Shippori Mincho B1 Bold, subset).
-const Art = struct {
-    tex: ?*anyopaque = null,
-    w: f32 = 0,
-    h: f32 = 0,
-    fn ref(a: Art) im.ImTextureRef {
-        return .{ ._TexData = null, ._TexID = @intFromPtr(a.tex) };
+export fn ui_file(path: [*:0]const u8, len: *usize) ?[*]const u8 {
+    const p = std.mem.span(path);
+    inline for (embedded) |e| if (std.mem.eql(u8, p, e[0])) {
+        len.* = e[1].len;
+        return e[1].ptr;
+    };
+    return null;
+}
+
+/// Commands from on* attributes (onclick="page" value="saves"). Queued: they
+/// arrive mid-frame, while RmlUi walks the very elements a handler may replace.
+const Cmd = struct { cmd: [64]u8 = undefined, cmd_len: usize = 0, val: [1100]u8 = undefined, val_len: usize = 0 };
+var cmds: [16]Cmd = undefined;
+var cmds_len: usize = 0;
+
+export fn ui_event(cmd: [*:0]const u8, value: [*:0]const u8) void {
+    if (cmds_len == cmds.len) return;
+    const c = &cmds[cmds_len];
+    const a = std.mem.span(cmd);
+    const b = std.mem.span(value);
+    c.cmd_len = @min(a.len, c.cmd.len);
+    c.val_len = @min(b.len, c.val.len);
+    @memcpy(c.cmd[0..c.cmd_len], a[0..c.cmd_len]);
+    @memcpy(c.val[0..c.val_len], b[0..c.val_len]);
+    cmds_len += 1;
+}
+
+/// Text made safe in markup: "{f}" with esc(s).
+const Esc = struct {
+    s: []const u8,
+    pub fn format(e: Esc, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try logic.escape(w, e.s);
     }
 };
-var disc: struct { title: Art = .{}, raikoh: Art = .{}, waves: Art = .{}, brush: Art = .{} } = .{};
-var disc_loaded = false;
-
-fn loadArt() void {
-    inline for (.{ "title", "raikoh", "waves", "brush" }, .{ "title.jpg", "raikoh.jpg", "waves.jpg", "brush.png" }) |field, file| {
-        const data = @embedFile("assets/art/" ++ file);
-        var w: c_int = 0;
-        var h: c_int = 0;
-        @field(disc, field) = .{ .tex = win_texture_image(data, data.len, &w, &h), .w = @floatFromInt(w), .h = @floatFromInt(h) };
-    }
-    disc_loaded = disc.title.tex != null and disc.raikoh.tex != null;
+fn esc(s: []const u8) Esc {
+    return .{ .s = s };
 }
 
-/// Part of a texture (uv rect) into a screen rect.
-fn image(dl: *im.ImDrawList, art: Art, a: im.ImVec2, b: im.ImVec2, uv0: im.ImVec2, uv1: im.ImVec2, tint: u32) void {
-    if (art.tex == null) return;
-    im.ImDrawList_AddImageEx(dl, art.ref(), a, b, uv0, uv1, tint);
+/// Inner markup of element `id`, formatted. window.cpp skips it if unchanged.
+fn set(id: [*:0]const u8, comptime f: []const u8, args: anytype) void {
+    var buf: [16 * 1024]u8 = undefined;
+    ui_set(id, std.fmt.bufPrintSentinel(&buf, f, args, 0) catch return);
 }
 
-/// A texture repeated over a rect, tiles of `tile` pixels wide.
-fn tiled(dl: *im.ImDrawList, art: Art, a: im.ImVec2, b: im.ImVec2, tile: f32, tint: u32) void {
-    if (art.tex == null) return;
-    const th = tile * art.h / art.w;
-    im.ImDrawList_PushClipRect(dl, a, b, true);
-    defer im.ImDrawList_PopClipRect(dl);
-    var y = a.y;
-    while (y < b.y) : (y += th) {
-        var x = a.x;
-        while (x < b.x) : (x += tile) im.ImDrawList_AddImageEx(dl, art.ref(), .{ .x = x, .y = y }, .{ .x = x + tile, .y = y + th }, .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 }, tint);
-    }
+fn attr(id: [*:0]const u8, name: [*:0]const u8, comptime f: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    ui_attr(id, name, std.fmt.bufPrintSentinel(&buf, f, args, 0) catch return);
 }
 
-var font_title: ?*im.ImFont = null;
-var font_head: ?*im.ImFont = null;
-var font_jp: ?*im.ImFont = null;
-var font_mono: ?*im.ImFont = null;
-var dpi: f32 = 1;
-
-fn px(v: f32) f32 {
-    return v * dpi;
-}
-
-/// Called by window.cpp before it scales the style for the monitor's DPI.
-export fn setup_style() void {
-    const s = im.ImGui_GetStyle();
-    im.ImGui_StyleColorsDark(s);
-    const c = &s.*.Colors;
-    c[im.ImGuiCol_Text] = rgb(cream);
-    c[im.ImGuiCol_TextDisabled] = rgb(muted);
-    c[im.ImGuiCol_WindowBg] = rgb(indigo);
-    c[im.ImGuiCol_ChildBg] = .{ .x = 0.118, .y = 0.118, .z = 0.235, .w = 0.82 };
-    c[im.ImGuiCol_Border] = rgb(gold_dim);
-    c[im.ImGuiCol_FrameBg] = rgb(0x1E0D0B);
-    c[im.ImGuiCol_FrameBgHovered] = rgb(0x2A1310);
-    c[im.ImGuiCol_FrameBgActive] = rgb(0x351814);
-    c[im.ImGuiCol_Button] = rgb(crimson);
-    c[im.ImGuiCol_ButtonHovered] = rgb(0xB8362E);
-    c[im.ImGuiCol_ButtonActive] = rgb(0x7E211C);
-    c[im.ImGuiCol_PlotHistogram] = rgb(crimson);
-    c[im.ImGuiCol_ScrollbarBg] = .{ .x = 0, .y = 0, .z = 0, .w = 0 };
-    c[im.ImGuiCol_ScrollbarGrab] = rgb(0x5A3A30);
-    c[im.ImGuiCol_TextSelectedBg] = rgb(0x6B2A25);
-    s.*.WindowPadding = .{ .x = 18, .y = 14 };
-    s.*.FramePadding = .{ .x = 10, .y = 7 };
-    s.*.ItemSpacing = .{ .x = 10, .y = 8 };
-    s.*.FrameRounding = 3;
-    s.*.ChildRounding = 4;
-    s.*.GrabRounding = 3;
-    s.*.WindowBorderSize = 0;
-    s.*.ChildBorderSize = 1;
-    s.*.FrameBorderSize = 1;
-    c[im.ImGuiCol_Border] = rgb(gold_dim);
-    s.*.FontSizeBase = 17;
-    s.*.DisabledAlpha = 0.7;
-    const fonts = im.ImGui_GetIO().*.Fonts;
-    // Stock Windows fonts; ImGui's own if one is missing.
-    _ = addFont(fonts, "C:\\Windows\\Fonts\\segoeui.ttf");
-    const mincho = @embedFile("assets/ShipporiMinchoB1-Bold.ttf");
-    font_head = win_font_memory(mincho, mincho.len);
-    font_title = font_head;
-    font_jp = font_head; // the subset carries 御伽
-    font_mono = addFont(fonts, "C:\\Windows\\Fonts\\consola.ttf");
-}
-
-fn addFont(fonts: *im.ImFontAtlas, path: [*:0]const u8) ?*im.ImFont {
-    if (GetFileAttributesA(path) == 0xFFFFFFFF) return null;
-    return im.ImFontAtlas_AddFontFromFileTTF(fonts, path, 17, null, null);
+fn z(buf: []u8, comptime f: []const u8, args: anytype) [:0]const u8 {
+    return std.fmt.bufPrintSentinel(buf, f, args, 0) catch "";
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -263,43 +224,99 @@ pub fn main(init: std.process.Init) !void {
     ram_gb = (std.process.totalSystemMemory() catch 0) >> 30;
     var exe_dir: [1024]u8 = undefined;
     const n = std.process.executableDirPath(io, &exe_dir) catch 0;
-    _ = std.fmt.bufPrintSentinel(&out_buf, "{s}\\Otogi", .{exe_dir[0..n]}, 0) catch {};
+    // In the install folder (beside otogi.exe or game\), that is the folder;
+    // anywhere else, a new Otogi folder beside the launcher.
+    const here = for ([_][]const u8{ "otogi.exe", "game\\default.xbe", "build\\.stamps" }) |f| {
+        var p: [1100]u8 = undefined;
+        if (Io.Dir.cwd().access(io, std.fmt.bufPrint(&p, "{s}\\{s}", .{ exe_dir[0..n], f }) catch continue, .{})) |_| break true else |_| {}
+    } else false;
+    _ = std.fmt.bufPrintSentinel(&out_buf, "{s}{s}", .{ exe_dir[0..n], if (here) "" else "\\Otogi" }, 0) catch {};
     remembered = std.fmt.bufPrint(&remembered_buf, "{s}\\otogi-setup-iso.txt", .{exe_dir[0..n]}) catch remembered;
-    if (!win_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi XUnchain Setup v" ++ build_info.version), 1240, 960)) return error.NoWindow;
-    dpi = im.ImGui_GetStyle().*.FontScaleDpi;
+    deleteOldSelf(io);
+
+    if (!ui_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi XUnchain"), 1280, 860)) return error.NoWindow;
+    const windir = std.mem.span(std.c.getenv("WINDIR") orelse "C:\\Windows");
+    for ([_][]const u8{ "segoeui.ttf", "segoeuib.ttf", "consola.ttf", "segmdl2.ttf", "seguiemj.ttf" }) |f| {
+        var p: [300]u8 = undefined;
+        _ = ui_font(z(&p, "{s}\\Fonts\\{s}", .{ windir, f }), std.mem.eql(u8, f, "seguiemj.ttf")); // emoji in release notes
+    }
+    _ = ui_font("ShipporiMinchoB1-Bold.ttf", true); // also the fallback for 御伽
+    if (!ui_load("launcher.rml")) return error.NoPage;
+    listModes();
     makeJob();
-    loadArt();
 
     var u: Ui = .{ .io = io, .gpa = gpa };
-    // otogi-xunchain-setup.exe <iso> <output folder>: start building at once.
+    // otogi-xunchain.exe <iso> <output folder>: start building at once.
+    // otogi-xunchain.exe --rebuild <output folder>: after an update, rebuild.
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len == 3) {
+    if (args.len == 3 and std.mem.eql(u8, args[1], "--rebuild")) {
+        _ = try std.fmt.bufPrintSentinel(&out_buf, "{s}", .{args[2]}, 0);
+        u.findIso(exe_dir[0..n]);
+        for (stamp_names) |s| if (s.len != 0 and !std.mem.eql(u8, s, "extract")) {
+            var p: [1200]u8 = undefined;
+            Io.Dir.cwd().deleteFile(io, std.fmt.bufPrint(&p, "{s}\\build\\.stamps\\{s}", .{ args[2], s }) catch continue) catch {};
+        };
+        u.page = .install;
+        u.start();
+    } else if (args.len == 3) {
         _ = try std.fmt.bufPrintSentinel(&iso_buf, "{s}", .{args[1]}, 0);
         _ = try std.fmt.bufPrintSentinel(&out_buf, "{s}", .{args[2]}, 0);
         u.checkIso();
+        u.page = .install;
         u.start();
     } else {
         u.findIso(exe_dir[0..n]);
     }
-    while (win_begin()) {
+    u.refresh();
+    if (!u.built and !running.load(.acquire)) u.page = .install;
+    news.thread = std.Thread.spawn(.{}, fetchNews, .{ io, gpa }) catch null;
+
+    while (ui_frame()) {
         if (u.thread != null and !running.load(.acquire)) {
             u.thread.?.join();
             u.thread = null;
+            u.refresh();
+            if (result == .ok) u.page = .play;
         }
+        for (cmds[0..cmds_len]) |*c| u.handle(c.cmd[0..c.cmd_len], c.val[0..c.val_len]);
+        cmds_len = 0;
+        if (news.update.load(.acquire) == .ready) return u.relaunch();
         u.tailLog();
         u.draw();
-        win_end();
     }
 }
+
+const Page = enum { play, install, settings, saves, news, help };
 
 const Ui = struct {
     io: Io,
     gpa: std.mem.Allocator,
     thread: ?std.Thread = null,
+    page: Page = .play,
     log: std.ArrayList(u8) = .empty,
     log_off: u64 = 0,
     iso_state: enum { none, ok, wrong, unreadable } = .none,
-    copied_at: f64 = -10,
+    copied_at: u64 = 0,
+    help_log: enum { game, build } = .game,
+    /// Custom picked for the fullscreen resolution: its text field stays open.
+    res_custom: bool = false,
+    toast: [:0]const u8 = "",
+    toast_at: u64 = 0,
+    /// Refreshed every second: the game is built, its disc is extracted.
+    built: bool = false,
+    extracted: bool = false,
+    free_gb: ?u64 = null,
+    refreshed_at: u64 = 0,
+    shown_page: ?Page = null,
+    news_shown: bool = false,
+    /// The version picked beside Play (a tag without "v"; this one = none).
+    picked: []const u8 = build_info.version,
+    ver_open: bool = false,
+    ver_shown: ?[*]const u8 = null,
+    /// settings.ini as last read, and what the page shows of it.
+    ini: []u8 = &.{},
+    ini_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
+    saves_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 
     /// At startup: the last disc image that checked out, else the first .iso
     /// beside the exe. Picking it again would only repeat what we know.
@@ -354,164 +371,304 @@ const Ui = struct {
         };
     }
 
-    fn draw(u: *Ui) void {
-        const vp = im.ImGui_GetMainViewport();
-        im.ImGui_SetNextWindowPos(vp.*.WorkPos, 0);
-        im.ImGui_SetNextWindowSize(vp.*.WorkSize, 0);
-        im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_WindowPadding, .{ .x = px(24), .y = 0 });
-        _ = im.ImGui_Begin("setup", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_NoMove | im.ImGuiWindowFlags_NoBringToFrontOnFocus | im.ImGuiWindowFlags_NoScrollWithMouse);
-        im.ImGui_PopStyleVar();
-        defer im.ImGui_End();
-        backdrop();
-        header();
-
-        // Two columns: the steps on the left, the log on the right.
-        const footer = px(34);
-        const avail = im.ImGui_GetContentRegionAvail();
-        const left_w = @max(px(470), avail.x * 0.44);
-        const col_h = avail.y - footer;
-        im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ChildBg, .{ .x = 0, .y = 0, .z = 0, .w = 0 }); // the spirit lights show through
-        const left = im.ImGui_BeginChild("left", .{ .x = left_w, .y = col_h }, 0, im.ImGuiWindowFlags_NoScrollbar);
-        im.ImGui_PopStyleColor();
-        if (left) u.leftColumn();
-        im.ImGui_EndChild();
-        im.ImGui_SameLine();
-        im.ImGui_Dummy(.{ .x = px(6), .y = 0 });
-        im.ImGui_SameLine();
-        u.logPanel(col_h);
+    fn say(u: *Ui, msg: [:0]const u8) void {
+        u.toast = msg;
+        u.toast_at = GetTickCount64();
     }
 
-    fn leftColumn(u: *Ui) void {
+    /// What the disk says: built, extracted, free space, settings.
+    fn refresh(u: *Ui) void {
+        u.refreshed_at = GetTickCount64();
+        u.built = hasFile(u.io, "otogi.exe");
+        u.extracted = hasStamp(u.io, "extract");
+        u.free_gb = freeGb();
+        u.loadSettings();
+        u.loadSaves();
+        if (u.page == .help) u.loadHelpLog();
+    }
+
+    fn handle(u: *Ui, cmd: []const u8, val: []const u8) void {
         const busy = running.load(.acquire);
-        im.ImGui_BeginDisabled(busy);
-        if (cardBegin("disc", "Your disc image", 0)) {
-            im.ImGui_TextDisabled("%s", "An ISO of your own Otogi: Myth of Demons (USA) disc.");
-            im.ImGui_SetNextItemWidth(-(btn_w() + im.ImGui_GetStyle().*.ItemSpacing.x));
-            if (im.ImGui_InputText("##iso", &iso_buf, iso_buf.len, 0)) u.checkIso();
-            im.ImGui_SameLine();
-            if (button("Browse...##iso") and win_pick_iso(&iso_buf, iso_buf.len)) u.checkIso();
-            switch (u.iso_state) {
-                .none => im.ImGui_TextDisabled("%s", "Pick the .iso file."),
-                .ok => colored(good, "Otogi (USA): verified"),
-                .wrong => colored(bad, "Not the Otogi (USA) disc this build supports (default.xbe does not match)."),
-                .unreadable => colored(bad, "Cannot read an Xbox game from this file."),
-            }
+        const eql = std.mem.eql;
+        if (eql(u8, cmd, "page")) {
+            u.page = std.meta.stringToEnum(Page, val) orelse return;
+            if (u.page == .settings or u.page == .saves or u.page == .help) u.refresh();
+        } else if (eql(u8, cmd, "page-step")) {
+            const i: i32 = @intFromEnum(u.page);
+            const d: i32 = if (eql(u8, val, "-1")) -1 else 1;
+            u.page = @enumFromInt(@mod(i + d, @as(i32, std.meta.tags(Page).len)));
+        } else if (eql(u8, cmd, "back")) {
+            if (u.ver_open) return u.handle("ver-menu", "");
+            u.page = .play;
+        } else if (eql(u8, cmd, "play-main")) {
+            if (u.built and !busy) openOut("otogi.exe") else u.page = .install;
+        } else if (eql(u8, cmd, "iso") and !busy) {
+            _ = std.fmt.bufPrintSentinel(&iso_buf, "{s}", .{val}, 0) catch return;
+            u.checkIso();
+        } else if (eql(u8, cmd, "pick-iso") and !busy) {
+            if (win_pick_iso(&iso_buf, iso_buf.len)) u.checkIso();
+        } else if (eql(u8, cmd, "out") and !busy) {
+            _ = std.fmt.bufPrintSentinel(&out_buf, "{s}", .{val}, 0) catch return;
+            u.refresh();
+        } else if (eql(u8, cmd, "pick-out") and !busy) {
+            var pick: [1024:0]u8 = @splat(0);
+            if (win_pick_folder(&pick, pick.len)) _ = std.fmt.bufPrintSentinel(&out_buf, "{s}\\Otogi", .{std.mem.sliceTo(&pick, 0)}, 0) catch {};
+            u.refresh();
+        } else if (eql(u8, cmd, "build")) {
+            const now = GetTickCount64();
+            if (busy) {
+                if (now - cancel_armed_at < 3000) stopBuild() else cancel_armed_at = now;
+            } else if (u.iso_state == .ok or u.extracted) u.start();
+        } else if (eql(u8, cmd, "copy-log")) {
+            _ = u.copyLog("setup.log");
+            u.copied_at = GetTickCount64();
+        } else if (eql(u8, cmd, "log-pick")) {
+            u.help_log = if (eql(u8, val, "build")) .build else .game;
+            u.loadHelpLog();
+        } else if (eql(u8, cmd, "log-copy")) {
+            u.say(if (u.copyLog(u.helpLogName())) "Log copied." else "There is no log to copy yet.");
+        } else if (eql(u8, cmd, "log-open")) {
+            var p: [1100:0]u8 = undefined;
+            win_open(z(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }));
+        } else if (eql(u8, cmd, "report")) {
+            // From a failed build: its log; from Help: the log on show.
+            u.report(if (eql(u8, val, "build")) "setup.log" else u.helpLogName());
+        } else if (eql(u8, cmd, "url") and std.mem.startsWith(u8, val, "https://github.com/")) {
+            var p: [300:0]u8 = undefined;
+            win_open(z(&p, "{s}", .{val}));
+        } else if (eql(u8, cmd, "open-log")) {
+            openOut("setup.log");
+        } else if (eql(u8, cmd, "open-out")) {
+            openOut("");
+        } else if (eql(u8, cmd, "open-settings")) {
+            openOut("settings.ini");
+        } else if (std.mem.startsWith(u8, cmd, "set:")) {
+            if (eql(u8, cmd, "set:resolution")) u.res_custom = false;
+            u.setSetting(cmd[4..], val);
+        } else if (eql(u8, cmd, "res-custom")) {
+            u.res_custom = true;
+            u.loadSettings();
+        } else if (eql(u8, cmd, "res-text")) {
+            u.setSetting("resolution", val);
+        } else if (std.mem.startsWith(u8, cmd, "toggle:")) {
+            const on = for (u.entries()) |e| (if (eql(u8, e.key, cmd[7..])) break eql(u8, e.value, "1")) else false;
+            u.setSetting(cmd[7..], if (on) "0" else "1");
+        } else if (std.mem.startsWith(u8, cmd, "step:")) {
+            const now = for (u.entries()) |e| (if (eql(u8, e.key, cmd[5..])) break std.fmt.parseFloat(f32, e.value) catch 1) else 1;
+            var i: usize = 0;
+            while (i + 1 < distances.len and distances[i] < now - 0.01) i += 1;
+            i = if (eql(u8, val, "-")) i -| 1 else @min(i + 1, distances.len - 1);
+            var b: [16]u8 = undefined;
+            u.setSetting(cmd[5..], std.fmt.bufPrint(&b, "{d}", .{distances[i]}) catch return);
+        } else if (eql(u8, cmd, "open-saves")) {
+            var p: [600:0]u8 = undefined;
+            win_open(z(&p, "{s}", .{saveDir(&p)}));
+        } else if (eql(u8, cmd, "backup-saves")) {
+            u.backupSaves();
+        } else if (eql(u8, cmd, "ver-menu")) {
+            u.ver_open = !u.ver_open;
+            ui_class("ver-menu", "shown", u.ver_open);
+        } else if (eql(u8, cmd, "pick-version")) {
+            u.ver_open = false;
+            ui_class("ver-menu", "shown", false);
+            u.picked = if (release(val)) |r| std.mem.trimStart(u8, r.tag_name, "v") else build_info.version;
+        } else if (eql(u8, cmd, "update")) {
+            if (busy) return u.say("Wait for the build to finish first.");
+            if (news.update.load(.acquire) == .downloading) return; // only this thread starts one
+            // A version picked beside Play, else the newest.
+            news.target = if (val.len != 0) release(val) else news.latest;
+            if (news.target == null) return;
+            if (news.update_thread) |t| t.join(); // the last try, finished
+            update_err[0] = 0;
+            news.update.store(.downloading, .release);
+            news.update_thread = std.Thread.spawn(.{}, downloadUpdate, .{ u.io, u.gpa }) catch null;
         }
-        cardEnd();
+    }
 
-        if (cardBegin("out", "Install folder", 0)) {
-            im.ImGui_TextDisabled("%s", "The game goes here. Nothing is installed anywhere else.");
-            im.ImGui_SetNextItemWidth(-(btn_w() + im.ImGui_GetStyle().*.ItemSpacing.x));
-            _ = im.ImGui_InputText("##out", &out_buf, out_buf.len, 0);
-            im.ImGui_SameLine();
-            if (button("Browse...##out")) {
-                var pick: [1024:0]u8 = @splat(0);
-                if (win_pick_folder(&pick, pick.len)) _ = std.fmt.bufPrintSentinel(&out_buf, "{s}\\Otogi", .{std.mem.sliceTo(&pick, 0)}, 0) catch {};
-            }
-            var line: [160:0]u8 = undefined;
-            if (freeGb()) |f| {
-                const s = std.fmt.bufPrintSentinel(&line, "{d} GB free on this drive, {d} GB needed", .{ f, need_gb }, 0) catch "";
-                colored(if (f < need_gb) bad else muted, s);
-            }
-            if (ram_gb != 0 and ram_gb < 16) colored(gold, std.fmt.bufPrintSentinel(&line, "{d} GB of RAM: the compile runs one job at a time and takes longer.", .{ram_gb}, 0) catch "");
-        }
-        cardEnd();
-        im.ImGui_EndDisabled();
+    // ── Drawing: every frame sets what each element shows; unchanged costs nothing.
+    fn draw(u: *Ui) void {
+        const now = GetTickCount64();
+        if (now - u.refreshed_at > 1000) u.refresh();
+        const busy = running.load(.acquire);
+        var b: [2048]u8 = undefined;
 
-        // The main button: the game's red brush stroke (fe_lo000) under the
-        // label; ash grey while it cannot run. Cream text either way.
-        const now = im.ImGui_GetTime();
-        const armed = busy and now - cancel_armed_at < 3;
-        const can = busy or u.iso_state == .ok;
-        im.ImGui_Dummy(.{ .x = 0, .y = px(4) });
-        const label: [*:0]const u8 = if (busy and cancel.load(.acquire)) "Stopping..." else if (armed) "Click again to stop the build" else if (busy) "Stop the build" else if (u.iso_state != .ok) "Pick your disc image first" else if (result == .failed) "Try again" else "Build the game";
-        const size: im.ImVec2 = .{ .x = im.ImGui_GetContentRegionAvail().x, .y = px(50) };
-        const p0 = im.ImGui_GetCursorScreenPos();
-        const clicked = im.ImGui_InvisibleButton("build", size, 0);
-        const hot = can and im.ImGui_IsItemHovered(0);
-        const dl = im.ImGui_GetWindowDrawList();
-        const p1: im.ImVec2 = .{ .x = p0.x + size.x, .y = p0.y + size.y };
-        if (disc.brush.tex != null) {
-            const tint: u32 = if (!can) col32(0x5A4A48) else if (hot) col32(0xFFFFFF) else col32(0xD8D0D0);
-            // The stroke fills u 0..0.84, v 0.1..0.9 of fe_lo000.
-            image(dl, disc.brush, .{ .x = p0.x - px(6), .y = p0.y - px(6) }, .{ .x = p1.x + px(6), .y = p1.y + px(6) }, .{ .x = 0, .y = 0.1 }, .{ .x = 0.84, .y = 0.9 }, tint);
-        } else {
-            im.ImDrawList_AddRectFilledEx(dl, p0, p1, col32(if (!can) 0x3A2E2E else if (hot) 0xB8362E else crimson), px(4), 0);
+        if (u.shown_page != u.page) {
+            u.shown_page = u.page;
+            inline for (comptime std.meta.fieldNames(Page)) |f| {
+                ui_class("nav-" ++ f, "on", u.page == @field(Page, f));
+                ui_class("page-" ++ f, "shown", u.page == @field(Page, f));
+            }
         }
-        im.ImGui_PushFontFloat(font_head, 26);
-        const ts = im.ImGui_CalcTextSize(label);
-        const tp: im.ImVec2 = .{ .x = p0.x + (size.x - ts.x) / 2, .y = p0.y + (size.y - ts.y) / 2 };
-        im.ImDrawList_AddText(dl, .{ .x = tp.x + px(2), .y = tp.y + px(2) }, colA(0x000000, 0.6), label);
-        im.ImDrawList_AddText(dl, tp, col32(if (can) cream else 0xCFC6B4), label);
-        im.ImGui_PopFont();
-        if (clicked and busy) {
-            if (armed) stopBuild() else cancel_armed_at = now;
-        } else if (clicked and can) u.start();
-        // How long it takes, before and during the run.
-        var eta: [64]u8 = undefined;
-        var line: [128:0]u8 = undefined;
-        const msg: [:0]const u8 = if (busy)
-            std.fmt.bufPrintSentinel(&line, "{s} left", .{approx(&eta, secsLeft())}, 0) catch ""
-        else if (u.iso_state == .ok and result != .ok)
-            std.fmt.bufPrintSentinel(&line, "Takes {s}, most of it translating and compiling.", .{approx(&eta, estimateFromStamps(u.io))}, 0) catch ""
+        set("title-ver", "{s}", .{"v" ++ build_info.version});
+        set("foot-ver", "{s}", .{version});
+        set("foot-gpu", "{f}", .{esc(std.mem.span(win_gpu_name()))});
+        ui_class("toast", "shown", now - u.toast_at < 2500 and u.toast.len != 0);
+        if (u.toast.len != 0) set("toast", "{s}", .{u.toast});
+
+        // Play
+        ui_class("play-btn", "busy", busy);
+        set("play-btn", "{s}", .{if (busy) "BUILDING" else if (u.built) "PLAY" else "INSTALL"});
+        var eta: [32]u8 = undefined;
+        const update = news.update.load(.acquire);
+        if (busy)
+            set("play-status", "Building: <strong>{s}</strong>, {s} left", .{ steps[@min(step_at.load(.acquire), steps.len - 1)], approx(&eta, secsLeft()) })
+        else if (update == .downloading)
+            set("play-status", "Downloading the update...", .{})
+        else if (update == .failed)
+            set("play-status", "<span class=\"bad\">{f}</span>", .{esc(updateError())})
+        else if (!std.mem.eql(u8, u.picked, build_info.version))
+            set("play-status", "Rebuilds in about 8 minutes. Saves stay.", .{})
+        else if (u.built)
+            set("play-status", "<strong>Ready</strong> &#x2014; {s}", .{"v" ++ build_info.version})
         else
-            "";
-        if (msg.len != 0) {
-            const mw = im.ImGui_CalcTextSize(msg.ptr).x;
-            im.ImGui_SetCursorPosX(im.ImGui_GetCursorPosX() + (size.x - mw) / 2);
-            colored(muted, msg);
-        }
-        im.ImGui_Dummy(.{ .x = 0, .y = px(2) });
+            set("play-status", "Not installed yet. <strong>Install</strong> builds it from your disc.", .{});
 
-        if (cardBegin("steps", "Progress", 0)) progress(busy);
-        cardEnd();
+        u.drawInstall(busy, &b);
+        u.drawNews();
+        u.drawVersions(update);
     }
 
-    fn logPanel(u: *Ui, h: f32) void {
-        if (cardBegin("logcard", "Log", h)) {
-            if (button("Copy log")) {
-                u.copyLog();
-                u.copied_at = im.ImGui_GetTime();
-            }
-            im.ImGui_SameLine();
-            if (button("Open log file")) openOut("setup.log");
-            im.ImGui_SameLine();
-            if (im.ImGui_GetTime() - u.copied_at < 2) colored(good, "Copied. Paste it into your report.") else im.ImGui_TextDisabled("%s", "Send this with any problem report.");
-            var v: [160:0]u8 = undefined;
-            const vs: [:0]const u8 = std.fmt.bufPrintSentinel(&v, "setup {s}  |  {s}", .{ version, std.mem.span(win_gpu_name()) }, 0) catch "";
-            im.ImGui_TextDisabled("%s", vs.ptr);
-            im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ChildBg, rgb(0x080303));
-            im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_WindowPadding, .{ .x = px(10), .y = px(8) });
-            if (im.ImGui_BeginChild("log", .{ .x = 0, .y = 0 }, im.ImGuiChildFlags_Borders | im.ImGuiChildFlags_AlwaysUseWindowPadding, im.ImGuiWindowFlags_HorizontalScrollbar)) {
-                im.ImGui_PushFontFloat(font_mono, 14);
-                if (u.log.items.len == 0) im.ImGui_TextDisabled("%s", "Nothing yet. The log fills in once you build.");
-                u.log.append(u.gpa, 0) catch {};
-                im.ImGui_TextUnformatted(@ptrCast(u.log.items.ptr));
-                _ = u.log.pop();
-                im.ImGui_PopFont();
-                if (im.ImGui_GetScrollY() >= im.ImGui_GetScrollMaxY()) im.ImGui_SetScrollHereY(1);
-            }
-            im.ImGui_EndChild();
-            im.ImGui_PopStyleVar();
-            im.ImGui_PopStyleColor();
+    fn drawInstall(u: *Ui, busy: bool, b: []u8) void {
+        const now = GetTickCount64();
+        ui_value("iso", &iso_buf);
+        ui_value("out", &out_buf);
+        ui_attr("iso", "disabled", if (busy) "" else null);
+        ui_attr("out", "disabled", if (busy) "" else null);
+        set("iso-status", "{s}", .{switch (u.iso_state) {
+            .none => if (u.extracted) "<span class=\"good\">Already extracted: the disc is not needed again.</span>" else "<span class=\"muted\">Pick the .iso file.</span>",
+            .ok => "<span class=\"good\">Otogi (USA): verified</span>",
+            .wrong => "<span class=\"bad\">Not the Otogi (USA) disc this build supports (default.xbe does not match).</span>",
+            .unreadable => "<span class=\"bad\">Cannot read an Xbox game from this file.</span>",
+        }});
+        if (u.free_gb) |f|
+            set("out-status", "<span class=\"{s}\">{d} GB free on this drive, {d} GB needed.</span>{s}", .{ if (f < need_gb) "bad" else "muted", f, need_gb, if (ram_gb != 0 and ram_gb < 16) " <span class=\"gold\">Under 16 GB of RAM: the compile runs one job at a time and takes longer.</span>" else "" })
+        else
+            set("out-status", "", .{});
+
+        const armed = busy and now - cancel_armed_at < 3000;
+        const can = busy or u.iso_state == .ok or u.extracted;
+        ui_class("build", "busy", busy);
+        ui_class("build", "off", !can);
+        set("build", "{s}", .{if (busy and cancel.load(.acquire)) "STOPPING..." else if (armed) "CLICK AGAIN TO STOP" else if (busy) "STOP THE BUILD" else if (!can) "PICK YOUR DISC IMAGE FIRST" else if (result == .failed) "TRY AGAIN" else if (u.built) "BUILD AGAIN" else "BUILD THE GAME"});
+        var eta: [32]u8 = undefined;
+        if (busy)
+            set("eta", "{s} left", .{approx(&eta, secsLeft())})
+        else if (can and result != .ok)
+            set("eta", "Takes {s}, most of it translating and compiling.", .{approx(&eta, estimateFromStamps(u.io))})
+        else
+            set("eta", "", .{});
+
+        // Progress: filled by time, not by step count: the compile is most of it.
+        const at = step_at.load(.acquire);
+        const started = busy or result != .none;
+        var total: f32 = 0;
+        for (step_left) |v| total += v;
+        const frac: f32 = if (result == .ok) 1 else if (!started or total == 0) 0 else std.math.clamp(1 - secsLeft() / total, 0, 1);
+        attr("progress", "value", "{d:.3}", .{frac});
+        const end = if (busy) now else finished_ms;
+        const secs = (end -| started_ms) / 1000;
+        if (started)
+            set("progress-label", "{s} &#x2014; {d}:{d:0>2}", .{ switch (result) {
+                .ok => "Done",
+                .failed => "Stopped",
+                .none => steps[@min(at, steps.len - 1)],
+            }, secs / 60, secs % 60 })
+        else
+            set("progress-label", "<span class=\"muted\">Not started.</span>", .{});
+        var w: std.Io.Writer = .fixed(b);
+        for (steps, 0..) |s, i| {
+            const state = if (!started) "" else if (result == .ok or i < at) "done" else if (i == at) (if (result == .failed) "failed" else "now") else "";
+            w.print("<div class=\"step {s}\"><div class=\"dot\"/><span class=\"label\">{s}</span></div>", .{ state, s }) catch break;
         }
-        cardEnd();
+        w.writeByte(0) catch {};
+        ui_set("steps", @ptrCast(w.buffered().ptr));
+        if (result == .ok)
+            set("build-result", "<div class=\"gap\"/><p class=\"good\">Otogi is ready.</p><div class=\"gap\"/><div class=\"btn primary\" onclick=\"play-main\">Play</div><div class=\"btn\" onclick=\"open-out\">Open folder</div><div class=\"btn\" onclick=\"page\" value=\"settings\">Settings</div>", .{})
+        else if (result == .failed)
+            set("build-result", "<div class=\"gap\"/><p class=\"bad\">{f}</p><p class=\"muted small\">Try again keeps the finished steps. If it keeps failing, report it: the log goes with it.</p><div class=\"btn\" onclick=\"report\" value=\"build\">Report this on GitHub</div>", .{esc(std.mem.sliceTo(&fail_msg, 0))})
+        else
+            set("build-result", "", .{});
+
+        set("copied", "{s}", .{if (now - u.copied_at < 2000 and u.copied_at != 0) "<span class=\"good\">Copied. Paste it into your report.</span>" else "Send this with any problem report."});
+        set("sysline", "launcher {s} &#x2014; {f}", .{ version, esc(std.mem.span(win_gpu_name())) });
     }
 
-    /// The whole setup.log to the clipboard (the view keeps only its tail).
-    fn copyLog(u: *Ui) void {
+    fn drawLog(u: *Ui) void {
+        showLog(u.gpa, "log", u.log.items, "Nothing yet. The log fills in once you build.");
+    }
+
+    /// A whole log (setup.log, otogi.log) to the clipboard: the views keep only
+    /// its tail. False if there is none.
+    fn copyLog(u: *Ui, name: []const u8) bool {
         var p: [1100]u8 = undefined;
-        const name = std.fmt.bufPrint(&p, "{s}\\setup.log", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
-        const text = Io.Dir.cwd().readFileAllocOptions(u.io, name, u.gpa, .limited(64 << 20), .of(u8), 0) catch return;
+        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+        const text = Io.Dir.cwd().readFileAllocOptions(u.io, path, u.gpa, .limited(64 << 20), .of(u8), 0) catch return false;
         defer u.gpa.free(text);
-        im.ImGui_SetClipboardText(text.ptr);
+        ui_clipboard(text.ptr);
+        return true;
+    }
+
+    // ── Help & logs ─────────────────────────────────────────────────────────
+    fn helpLogName(u: *Ui) []const u8 {
+        return if (u.help_log == .game) "otogi.log" else "setup.log";
+    }
+
+    /// The picked log's tail, followed live: refresh() calls this each second.
+    fn loadHelpLog(u: *Ui) void {
+        ui_class("log-game", "on", u.help_log == .game);
+        ui_class("log-build", "on", u.help_log == .build);
+        var p: [1100]u8 = undefined;
+        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }) catch return;
+        set("help-log-path", "{f}", .{esc(path)});
+        const f = Io.Dir.cwd().openFile(u.io, path, .{}) catch {
+            set("help-log-info", "", .{});
+            return showLog(u.gpa, "help-log", "", if (u.help_log == .game) "No game log yet. otogi.log is written each time the game runs (unless log = 0 in Settings)." else "No build log yet. setup.log is written when you build the game.");
+        };
+        defer f.close(u.io);
+        const st = f.stat(u.io) catch return;
+        const keep = 96 * 1024; // ponytail: the tail only; Copy and Open file have it all
+        const buf = u.gpa.alloc(u8, @min(st.size, keep)) catch return;
+        defer u.gpa.free(buf);
+        const got = f.readPositionalAll(u.io, buf, st.size - buf.len) catch return;
+        var d: [16]u8 = undefined;
+        set("help-log-info", "{d} KB, last written {s} (UTC)", .{ (st.size + 1023) / 1024, dateTime(&d, st.mtime.nanoseconds) });
+        showLog(u.gpa, "help-log", buf[0..got], "The log is empty.");
+    }
+
+    /// A new GitHub issue with the version and this PC filled in, and the log
+    /// on the clipboard to paste into it (a URL cannot carry a file).
+    fn report(u: *Ui, log: []const u8) void {
+        const copied = u.copyLog(log);
+        var m: [400]u8 = undefined;
+        var body_buf: [2048]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\**What happened?**
+            \\
+            \\
+            \\**What were you doing?** (stage, menu, settings you changed)
+            \\
+            \\
+            \\**Version:** {s}
+            \\**PC:** {s}
+            \\
+            \\**Log** ({s}):
+            \\{s}
+            \\
+        , .{ version, machine(&m), log, if (copied) "the launcher copied it: paste it here, or drag the file in from the game folder" else "drag it in from the game folder" }) catch return;
+        var url: [6144:0]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&url);
+        w.writeAll(issues_url ++ "/new?labels=bug&body=") catch return;
+        logic.urlEncode(&w, body) catch return;
+        w.writeByte(0) catch return;
+        win_open(@ptrCast(w.buffered().ptr));
+        u.say(if (copied) "Log copied. Paste it into the issue that just opened." else "Opened a new issue on GitHub.");
     }
 
     /// Show the tail of <out>\setup.log (ours and the tools' output).
     fn tailLog(u: *Ui) void {
         var path: [1100]u8 = undefined;
         const p = std.fmt.bufPrint(&path, "{s}\\setup.log", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
-        const f = Io.Dir.cwd().openFile(u.io, p, .{}) catch return;
+        const f = Io.Dir.cwd().openFile(u.io, p, .{}) catch return u.drawLog();
         defer f.close(u.io);
         var buf: [64 * 1024]u8 = undefined;
         const got = f.readPositionalAll(u.io, &buf, u.log_off) catch return;
@@ -522,256 +679,417 @@ const Ui = struct {
             const cut = std.mem.indexOfScalarPos(u8, u.log.items, u.log.items.len - keep, '\n') orelse u.log.items.len - keep;
             u.log.replaceRangeAssumeCapacity(0, cut + 1, &.{});
         }
+        if (got != 0 or u.log.items.len == 0) u.drawLog();
+    }
+
+    // ── Settings: settings.ini as a form, saved on every change ─────────────
+    fn entries(u: *Ui) []logic.Entry {
+        return logic.entries(u.ini_arena.allocator(), u.ini) catch &.{};
+    }
+
+    fn loadSettings(u: *Ui) void {
+        _ = u.ini_arena.reset(.retain_capacity);
+        const a = u.ini_arena.allocator();
+        var p: [1100]u8 = undefined;
+        const path = std.fmt.bufPrint(&p, "{s}\\settings.ini", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
+        set("settings-path", "{f}", .{esc(path)});
+        u.ini = Io.Dir.cwd().readFileAlloc(u.io, path, a, .limited(64 * 1024)) catch {
+            u.ini = &.{};
+            set("settings-list", "<div class=\"gap\"/><p class=\"muted\">settings.ini comes with the game. Install it first.</p>", .{});
+            set("tile-settings-title", "Not installed", .{});
+            set("tile-settings-text", "Settings appear once the game is built.", .{});
+            return;
+        };
+        const es = u.entries();
+        // The form's shape (keys and choices) is set once; values go on by id,
+        // so a click keeps the controller's focus where it is.
+        var out: std.Io.Writer.Allocating = .init(a);
+        const w = &out.writer;
+        for (es) |e| {
+            const k = knownSetting(e.key);
+            const kind = if (k) |x| x.kind else .text;
+            w.print("<div class=\"setting{s}\"><div class=\"what\"><div class=\"label\">{f}</div><div class=\"help\">{f}</div></div><div class=\"ctl\">", .{ if (kind == .toggle or kind == .stepper) "" else " stack", esc(if (k) |x| x.label else e.key), esc(e.help) }) catch return;
+            switch (kind) {
+                .chips => {
+                    w.writeAll("<div class=\"chips\">") catch return;
+                    var listed = false;
+                    for (k.?.opts) |o| {
+                        listed = listed or std.mem.eql(u8, o.v, e.value);
+                        w.print("<div class=\"chip\" id=\"opt-{s}-{s}\" onclick=\"set:{s}\" value=\"{s}\">{s}</div>", .{ e.key, o.v, e.key, o.v, o.label }) catch return;
+                    }
+                    if (!listed) w.print("<div class=\"chip\" id=\"opt-{f}-{f}\" onclick=\"set:{f}\" value=\"{f}\">{f}</div>", .{ esc(e.key), esc(e.value), esc(e.key), esc(e.value), esc(e.value) }) catch return;
+                    w.writeAll("</div>") catch return;
+                },
+                .toggle => w.print("<div class=\"toggle\" id=\"opt-{s}\" onclick=\"toggle:{s}\"><div class=\"knob\"/></div>", .{ e.key, e.key }) catch return,
+                .stepper => w.print("<div class=\"row stepper\"><div class=\"btn\" onclick=\"step:{s}\" value=\"-\">&#x2212;</div><div class=\"val\" id=\"val-{s}\"></div><div class=\"btn\" onclick=\"step:{s}\" value=\"+\">+</div></div>", .{ e.key, e.key, e.key }) catch return,
+                .text => w.print("<input type=\"text\" class=\"text\" id=\"opt-{f}\" onchange=\"set:{f}\" placeholder=\"default\"/>", .{ esc(e.key), esc(e.key) }) catch return,
+                // The monitor's own modes; Custom shows a field for any other.
+                .resolution => {
+                    w.writeAll("<div class=\"chips\"><div class=\"chip\" id=\"opt-resolution-desktop\" onclick=\"set:resolution\" value=\"\">Desktop's</div>") catch return;
+                    for (modes[0..modes_len]) |*m| {
+                        const t = std.mem.sliceTo(m, 0);
+                        const x = std.mem.indexOfScalar(u8, t, 'x').?;
+                        w.print("<div class=\"chip\" id=\"opt-resolution-{s}\" onclick=\"set:resolution\" value=\"{s}\">{s} &#x00D7; {s}</div>", .{ t, t, t[0..x], t[x + 1 ..] }) catch return;
+                    }
+                    w.writeAll("<div class=\"chip\" id=\"opt-resolution-custom\" onclick=\"res-custom\">Custom</div></div><input type=\"text\" class=\"text custom\" id=\"opt-resolution\" onchange=\"res-text\" placeholder=\"Width x height, such as 1920x1080\"/>") catch return;
+                },
+            }
+            w.writeAll("</div></div>") catch return;
+        }
+        w.writeByte(0) catch return;
+        ui_set("settings-list", @ptrCast(out.written().ptr));
+
+        var v: [600]u8 = undefined;
+        var sum: std.Io.Writer = .fixed(&v);
+        for (es) |e| {
+            var b: [200]u8 = undefined;
+            const k = knownSetting(e.key) orelse {
+                ui_value(z(&b, "opt-{s}", .{e.key}), z(b[100..], "{s}", .{e.value}));
+                continue;
+            };
+            switch (k.kind) {
+                .chips => for (k.opts) |o| ui_class(z(&b, "opt-{s}-{s}", .{ e.key, o.v }), "on", std.mem.eql(u8, o.v, e.value)),
+                .toggle => ui_class(z(&b, "opt-{s}", .{e.key}), "on", std.mem.eql(u8, e.value, "1")),
+                .stepper => set(z(&b, "val-{s}", .{e.key}), "{s}x", .{if (e.value.len == 0) "1" else e.value}),
+                .text => ui_value(z(&b, "opt-{s}", .{e.key}), z(b[100..], "{s}", .{e.value})),
+                .resolution => {
+                    const listed = e.value.len == 0 or for (modes[0..modes_len]) |*m| (if (std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value)) break true) else false;
+                    const custom = u.res_custom or !listed;
+                    ui_class("opt-resolution-desktop", "on", !custom and e.value.len == 0);
+                    for (modes[0..modes_len]) |*m| ui_class(z(&b, "opt-resolution-{s}", .{std.mem.sliceTo(m, 0)}), "on", !custom and std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value));
+                    ui_class("opt-resolution-custom", "on", custom);
+                    ui_class("opt-resolution", "hidden", !custom);
+                    ui_value("opt-resolution", z(&b, "{s}", .{e.value}));
+                },
+            }
+            if (k.summary) for (k.opts) |o| if (std.mem.eql(u8, o.v, e.value)) sum.print("{s}{s}", .{ if (sum.end == 0) "" else " &#x00B7; ", o.label }) catch {};
+        }
+        set("tile-settings-title", "Display", .{});
+        set("tile-settings-text", "{s}", .{sum.buffered()});
+    }
+
+    fn setSetting(u: *Ui, key: []const u8, value: []const u8) void {
+        if (u.ini.len == 0) return u.say("Install the game first: settings.ini comes with it.");
+        const new = logic.withValue(u.gpa, u.ini, key, value) catch return;
+        defer u.gpa.free(new);
+        var p: [1100]u8 = undefined;
+        const path = std.fmt.bufPrint(&p, "{s}\\settings.ini", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
+        Io.Dir.cwd().writeFile(u.io, .{ .sub_path = path, .data = new }) catch return u.say("Could not write settings.ini.");
+        u.loadSettings();
+        u.say("Saved. Takes effect the next time the game starts.");
+    }
+
+    // ── Saves: the game's memory unit, %LOCALAPPDATA%\Otogi (src/main.zig) ──
+    fn loadSaves(u: *Ui) void {
+        _ = u.saves_arena.reset(.retain_capacity);
+        const a = u.saves_arena.allocator();
+        var p: [600:0]u8 = undefined;
+        const root = saveDir(&p);
+        set("saves-path", "{f}", .{esc(root)});
+        const Save = struct { name: []const u8, game: bool, mtime: i96, size: u64 };
+        var saves: std.ArrayList(Save) = .empty;
+        const udata = std.fmt.allocPrint(a, "{s}\\UDATA\\" ++ title_id, .{root}) catch return;
+        if (Io.Dir.cwd().openDir(u.io, udata, .{ .iterate = true })) |d| {
+            var dir = d;
+            defer dir.close(u.io);
+            var it = dir.iterate();
+            while (it.next(u.io) catch null) |e| {
+                if (e.kind != .directory) continue;
+                var s: Save = .{ .name = e.name, .game = false, .mtime = 0, .size = 0 };
+                s.name = a.dupe(u8, e.name) catch continue;
+                var sub = dir.openDir(u.io, e.name, .{ .iterate = true }) catch continue;
+                defer sub.close(u.io);
+                var fi = sub.iterate();
+                while (fi.next(u.io) catch null) |f| {
+                    const st = sub.statFile(u.io, f.name, .{}) catch continue;
+                    s.size += st.size;
+                    s.mtime = @max(s.mtime, st.mtime.nanoseconds);
+                    if (std.mem.eql(u8, f.name, "game.xsv")) s.game = true;
+                    if (std.mem.eql(u8, f.name, "SaveMeta.xbx")) s.name = saveName(u.io, a, sub) orelse s.name;
+                }
+                saves.append(a, s) catch {};
+            }
+        } else |_| {}
+        std.mem.sort(Save, saves.items, {}, struct {
+            fn lt(_: void, x: Save, y: Save) bool {
+                return x.mtime > y.mtime;
+            }
+        }.lt);
+        var out: std.Io.Writer.Allocating = .init(a);
+        const w = &out.writer;
+        var games: usize = 0;
+        for (saves.items) |s| {
+            if (s.game) games += 1;
+            var d: [16]u8 = undefined;
+            w.print("<div class=\"save\"><span class=\"icon\">{s}</span><span class=\"name\">{f}</span><span class=\"meta\">{s}</span><span class=\"meta\">{s}</span><span class=\"meta\">{d} KB</span></div>", .{ if (s.game) "&#xE7FC;" else "&#xE707;", esc(s.name), if (s.game) "Game save" else "Stage data", date(&d, s.mtime), (s.size + 1023) / 1024 }) catch return;
+        }
+        if (saves.items.len == 0) w.writeAll("<p class=\"muted\">No saves yet. They appear here once you save in the game.</p>") catch return;
+        w.writeByte(0) catch return;
+        ui_set("saves-list", @ptrCast(out.written().ptr));
+        if (games == 0) {
+            set("tile-saves-title", "No saves yet", .{});
+            set("tile-saves-text", "Saved games appear here.", .{});
+        } else {
+            var d: [16]u8 = undefined;
+            const last = for (saves.items) |s| (if (s.game) break s) else unreachable;
+            set("tile-saves-title", "{d} saved game{s}", .{ games, if (games == 1) "" else "s" });
+            set("tile-saves-text", "Last: {f}, {s}", .{ esc(last.name), date(&d, last.mtime) });
+        }
+    }
+
+    /// The memory unit's saves (UDATA) copied to "Otogi saves <date>" in a picked folder.
+    fn backupSaves(u: *Ui) void {
+        var pick: [1024:0]u8 = @splat(0);
+        if (!win_pick_folder(&pick, pick.len)) return;
+        var p: [600:0]u8 = undefined;
+        var src: [700]u8 = undefined;
+        var dst: [1200]u8 = undefined;
+        var d: [16]u8 = undefined;
+        const from = std.fmt.bufPrint(&src, "{s}\\UDATA", .{saveDir(&p)}) catch return;
+        const now: i96 = @intCast(std.Io.Clock.real.now(u.io).nanoseconds);
+        const to = std.fmt.bufPrint(&dst, "{s}\\Otogi saves {s}\\UDATA", .{ std.mem.sliceTo(&pick, 0), date(&d, now) }) catch return;
+        copyTree(u.io, u.gpa, from, to) catch return u.say("Back up failed: could not copy the saves.");
+        win_open(z(&p, "{s}", .{std.fs.path.dirname(to).?}));
+        u.say("Saves backed up.");
+    }
+
+    // ── What's new and updates ──────────────────────────────────────────────
+    fn drawNews(u: *Ui) void {
+        const update = news.update.load(.acquire);
+        switch (update) {
+            .downloading => set("update-btn", "Updating...", .{}),
+            .failed => {
+                set("update-btn", "Try again", .{});
+                set("banner-text", "<span class=\"bad\">{f}</span>", .{esc(updateError())});
+            },
+            else => set("update-btn", "Update", .{}),
+        }
+        const state = news.state.load(.acquire);
+        if (state == .fetching or u.news_shown) return;
+        u.news_shown = true;
+        if (state == .failed) {
+            set("tile-news-title", "v{s}", .{build_info.version});
+            set("tile-news-text", "Could not reach GitHub for updates.", .{});
+            set("play-notes", "<h3>What's in v{s}</h3><p class=\"muted\">The release notes show here when GitHub can be reached.</p>", .{build_info.version});
+            set("releases", "<div class=\"card\"><p class=\"muted\">Could not reach GitHub ({s}). The release notes and updates show here when it can.</p></div>", .{std.mem.sliceTo(&news.err, 0)});
+            return;
+        }
+        var out: std.Io.Writer.Allocating = .init(u.gpa);
+        defer out.deinit();
+        const w = &out.writer;
+        var shown: usize = 0;
+        for (news.releases) |r| {
+            if (r.draft or r.prerelease) continue;
+            if (shown == 15) break;
+            shown += 1;
+            const tag = std.mem.trimStart(u8, r.tag_name, "v");
+            const is_new = logic.newer(tag, build_info.version);
+            const is_now = std.mem.eql(u8, tag, build_info.version);
+            if (is_now) {
+                var notes: std.Io.Writer.Allocating = .init(u.gpa);
+                defer notes.deinit();
+                notes.writer.print("<h3>What's in v{s}</h3><div class=\"when\">{f}</div>", .{ build_info.version, esc(if (r.published_at) |d| d[0..@min(10, d.len)] else "") }) catch {};
+                logic.notesRml(&notes.writer, r.body orelse "") catch {};
+                notes.writer.writeByte(0) catch {};
+                ui_set("play-notes", @ptrCast(notes.written().ptr));
+            }
+            w.print("<div class=\"card release\"><h3>v{f}{s}</h3><div class=\"when\">{f}</div>", .{ esc(tag), if (is_now) "<span class=\"tag now\">INSTALLED</span>" else if (is_new) "<span class=\"tag new\">NEW</span>" else "", esc(if (r.published_at) |d| d[0..@min(10, d.len)] else "") }) catch return;
+            logic.notesRml(w, r.body orelse "") catch return;
+            w.writeAll("</div>") catch return;
+        }
+        if (shown == 0) w.writeAll("<div class=\"card\"><p class=\"muted\">No releases yet.</p></div>") catch return;
+        w.writeByte(0) catch return;
+        ui_set("releases", @ptrCast(out.written().ptr));
+
+        if (news.latest) |l| {
+            const tag = std.mem.trimStart(u8, l.tag_name, "v");
+            ui_class("banner", "shown", true);
+            ui_class("news-badge", "shown", true);
+            set("banner-title", "v{f} is out", .{esc(tag)});
+            set("banner-text", "You have v{s}. Update downloads the new launcher, then rebuilds the game from your disc (translate and compile again, about 8 minutes). Your saves and settings stay.", .{build_info.version});
+            set("tile-news-title", "v{f} is out", .{esc(tag)});
+            set("tile-news-text", "Update from here: no need to download anything yourself.", .{});
+        } else {
+            set("tile-news-title", "v{s}", .{build_info.version});
+            set("tile-news-text", "You have the latest version.", .{});
+        }
+    }
+
+    /// Beside Play: the version picker (every release that carries the
+    /// launcher, and this one), and one small button to switch or update.
+    fn drawVersions(u: *Ui, update: @TypeOf(news.update.raw)) void {
+        if (!u.news_shown or news.state.load(.acquire) != .ok) return;
+        if (u.picked.ptr != u.ver_shown) {
+            u.ver_shown = u.picked.ptr;
+            var out: std.Io.Writer.Allocating = .init(u.gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            var rows: usize = 0;
+            for (news.releases) |r| {
+                const tag = std.mem.trimStart(u8, r.tag_name, "v");
+                if (r.draft or r.prerelease or rows == 10) continue;
+                const now = std.mem.eql(u8, tag, build_info.version);
+                if (!now and !hasLauncher(r)) continue; // before the launcher: nothing to switch to
+                rows += 1;
+                w.print("<div class=\"verrow{s}\" onclick=\"pick-version\" value=\"{f}\">v{f}{s}</div>", .{
+                    if (std.mem.eql(u8, tag, u.picked)) " on" else "", esc(tag), esc(tag),
+                    if (now) "<span class=\"tag now\">INSTALLED</span>" else if (logic.newer(tag, build_info.version)) "<span class=\"tag new\">NEW</span>" else "",
+                }) catch return;
+            }
+            w.writeByte(0) catch return;
+            ui_set("ver-menu", @ptrCast(out.written().ptr));
+            ui_class("ver", "hidden", rows < 2);
+        }
+        set("ver-btn", "v{f}<span class=\"icon\">&#xE70E;</span>", .{esc(u.picked)});
+        // Switch to the picked one, or update to the newest.
+        const to: ?[]const u8 = if (!std.mem.eql(u8, u.picked, build_info.version)) u.picked else if (news.latest) |l| std.mem.trimStart(u8, l.tag_name, "v") else null;
+        ui_class("play-switch", "hidden", to == null);
+        if (to) |t| {
+            var b: [24:0]u8 = undefined;
+            ui_attr("play-switch", "value", z(&b, "{s}", .{t}));
+            switch (update) {
+                .downloading => set("play-switch", "Downloading...", .{}),
+                .failed => set("play-switch", "Try again", .{}),
+                else => set("play-switch", "{s} v{f}", .{ if (logic.newer(t, build_info.version)) "Update to" else "Switch to", esc(t) }),
+            }
+        }
+    }
+
+    /// After a downloaded update: run the new launcher to rebuild, and quit.
+    fn relaunch(u: *Ui) !void {
+        var p: [1100]u8 = undefined;
+        const n = try std.process.executablePath(u.io, &p);
+        _ = try std.process.spawn(u.io, .{ .argv = &.{ p[0..n], "--rebuild", std.mem.sliceTo(&out_buf, 0) }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
     }
 };
 
-/// Every small button has the same size, and light text on crimson.
-fn btn_w() f32 {
-    return px(132);
-}
-fn button(label: [*:0]const u8) bool {
-    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Text, rgb(cream));
-    defer im.ImGui_PopStyleColor();
-    return im.ImGui_ButtonEx(label, .{ .x = btn_w(), .y = 0 });
-}
+/// Settings the form knows: a label and proper controls. Others get a text field.
+const Known = struct {
+    key: []const u8,
+    label: []const u8,
+    kind: enum { chips, toggle, stepper, text, resolution },
+    opts: []const struct { v: []const u8, label: []const u8 } = &.{},
+    summary: bool = false, // on the Play page's Settings tile
+};
+const known = [_]Known{
+    .{ .key = "window", .label = "Window mode", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Window" }, .{ .v = "1", .label = "Borderless" }, .{ .v = "2", .label = "Fullscreen" } } },
+    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .resolution },
+    .{ .key = "scale", .label = "Internal resolution", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "1", .label = "1x (640x480)" }, .{ .v = "2", .label = "2x" }, .{ .v = "3", .label = "3x" }, .{ .v = "4", .label = "4x" } } },
+    .{ .key = "widescreen", .label = "Widescreen (16:9)", .kind = .toggle },
+    .{ .key = "framerate", .label = "Frame rate", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Monitor's" }, .{ .v = "30", .label = "30 (original)" }, .{ .v = "60", .label = "60" }, .{ .v = "120", .label = "120" }, .{ .v = "144", .label = "144" } } },
+    .{ .key = "vsync", .label = "V-sync", .kind = .toggle },
+    .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
+    .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
+    .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle },
+    .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle },
+    .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper },
+    .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper },
+    .{ .key = "debug_menu", .label = "Debug menu at start (F1)", .kind = .toggle },
+    .{ .key = "log", .label = "Write otogi.log", .kind = .toggle },
+};
+const distances = [_]f32{ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8 };
 
-// ── Panels: dark lacquer over the backdrop, a gold edge, light text. ──────
-const panel_bg = 0x120707;
-
-/// A panel titled `title`; height 0 fits its contents.
-fn cardBegin(id: [*:0]const u8, comptime title: [:0]const u8, height: f32) bool {
-    const w = im.ImGui_GetContentRegionAvail().x;
-    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ChildBg, .{ .x = 0, .y = 0, .z = 0, .w = 0 });
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_WindowPadding, .{ .x = px(20), .y = px(16) });
-    const flags = im.ImGuiChildFlags_AlwaysUseWindowPadding | (if (height == 0) im.ImGuiChildFlags_AutoResizeY else 0);
-    const open = im.ImGui_BeginChild(id, .{ .x = w, .y = height }, flags, im.ImGuiWindowFlags_NoScrollbar);
-    im.ImGui_PopStyleVar();
-    im.ImGui_PopStyleColor();
-    if (open) {
-        im.ImGui_PushFontFloat(font_head, 21);
-        colored(gold, title);
-        im.ImGui_PopFont();
-    }
-    return open;
-}
-
-/// Ends the panel and draws it behind its contents: the parent's draw list
-/// renders before the child window.
-fn cardEnd() void {
-    im.ImGui_EndChild();
-    const a = im.ImGui_GetItemRectMin();
-    const b = im.ImGui_GetItemRectMax();
-    const dl = im.ImGui_GetWindowDrawList();
-    im.ImDrawList_AddRectFilledEx(dl, a, b, colA(panel_bg, 0.88), px(4), 0);
-    im.ImDrawList_AddRectEx(dl, a, b, col32(gold_dim), px(4), px(1), 0);
-    im.ImDrawList_AddLineEx(dl, .{ .x = a.x + px(12), .y = a.y }, .{ .x = b.x - px(12), .y = a.y }, colA(gold, 0.8), px(2), 0);
-    im.ImGui_Dummy(.{ .x = 0, .y = px(6) });
+fn knownSetting(key: []const u8) ?Known {
+    for (known) |k| if (std.mem.eql(u8, k.key, key)) return k;
+    return null;
 }
 
-fn stepLine(i: usize, busy: bool, at: u32) void {
-    const dl = im.ImGui_GetWindowDrawList();
-    const h = im.ImGui_GetTextLineHeight();
-    const p = im.ImGui_GetCursorScreenPos();
-    const ctr: im.ImVec2 = .{ .x = p.x + h * 0.5, .y = p.y + h * 0.5 };
-    const r = h * 0.26;
-    const started = busy or result != .none;
-    const state: enum { done, now, failed, todo } = if (!started) .todo else if (result == .ok or i < at) .done else if (i == at) (if (result == .failed) .failed else .now) else .todo;
-    switch (state) {
-        .done => im.ImDrawList_AddCircleFilled(dl, ctr, r, col32(cream), 0),
-        .now => {
-            const pulse: f32 = @floatCast(0.5 + 0.5 * @sin(im.ImGui_GetTime() * 5));
-            im.ImDrawList_AddCircleFilled(dl, ctr, r * (1.5 + pulse), colA(bad, 0.25 * (1 - pulse)), 0);
-            im.ImDrawList_AddCircleEx(dl, ctr, r, col32(bad), 0, 2.5, 0);
-        },
-        .failed => im.ImDrawList_AddCircleFilled(dl, ctr, r, col32(bad), 0),
-        .todo => im.ImDrawList_AddCircleEx(dl, ctr, r, col32(muted), 0, 1.5, 0),
-    }
-    im.ImGui_SetCursorPosX(im.ImGui_GetCursorPosX() + h * 1.4);
-    const on_brush = state == .now and disc.brush.tex != null;
-    if (on_brush) {
-        const tp = im.ImGui_GetCursorScreenPos();
-        const ts = im.ImGui_CalcTextSize(steps[i].ptr);
-        image(dl, disc.brush, .{ .x = tp.x - px(10), .y = tp.y - px(5) }, .{ .x = tp.x + ts.x + px(14), .y = tp.y + ts.y + px(5) }, .{ .x = 0, .y = 0.1 }, .{ .x = 0.84, .y = 0.9 }, col32(0xFFFFFF));
-    }
-    im.ImGui_PushStyleColor(im.ImGuiCol_Text, col32(if (on_brush) cream else switch (state) {
-        .done => cream,
-        .now, .failed => bad,
-        .todo => muted,
-    }));
-    im.ImGui_TextUnformatted(steps[i].ptr);
-    im.ImGui_PopStyleColor();
-}
+/// The primary display's modes, 1280x720 and up, largest first ("1920x1080"):
+/// the choices for the fullscreen resolution (the game sets it on that display).
+var modes: [10][12:0]u8 = undefined;
+var modes_len: usize = 0;
+extern "user32" fn EnumDisplaySettingsW(device: ?[*:0]const u16, mode: u32, dm: *[220]u8) callconv(.winapi) i32;
 
-/// Progress bar, elapsed time and the step checklist; Play once done.
-fn progress(busy: bool) void {
-    const at = step_at.load(.acquire);
-    if (busy or result != .none) {
-        const end = if (busy) GetTickCount64() else finished_ms;
-        const secs = (end -| started_ms) / 1000;
-        var label: [96:0]u8 = undefined;
-        var eta: [32]u8 = undefined;
-        const ov = std.fmt.bufPrintSentinel(&label, "{s}   {d}:{d:0>2}{s}{s}", .{ switch (result) {
-            .ok => "Done",
-            .failed => "Stopped",
-            .none => steps[@min(at, steps.len - 1)],
-        }, secs / 60, secs % 60, if (busy) "  /  " else "", if (busy) approx(&eta, secsLeft()) else "" }, 0) catch "";
-        // Filled by time, not by step count: the compile is most of it.
-        var total: f32 = 0;
-        for (step_left) |v| total += v;
-        const frac: f32 = if (result == .ok) 1 else if (total == 0) 0 else std.math.clamp(1 - secsLeft() / total, 0, 1);
-        im.ImGui_ProgressBar(frac, .{ .x = -std.math.floatMin(f32), .y = px(24) }, ov.ptr);
-    }
-
-    // Two columns of steps. Ink dot = done, pulsing crimson ring = running,
-    // red dot = failed.
-    const half = im.ImGui_GetContentRegionAvail().x / 2;
-    const x0 = im.ImGui_GetCursorPosX();
-    for (0..steps.len / 2) |row| {
-        stepLine(row, busy, at);
-        im.ImGui_SameLine();
-        im.ImGui_SetCursorPosX(x0 + half);
-        stepLine(row + steps.len / 2, busy, at);
-    }
-    if (result == .ok) {
-        im.ImGui_Dummy(.{ .x = 0, .y = px(2) });
-        colored(good, "Otogi is ready.");
-        if (button("Play")) openOut("otogi.exe");
-        im.ImGui_SameLine();
-        if (button("Open folder")) openOut("");
-        colored(muted, "settings.ini in that folder sets window or fullscreen, resolution, widescreen and frame rate. In game, F1 opens the debug menu.");
-    }
-    if (result == .failed) {
-        im.ImGui_Dummy(.{ .x = 0, .y = px(2) });
-        colored(bad, std.mem.sliceTo(&fail_msg, 0));
-        colored(muted, "Try again keeps the finished steps. If it keeps failing, click Copy log and send it with your report.");
-    }
-}
-
-/// Seigaiha: rows of overlapping wave scales, each row half a radius lower.
-fn seigaiha(dl: *im.ImDrawList, a: im.ImVec2, b: im.ImVec2, r: f32, fill: u32, line: u32) void {
-    im.ImDrawList_PushClipRect(dl, a, b, true);
-    defer im.ImDrawList_PopClipRect(dl);
-    var row: u32 = 0;
-    var y = a.y - r;
-    while (y < b.y + r) : ({
-        y += r / 2;
-        row += 1;
-    }) {
-        var x = a.x - (if (row % 2 == 1) r else 0);
-        while (x < b.x + r) : (x += 2 * r) {
-            const c: im.ImVec2 = .{ .x = x, .y = y };
-            im.ImDrawList_AddCircleFilled(dl, c, r, fill, 28);
-            for ([_]f32{ 0.9, 0.68, 0.46, 0.24 }) |k| im.ImDrawList_AddCircleEx(dl, c, r * k, line, 28, px(1.2), 0);
-        }
-    }
-}
-
-/// Spirit lights drifting up the window, as on the title screen, and a
-/// seigaiha strip along the bottom.
-fn backdrop() void {
-    const dl = im.ImGui_GetWindowDrawList();
-    const wp = im.ImGui_GetWindowPos();
-    const ws = im.ImGui_GetWindowSize();
-    const t: f32 = @floatCast(im.ImGui_GetTime());
-    if (disc.waves.tex != null) {
-        tiled(dl, disc.waves, wp, .{ .x = wp.x + ws.x, .y = wp.y + ws.y }, px(300), col32(0xFFFFFF));
-        im.ImDrawList_AddRectFilled(dl, wp, .{ .x = wp.x + ws.x, .y = wp.y + ws.y }, colA(0x0C0404, 0.74));
-    }
+fn listModes() void {
+    var all: [128][2]u32 = undefined;
+    var n: usize = 0;
+    var dm: [220]u8 = @splat(0); // DEVMODEW
+    std.mem.writeInt(u16, dm[68..70], dm.len, .little); // dmSize
     var i: u32 = 0;
-    while (i < 48) : (i += 1) {
-        const hsh = std.hash.int(i *% 2654435761);
-        const fx = @as(f32, @floatFromInt(hsh & 0xFFFF)) / 65536;
-        const fy = @as(f32, @floatFromInt((hsh >> 16) & 0xFFFF)) / 65536;
-        const speed = px(8 + @as(f32, @floatFromInt(hsh % 23)));
-        const fi: f32 = @floatFromInt(i);
-        const y = wp.y + ws.y - @mod(fy * ws.y + t * speed, ws.y);
-        const x = wp.x + fx * ws.x + @sin(t * 0.6 + fi) * px(10);
-        const a = 0.25 + 0.2 * @sin(t * 1.7 + fi * 1.3);
-        const r = px(1.2 + @as(f32, @floatFromInt(hsh % 3)) * 0.7);
-        im.ImDrawList_AddCircleFilled(dl, .{ .x = x, .y = y }, r * 5, colA(spirit, a * 0.08), 16);
-        im.ImDrawList_AddCircleFilled(dl, .{ .x = x, .y = y }, r, colA(spirit, a), 8);
+    while (EnumDisplaySettingsW(null, i, &dm) != 0) : (i += 1) {
+        const wh: [2]u32 = .{ std.mem.readInt(u32, dm[172..176], .little), std.mem.readInt(u32, dm[176..180], .little) }; // dmPelsWidth, dmPelsHeight
+        if (wh[0] < 1280 or wh[1] < 720 or n == all.len) continue;
+        if (for (all[0..n]) |x| (if (x[0] == wh[0] and x[1] == wh[1]) break true) else false) continue; // one per refresh rate and depth
+        all[n] = wh;
+        n += 1;
     }
-    const foot = px(26);
-    const top = wp.y + ws.y - foot;
-    seigaiha(dl, .{ .x = wp.x, .y = top }, .{ .x = wp.x + ws.x, .y = wp.y + ws.y }, px(16), col32(0x120606), colA(gold, 0.16));
-    im.ImDrawList_AddLineEx(dl, .{ .x = wp.x, .y = top }, .{ .x = wp.x + ws.x, .y = top }, col32(gold_dim), px(1.5), 0);
+    std.mem.sort([2]u32, all[0..n], {}, struct {
+        fn gt(_: void, a: [2]u32, b: [2]u32) bool {
+            return @as(u64, a[0]) * a[1] > @as(u64, b[0]) * b[1];
+        }
+    }.gt);
+    for (all[0..@min(n, modes.len)]) |wh| {
+        _ = std.fmt.bufPrintSentinel(&modes[modes_len], "{d}x{d}", .{ wh[0], wh[1] }, 0) catch continue;
+        modes_len += 1;
+    }
 }
 
-/// With the disc: its title logo on the title-screen brocade, fading to black
-/// where Raikoh (the ending art) stands.
-fn discHeader() void {
-    const dl = im.ImGui_GetWindowDrawList();
-    const wp = im.ImGui_GetWindowPos();
-    const w = im.ImGui_GetWindowSize().x;
-    const h = px(148);
-    const bottom = wp.y + h;
-    const margin = px(24);
-    im.ImDrawList_AddRectFilled(dl, wp, .{ .x = wp.x + w, .y = bottom }, col32(0x000000));
-    // title.dds (1024x512): logo in u 0.065..0.55 (its glyphs start at u 0.1),
-    // plain brocade in u 0.55..1; v 0.05..0.8 skips the black fades and the copyright.
-    const v0: f32 = 0.05;
-    const v1: f32 = 0.8;
-    const k = h / ((v1 - v0) * disc.title.h); // texels to pixels
-    const logo_w = (0.55 - 0.065) * disc.title.w * k;
-    const logo_x = wp.x + margin - (0.1 - 0.065) * disc.title.w * k;
-    const seg_w = 0.45 * disc.title.w * k;
-    // Brocade behind everything, then the logo (on its own brocade) over it.
-    var x = wp.x - seg_w + @mod(logo_x + logo_w - wp.x, seg_w);
-    while (x < wp.x + w * 0.75) : (x += seg_w) image(dl, disc.title, .{ .x = x, .y = wp.y }, .{ .x = x + seg_w, .y = bottom }, .{ .x = 0.55, .y = v0 }, .{ .x = 1, .y = v1 }, col32(0xFFFFFF));
-    image(dl, disc.title, .{ .x = logo_x, .y = wp.y }, .{ .x = logo_x + logo_w, .y = bottom }, .{ .x = 0.065, .y = v0 }, .{ .x = 0.55, .y = v1 }, col32(0xFFFFFF));
-    // Fade to black on the right, where Raikoh stands.
-    im.ImDrawList_AddRectFilledMultiColor(dl, .{ .x = wp.x + w * 0.45, .y = wp.y }, .{ .x = wp.x + w * 0.72, .y = bottom }, colA(0, 0), colA(0, 1), colA(0, 1), colA(0, 0));
-    im.ImDrawList_AddRectFilled(dl, .{ .x = wp.x + w * 0.72, .y = wp.y }, .{ .x = wp.x + w, .y = bottom }, col32(0x000000));
-    // fe_end00: Raikoh and his sword, u 0.03..0.62, v 0.1..0.95, on black; inside the right margin.
-    const rh = h - px(8);
-    const rw = rh * (0.59 * disc.raikoh.w) / (0.85 * disc.raikoh.h);
-    image(dl, disc.raikoh, .{ .x = wp.x + w - margin - rw, .y = wp.y + px(4) }, .{ .x = wp.x + w - margin, .y = wp.y + px(4) + rh }, .{ .x = 0.03, .y = 0.1 }, .{ .x = 0.62, .y = 0.95 }, col32(0xFFFFFF));
-    // Subtitle right of the logo's glyphs (they end near u 0.52), on the logo's lower line.
-    im.ImGui_PushFontFloat(font_head, 24);
-    const sub = "Myth of Demons  \xe2\x80\x94  PC setup";
-    const ts = im.ImGui_CalcTextSize(sub);
-    const sp: im.ImVec2 = .{ .x = logo_x + (0.52 - 0.065) * disc.title.w * k + px(18), .y = wp.y + h * 0.66 - ts.y };
-    im.ImDrawList_AddText(dl, .{ .x = sp.x + px(2), .y = sp.y + px(2) }, col32(0x000000), sub);
-    im.ImDrawList_AddText(dl, sp, col32(cream), sub);
-    im.ImGui_PopFont();
-    im.ImDrawList_AddLineEx(dl, .{ .x = wp.x, .y = bottom }, .{ .x = wp.x + w, .y = bottom }, col32(gold), px(2), 0);
-    im.ImDrawList_AddLineEx(dl, .{ .x = wp.x, .y = bottom + px(5) }, .{ .x = wp.x + w, .y = bottom + px(5) }, col32(gold_dim), px(1), 0);
-    im.ImGui_SetCursorScreenPos(.{ .x = wp.x + margin, .y = bottom + px(20) });
+const title_id = "46530002";
+
+/// %LOCALAPPDATA%\Otogi, where otogi.exe keeps its memory unit (src/main.zig).
+fn saveDir(buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}) catch ".";
 }
 
-/// Crimson band of seigaiha waves, a double gold rule, the title.
-fn header() void {
-    if (disc_loaded) return discHeader();
-    const dl = im.ImGui_GetWindowDrawList();
-    const wp = im.ImGui_GetWindowPos();
-    const w = im.ImGui_GetWindowSize().x;
-    const bottom = wp.y + px(86);
-    seigaiha(dl, wp, .{ .x = wp.x + w, .y = bottom }, px(22), col32(band), colA(gold, 0.22));
-    // Darker on the left, so the title reads over the waves.
-    im.ImDrawList_AddRectFilledMultiColor(dl, wp, .{ .x = wp.x + w * 0.55, .y = bottom }, colA(0x2A0A08, 0.85), colA(0x2A0A08, 0), colA(0x2A0A08, 0), colA(0x2A0A08, 0.85));
-    im.ImDrawList_AddLineEx(dl, .{ .x = wp.x, .y = bottom }, .{ .x = wp.x + w, .y = bottom }, col32(gold), px(2), 0);
-    im.ImDrawList_AddLineEx(dl, .{ .x = wp.x, .y = bottom + px(5) }, .{ .x = wp.x + w, .y = bottom + px(5) }, col32(gold_dim), px(1), 0);
-
-    im.ImGui_SetCursorScreenPos(.{ .x = wp.x + px(24), .y = wp.y + px(14) });
-    im.ImGui_PushFontFloat(font_jp, 44);
-    colored(gold, "御伽");
-    im.ImGui_PopFont();
-    im.ImGui_SameLine();
-    im.ImGui_PushFontFloat(font_title, 40);
-    colored(gold, "OTOGI");
-    im.ImGui_PopFont();
-    im.ImGui_SameLine();
-    im.ImGui_SetCursorPosY(im.ImGui_GetCursorPosY() + px(15));
-    im.ImGui_PushFontFloat(font_head, 22);
-    colored(cream, "Myth of Demons  \xe2\x80\x94  PC setup");
-    im.ImGui_PopFont();
-    im.ImGui_SetCursorScreenPos(.{ .x = wp.x + px(24), .y = bottom + px(16) });
+/// SaveMeta.xbx is UTF-16 "Name=OTOGI01 LV02 00:02\r\n...".
+fn saveName(io: Io, a: std.mem.Allocator, dir: Io.Dir) ?[]const u8 {
+    var raw: [512]u8 align(2) = undefined;
+    const got = dir.readFile(io, "SaveMeta.xbx", &raw) catch return null;
+    const text = std.unicode.utf16LeToUtf8Alloc(a, std.mem.bytesAsSlice(u16, @as([]align(2) const u8, @alignCast(got[0 .. got.len & ~@as(usize, 1)])))) catch return null;
+    const at = std.mem.indexOf(u8, text, "Name=") orelse return null;
+    const name = text[at + 5 ..];
+    return std.mem.trim(u8, name[0 .. std.mem.indexOfAny(u8, name, "\r\n") orelse name.len], " ");
 }
 
-fn colored(c: u24, text: [:0]const u8) void {
-    im.ImGui_PushStyleColor(im.ImGuiCol_Text, col32(c));
-    im.ImGui_TextWrapped("%s", text.ptr);
-    im.ImGui_PopStyleColor();
+/// The last 400 lines of `text`, escaped, into element `id` (a log view).
+fn showLog(gpa: std.mem.Allocator, id: [*:0]const u8, log_text: []const u8, empty: [*:0]const u8) void {
+    if (log_text.len == 0) return ui_set(id, empty);
+    var lines: usize = 0;
+    var i = log_text.len;
+    while (i > 0 and lines < 400) : (i -= 1) if (log_text[i - 1] == '\n') {
+        lines += 1;
+    };
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    logic.escape(&out.writer, log_text[i..]) catch return;
+    out.writer.writeByte(0) catch return;
+    ui_set(id, @ptrCast(out.written().ptr));
+}
+
+/// "2026-11-14 18:03" (UTC) from file-time nanoseconds.
+fn dateTime(buf: []u8, ns: i96) []const u8 {
+    var d: [16]u8 = undefined;
+    const secs: u64 = @intCast(@max(0, @divFloor(ns, std.time.ns_per_s)));
+    return std.fmt.bufPrint(buf, "{s} {d:0>2}:{d:0>2}", .{ date(&d, ns), secs / 3600 % 24, secs / 60 % 60 }) catch "";
+}
+
+/// "2026-11-14" (UTC) from file-time nanoseconds.
+fn date(buf: []u8, ns: i96) []const u8 {
+    const secs: u64 = @intCast(@max(0, @divFloor(ns, std.time.ns_per_s)));
+    const day = (std.time.epoch.EpochSeconds{ .secs = secs }).getEpochDay();
+    const yd = day.calculateYearDay();
+    const md = yd.calculateMonthDay();
+    return std.fmt.bufPrint(buf, "{d}-{d:0>2}-{d:0>2}", .{ yd.year, md.month.numeric(), md.day_index + 1 }) catch "";
+}
+
+fn copyTree(io: Io, gpa: std.mem.Allocator, from: []const u8, to: []const u8) !void {
+    var src = try Io.Dir.cwd().openDir(io, from, .{ .iterate = true });
+    defer src.close(io);
+    var dst = try Io.Dir.cwd().createDirPathOpen(io, to, .{});
+    defer dst.close(io);
+    var walk = try src.walk(gpa);
+    defer walk.deinit();
+    while (try walk.next(io)) |e| switch (e.kind) {
+        .directory => try dst.createDirPath(io, e.path),
+        .file => try Io.Dir.copyFile(src, e.path, dst, e.path, io, .{}),
+        else => {},
+    };
+}
+
+fn hasFile(io: Io, name: []const u8) bool {
+    var p: [1100]u8 = undefined;
+    const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+    return if (Io.Dir.cwd().access(io, path, .{})) |_| true else |_| false;
 }
 
 fn openOut(comptime name: []const u8) void {
@@ -787,6 +1105,136 @@ fn freeGb() ?u64 {
     var avail: u64 = 0;
     if (GetDiskFreeSpaceExA(&root, &avail, null, null) == 0) return null;
     return avail >> 30;
+}
+
+// ── GitHub releases (a thread at startup) and the update download ──────────
+const Release = struct {
+    tag_name: []const u8,
+    body: ?[]const u8 = null,
+    published_at: ?[]const u8 = null,
+    draft: bool = false,
+    prerelease: bool = false,
+    assets: []const struct { name: []const u8, browser_download_url: []const u8 } = &.{},
+};
+var news: struct {
+    state: std.atomic.Value(enum(u8) { fetching, ok, failed }) = .init(.fetching),
+    releases: []const Release = &.{},
+    /// The newest release past this version that carries the launcher.
+    latest: ?Release = null,
+    err: [64]u8 = @splat(0),
+    thread: ?std.Thread = null,
+    update: std.atomic.Value(enum(u8) { none, downloading, ready, failed }) = .init(.none),
+    update_thread: ?std.Thread = null,
+    /// What "update" downloads: the newest, or a version picked beside Play.
+    target: ?Release = null,
+} = .{};
+
+fn fetchNews(io: Io, gpa: std.mem.Allocator) void {
+    var arena: std.heap.ArenaAllocator = .init(gpa); // kept: news.releases point into it
+    const a = arena.allocator();
+    const url = std.mem.span(std.c.getenv("OTOGI_RELEASES_URL") orelse releases_url);
+    var body: std.Io.Writer.Allocating = .init(a);
+    const ok = if (httpGet(io, a, url, &body.writer)) |status| status == .ok else |_| false;
+    if (!ok) {
+        _ = std.fmt.bufPrint(&news.err, "no answer from api.github.com", .{}) catch {};
+        return news.state.store(.failed, .release);
+    }
+    news.releases = std.json.parseFromSliceLeaky([]const Release, a, body.written(), .{ .ignore_unknown_fields = true }) catch {
+        _ = std.fmt.bufPrint(&news.err, "unexpected reply", .{}) catch {};
+        return news.state.store(.failed, .release);
+    };
+    for (news.releases) |r| {
+        if (r.draft or r.prerelease or !logic.newer(r.tag_name, build_info.version)) continue;
+        if (news.latest) |l| if (!logic.newer(r.tag_name, l.tag_name)) continue;
+        if (hasLauncher(r)) news.latest = r;
+    }
+    news.state.store(.ok, .release);
+}
+
+/// The new launcher to <exe>.new, then swapped in: the running exe can be
+/// renamed (to .old, deleted at the next start), not overwritten.
+var update_err: [160:0]u8 = @splat(0);
+fn updateError() []const u8 {
+    return if (update_err[0] != 0) std.mem.sliceTo(&update_err, 0) else "The download is not a launcher exe. Try again later.";
+}
+
+fn hasLauncher(r: Release) bool {
+    for (r.assets) |x| if (std.mem.eql(u8, x.name, asset_name)) return true;
+    return false;
+}
+
+/// A listed release by its tag, "v" or not; only once the list is in.
+fn release(tag: []const u8) ?Release {
+    if (news.state.load(.acquire) != .ok) return null;
+    for (news.releases) |r| if (std.mem.eql(u8, std.mem.trimStart(u8, r.tag_name, "v"), std.mem.trimStart(u8, tag, "v"))) return r;
+    return null;
+}
+
+fn downloadUpdate(io: Io, gpa: std.mem.Allocator) void {
+    const ok = swapIn(io, gpa) catch |e| blk: {
+        _ = std.fmt.bufPrintSentinel(&update_err, "Update failed ({t}). Check your connection and try again.", .{e}, 0) catch {};
+        break :blk false;
+    };
+    news.update.store(if (ok) .ready else .failed, .release);
+}
+
+fn swapIn(io: Io, gpa: std.mem.Allocator) !bool {
+    const l = news.target orelse return false;
+    const url = for (l.assets) |x| (if (std.mem.eql(u8, x.name, asset_name)) break x.browser_download_url) else return false;
+    var p: [1100]u8 = undefined;
+    const exe = p[0..try std.process.executablePath(io, &p)];
+    const new = try std.fmt.allocPrint(gpa, "{s}.new", .{exe});
+    defer gpa.free(new);
+    const old = try std.fmt.allocPrint(gpa, "{s}.old", .{exe});
+    defer gpa.free(old);
+    {
+        const f = try Io.Dir.cwd().createFile(io, new, .{});
+        defer f.close(io);
+        var buf: [64 * 1024]u8 = undefined;
+        var w = f.writer(io, &buf);
+        if (try httpGet(io, gpa, url, &w.interface) != .ok) return false;
+        try w.interface.flush();
+    }
+    defer Io.Dir.cwd().deleteFile(io, new) catch {}; // gone once swapped in
+    {
+        const f = try Io.Dir.cwd().openFile(io, new, .{});
+        defer f.close(io);
+        var head: [2]u8 = undefined;
+        if (try f.readPositionalAll(io, &head, 0) != 2 or !std.mem.eql(u8, &head, "MZ")) return false; // not an exe
+    }
+    Io.Dir.cwd().deleteFile(io, old) catch {};
+    try move(gpa, exe, old);
+    move(gpa, new, exe) catch |e| {
+        move(gpa, old, exe) catch {};
+        return e;
+    };
+    return true;
+}
+
+extern "kernel32" fn MoveFileExW(from: [*:0]const u16, to: [*:0]const u16, flags: u32) callconv(.winapi) i32;
+
+/// A rename that works on the running exe: Zig's Dir.rename opens the file in a
+/// way Windows refuses for a loaded image (FileBusy); MoveFileEx does not.
+fn move(gpa: std.mem.Allocator, from: []const u8, to: []const u8) !void {
+    const a = try std.unicode.utf8ToUtf16LeAllocZ(gpa, from);
+    defer gpa.free(a);
+    const b = try std.unicode.utf8ToUtf16LeAllocZ(gpa, to);
+    defer gpa.free(b);
+    if (MoveFileExW(a, b, 1) == 0) return error.RenameFailed; // MOVEFILE_REPLACE_EXISTING
+}
+
+fn deleteOldSelf(io: Io) void {
+    var p: [1100]u8 = undefined;
+    const n = std.process.executablePath(io, &p) catch return;
+    var q: [1110]u8 = undefined;
+    Io.Dir.cwd().deleteFile(io, std.fmt.bufPrint(&q, "{s}.old", .{p[0..n]}) catch return) catch {};
+}
+
+fn httpGet(io: Io, gpa: std.mem.Allocator, url: []const u8, w: *std.Io.Writer) !std.http.Status {
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    const res = try client.fetch(.{ .location = .{ .url = url }, .response_writer = w });
+    return res.status;
 }
 
 /// SHA-1 of default.xbe on the disc image, lower-case hex.
@@ -894,7 +1342,6 @@ fn worker(io: Io, gpa: std.mem.Allocator) void {
     result = .ok;
 }
 
-
 /// Kill whatever tool runs now (and its children); the worker stops at the
 /// next step boundary. In-process steps (extract, downloads) finish first.
 fn stopBuild() void {
@@ -916,17 +1363,23 @@ fn next(c: *Ctx, i: u32) !void {
 
 /// The top of every setup.log: what a bug report needs to know.
 fn systemInfo(c: *Ctx) void {
+    const iso = std.mem.sliceTo(&iso_buf, 0);
+    const iso_size = if (Io.Dir.cwd().statFile(c.io, iso, .{})) |st| st.size else |_| 0;
+    var m: [400]u8 = undefined;
+    c.say("Otogi XUnchain launcher {s}", .{version});
+    c.say("{s}", .{machine(&m)});
+    if (iso.len == 0) c.say("disc image: none picked", .{}) else c.say("disc image {s} ({d} bytes)", .{ iso, iso_size });
+    c.say("install folder {s} ({?d} GB free)", .{ c.out, freeGb() });
+}
+
+/// "Windows 10.0 build 26200; CPU ...; 31 GB RAM; GPU ...": for setup.log and bug reports.
+fn machine(buf: []u8) []const u8 {
     var v: OsVersion = .{};
     _ = RtlGetVersion(&v);
     var cpu: [128]u8 = @splat(0);
     var cpu_len: u32 = cpu.len;
     _ = RegGetValueA(0x80000002, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", 0x2, null, &cpu, &cpu_len); // HKLM, RRF_RT_REG_SZ
-    const iso = std.mem.sliceTo(&iso_buf, 0);
-    const iso_size = if (Io.Dir.cwd().statFile(c.io, iso, .{})) |st| st.size else |_| 0;
-    c.say("Otogi XUnchain setup {s}", .{version});
-    c.say("Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.sliceTo(&cpu, 0), ram_gb, std.mem.span(win_gpu_name()) });
-    c.say("disc image {s} ({d} bytes)", .{ iso, iso_size });
-    c.say("install folder {s} ({?d} GB free)", .{ c.out, freeGb() });
+    return std.fmt.bufPrint(buf, "Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.trim(u8, std.mem.sliceTo(&cpu, 0), " "), ram_gb, std.mem.span(win_gpu_name()) }) catch "";
 }
 
 const OsVersion = extern struct { size: u32 = @sizeOf(OsVersion), major: u32 = 0, minor: u32 = 0, build: u32 = 0, platform: u32 = 0, csd: [128]u16 = @splat(0) };
@@ -937,23 +1390,30 @@ fn pipeline(c: *Ctx) !void {
     const io = c.io;
     const cwd = Io.Dir.cwd();
 
+    // Once game\ is extracted the disc is not needed again (an update rebuilds
+    // without it).
     try next(c, 0);
     const iso_path = std.mem.sliceTo(&iso_buf, 0);
-    const hex = xbeSha1(io, c.gpa, iso_path) catch |e| {
-        fail("{s}", .{"Cannot read an Xbox game from the disc image."});
-        return e;
-    };
-    c.say("default.xbe SHA-1 {s}", .{&hex});
-    if (!std.mem.eql(u8, &hex, xbe_sha1)) {
-        fail("{s}", .{"This is not the Otogi (USA) disc this build supports (default.xbe does not match)."});
-        return error.WrongDisc;
+    const extracted = if (cwd.access(io, c.path("{s}\\.stamps\\extract", .{c.work}), .{})) |_| true else |_| false;
+    if (extracted) {
+        c.say("game files already extracted; the disc is not needed", .{});
+    } else {
+        const hex = xbeSha1(io, c.gpa, iso_path) catch |e| {
+            fail("{s}", .{"Cannot read an Xbox game from the disc image."});
+            return e;
+        };
+        c.say("default.xbe SHA-1 {s}", .{&hex});
+        if (!std.mem.eql(u8, &hex, xbe_sha1)) {
+            fail("{s}", .{"This is not the Otogi (USA) disc this build supports (default.xbe does not match)."});
+            return error.WrongDisc;
+        }
     }
-    const iso = try cwd.openFile(io, iso_path, .{});
-    defer iso.close(io);
-    const img = try xiso.Image.open(io, iso);
 
     try next(c, 1);
     if (!c.done("extract")) {
+        const iso = try cwd.openFile(io, iso_path, .{});
+        defer iso.close(io);
+        const img = try xiso.Image.open(io, iso);
         var game = try cwd.createDirPathOpen(io, c.path("{s}\\game", .{c.out}), .{});
         defer game.close(io);
         c.say("extracted {d} files", .{try img.unpack(c.gpa, game, img.root_sector, img.root_size)});
@@ -1021,6 +1481,18 @@ fn pipeline(c: *Ctx) !void {
 
     try next(c, 7);
     try writeSettings(c);
+    installSelf(c);
+}
+
+/// The launcher into the install folder, so it travels with the game and the
+/// next update lands there.
+fn installSelf(c: *Ctx) void {
+    var p: [1100]u8 = undefined;
+    const self = p[0 .. std.process.executablePath(c.io, &p) catch return];
+    const dest = c.path("{s}\\" ++ asset_name, .{c.out});
+    if (std.ascii.eqlIgnoreCase(self, dest)) return;
+    Io.Dir.copyFileAbsolute(self, dest, c.io, .{}) catch |e| return c.say("could not copy the launcher to {s}: {t}", .{ dest, e });
+    c.say("launcher copied to {s}", .{dest});
 }
 
 extern "kernel32" fn GetLocalTime(t: *[8]u16) callconv(.winapi) void;
@@ -1037,14 +1509,14 @@ fn writeSettings(c: *Ctx) !void {
     const old_text = cwd.readFileAlloc(io, dest, c.gpa, .limited(64 * 1024)) catch "";
     var old: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
     var lines = std.mem.tokenizeAny(u8, old_text, "\r\n");
-    while (lines.next()) |line| if (setting(line)) |kv| try old.put(c.gpa, kv[0], kv[1]);
+    while (lines.next()) |line| if (logic.setting(line)) |kv| if (kv[1].len != 0) try old.put(c.gpa, kv[0], kv[1]);
 
     var out: std.Io.Writer.Allocating = .init(c.gpa);
     const w = &out.writer;
     var t: [8]u16 = undefined; // SYSTEMTIME: year, month, weekday, day, ...
     GetLocalTime(&t);
     try w.print("; Otogi XUnchain {s}: Otogi: Myth of Demons, PC recompilation\n", .{version});
-    try w.print("; Written by otogi-xunchain-setup on {d}-{d:0>2}-{d:0>2}. Running setup again keeps your values.\n", .{ t[0], t[1], t[3] });
+    try w.print("; Written by otogi-xunchain on {d}-{d:0>2}-{d:0>2}. Rebuilding keeps your values.\n", .{ t[0], t[1], t[3] });
     // This version's section of CHANGELOG.md (in the unpacked source).
     const log = cwd.readFileAlloc(io, c.path("{s}\\CHANGELOG.md", .{c.work}), c.gpa, .limited(1 << 20)) catch "";
     const head = "## [" ++ build_info.version ++ "]";
@@ -1053,8 +1525,8 @@ fn writeSettings(c: *Ctx) !void {
         const end = std.mem.indexOfPos(u8, body, head.len, "\n## [") orelse body.len;
         // "## [0.6.0] - 2026-11-01" -> "What's in v0.6.0 (2026-11-01):"
         const heading = std.mem.trimEnd(u8, body[0 .. std.mem.indexOfScalar(u8, body, '\n') orelse body.len], "\r ");
-        const date = if (std.mem.indexOf(u8, heading, "] - ")) |d| heading[d + 4 ..] else "";
-        try w.print(";\n; What's in v{s}{s}{s}{s}:\n", .{ build_info.version, if (date.len != 0) " (" else "", date, if (date.len != 0) ")" else "" });
+        const date_ = if (std.mem.indexOf(u8, heading, "] - ")) |d| heading[d + 4 ..] else "";
+        try w.print(";\n; What's in v{s}{s}{s}{s}:\n", .{ build_info.version, if (date_.len != 0) " (" else "", date_, if (date_.len != 0) ")" else "" });
         var it = std.mem.splitScalar(u8, body[0..end], '\n');
         _ = it.next(); // the heading
         while (it.next()) |raw| {
@@ -1064,12 +1536,12 @@ fn writeSettings(c: *Ctx) !void {
     }
     try w.writeAll(";\n");
 
-    var known: std.StringHashMapUnmanaged(void) = .empty;
+    var known_keys: std.StringHashMapUnmanaged(void) = .empty;
     var tl = std.mem.splitScalar(u8, std.mem.trimEnd(u8, tmpl, "\r\n"), '\n');
     while (tl.next()) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
-        if (setting(line)) |kv| {
-            try known.put(c.gpa, kv[0], {});
+        if (logic.setting(line)) |kv| {
+            try known_keys.put(c.gpa, kv[0], {});
             if (old.get(kv[0])) |v| {
                 try w.print("{s} = {s}\n", .{ kv[0], v });
                 continue;
@@ -1079,23 +1551,13 @@ fn writeSettings(c: *Ctx) !void {
     }
     var first = true;
     for (old.keys(), old.values()) |k, v| {
-        if (known.contains(k)) continue;
+        if (known_keys.contains(k)) continue;
         if (first) try w.writeAll("\n; Kept from your earlier settings.ini.\n");
         first = false;
         try w.print("{s} = {s}\n", .{ k, v });
     }
     try cwd.writeFile(io, .{ .sub_path = dest, .data = out.written() });
     c.say("wrote {s} ({d} of your values kept)", .{ dest, old.count() });
-}
-
-/// `key = value` with comments (; or #) stripped, as otogi.exe reads it.
-fn setting(line: []const u8) ?[2][]const u8 {
-    const body = line[0 .. std.mem.indexOfAny(u8, line, "#;") orelse line.len];
-    const eq = std.mem.indexOfScalar(u8, body, '=') orelse return null;
-    const k = std.mem.trim(u8, body[0..eq], " \t");
-    const v = std.mem.trim(u8, body[eq + 1 ..], " \t");
-    if (k.len == 0 or v.len == 0) return null;
-    return .{ k, v };
 }
 
 /// Download into <work>\downloads (kept between runs) and check its SHA-256.
@@ -1129,12 +1591,10 @@ fn download(c: *Ctx, url: []const u8, dest: []const u8) !void {
     defer f.close(c.io);
     var buf: [64 * 1024]u8 = undefined;
     var w = f.writer(c.io, &buf);
-    var client: std.http.Client = .{ .allocator = c.gpa, .io = c.io };
-    defer client.deinit();
-    const res = try client.fetch(.{ .location = .{ .url = url }, .response_writer = &w.interface });
+    const status = try httpGet(c.io, c.gpa, url, &w.interface);
     try w.interface.flush();
-    if (res.status != .ok) {
-        c.say("HTTP {d}", .{@intFromEnum(res.status)});
+    if (status != .ok) {
+        c.say("HTTP {d}", .{@intFromEnum(status)});
         return error.DownloadFailed;
     }
 }

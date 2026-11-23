@@ -1,4 +1,4 @@
-# Releases otogi-xunchain-setup.exe on GitHub, with the changelog section as notes.
+# Releases otogi-xunchain.exe (the launcher) on GitHub, with the changelog section as notes.
 # Automatic: merging a PR into main bumps the version by the box ticked under "Release"
 # in the PR body (major, minor, patch or none), turns the changelog's "Unreleased"
 # section into that version, commits and tags it, then releases. "none" releases nothing.
@@ -98,5 +98,6 @@ jobs:
         run: |
           v="v${{ steps.version.outputs.version }}"
           git push origin HEAD:main "$v"
-          gh release create "$v" zig-out/bin/otogi-xunchain-setup.exe setup/assets/OFL-ShipporiMinchoB1.txt \
+          # The launcher updates itself from the asset named otogi-xunchain.exe (asset_name in setup/main.zig).
+          gh release create "$v" zig-out/bin/otogi-xunchain.exe setup/assets/OFL-ShipporiMinchoB1.txt setup/assets/THIRD-PARTY-NOTICES.txt \
             --title "Otogi XUnchain $v" --notes-file notes.md

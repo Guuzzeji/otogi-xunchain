@@ -377,7 +377,7 @@
   install folder and free space; each step line carries its start time. The UI has Copy log (whole file to the
   clipboard) and Open log file.
 - Look: the game's own menu art, bundled (`setup/assets/art/`, ripped from the disc to JPEG/PNG, loaded through WIC):
-  the `title.dds` logo on brocade fading to `fe_end00` Raikoh in the header, `fe_bg03A` red waves as the backdrop,
+  the `title.dds` logo on brocade fading to `fe_end00` Raikoh in the header, `fe_bg03A` red waves as the backdrop (dropped by the launcher),
   the `fe_lo000` red brush stroke under the Build button and the running step. Dark panels with gold edges, light
   text, steps left and log right. Shippori Mincho B1 Bold (OFL, subset to 130 KB with fontTools); Segoe UI and
   Consolas come from Windows. Bundling the art is an owner's-choice exception to the no-game-data rule.
@@ -393,6 +393,61 @@
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
   `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
 
+## Launcher (RmlUi, 2026-11-22)
+- Setup became the launcher, `otogi-xunchain.exe`: the same build pipeline (above) plus Play, Settings, Saves and
+  What's new pages and self-update. The UI moved from Dear ImGui to RmlUi 6.3 (MIT) with FreeType 2.14.3 for fonts.
+  The game's F1 menu is still ImGui (a later round).
+- Build: `launcherModule` in `build.zig` compiles RmlUi's `Source/Core` (walked at configure time), its
+  `RmlUi_Platform_Win32` and `RmlUi_Renderer_DX11` backends as they ship, and FreeType's default module set, all by
+  `zig c++`/`zig cc`, no CMake. Both packages are lazy, and the launcher step is skipped where `commit.txt` exists
+  (the player's copy of the source), so a player's build never downloads them. ~9.6 MB exe (ReleaseSmall, with
+  `source.zip`).
+- Host (`setup/window.cpp`): Win32 + D3D11 as before, frameless (`WM_NCCALCSIZE` returns 0, DWM frame margin of 1
+  keeps the shadow and rounded corners). `WM_NCHITTEST` makes `#titlebar` drag the window unless the point is over
+  something with `onclick`. Files: `ui_file` (Zig) serves `setup/ui/*` and `setup/assets/*` from the exe, else the
+  disk (Windows fonts). Images go through WIC, premultiplied (`GUID_WICPixelFormat32bppPRGBA`).
+- Zig drives the page by id: `ui_set` (inner markup, skipped when unchanged, so `draw()` sets everything every
+  frame), `ui_attr`, `ui_class`, `ui_value` (not while focused). Every `on*` attribute is a command:
+  `onclick="page" value="saves"` reaches `ui_event("page", "saves")`, queued and handled after the frame, because a
+  handler may replace the element RmlUi is still dispatching on. The settings form is built once from
+  `settings.ini` and values are applied by id, so a click keeps the controller's focus.
+- RCSS learned the hard way: no default styles at all (div/p need `display: block`); text inside a flex row needs a
+  wrapper element; `animation-delay`/`-duration` are not properties, only the `animation` shorthand (`9s 2.5s
+  linear-in-out infinite rise`); box-shadow cannot transition; a JPEG drawn on black is opaque, so the logo band
+  fades out over Raikoh with `mask-image` rather than a black overlay on top. `OTOGI_UI_LOG=<file>` writes RmlUi's
+  warnings (bad markup, unknown properties) there.
+- Controller: XInput pad 0 polled each frame; d-pad/stick move focus (`nav: auto`, first press tabs to the first
+  control), A clicks the focused element, B goes to Play, LB/RB switch pages. Enter/Space click a focused button.
+- Settings: `setup/logic.zig` reads `settings.ini` into entries (key, value, the `;` lines above it as help) and
+  rewrites one line on a change (`withValue`), keeping everything else. Known keys get chips, toggles or a stepper.
+  The fullscreen resolution lists the primary display's modes (`EnumDisplaySettingsW`, 1280x720 and up, largest
+  first, at most 10: the display the game changes), Desktop's (empty), and Custom, which shows a text field.
+- Saves: `%LOCALAPPDATA%\Otogi\UDATA\46530002\<id>\`, one folder per save; `SaveMeta.xbx` is UTF-16 with
+  `Name=OTOGI01 LV02 00:02`; `game.xsv` marks a game save, `map.xsv` a stage's data. Back up copies `UDATA`.
+- Updates: a thread reads `api.github.com/repos/Guuzzeji/otogi-xunchain/releases` (`OTOGI_RELEASES_URL` overrides,
+  for tests). A release newer than `build_info.version` with an asset named `otogi-xunchain.exe` shows Update. It
+  downloads to `<exe>.new`, renames the running exe to `.old` (Windows allows renaming, not overwriting, a running
+  exe), moves the new one in, and starts it with `--rebuild <out>`: every stamp but `extract` is deleted and the build
+  runs. The disc check is skipped once `extract` is stamped, so no ISO is needed. `.old` is deleted on the next start.
+- The version list beside Play offers every release with that asset (older ones shipped only setup, so they are left
+  out) and switches the same way, downgrades too: the older launcher rebuilds its own source. Its XInput is read only
+  while the launcher is the foreground window, or A in the game would click the launcher's focused button.
+- Help & logs: a viewer for `<out>\otogi.log` (the game opens it with FILE_SHARE_READ, so it can be read while the
+  game runs) and `<out>\setup.log`: the last 96 KB, re-read each second while the page is open, 400 lines shown.
+  Report opens `issues/new?labels=bug&body=...` (version and `machine()`: Windows, CPU, RAM, GPU) and copies the whole
+  log to the clipboard, since a URL cannot carry a file. Questions go to Discussions. `onclick="url"` opens only
+  `https://github.com/` links.
+- Icons: `setup/assets/make-icons.ps1` draws both `.ico` files; `setup/launcher.rc` and `src/otogi.rc` embed them as
+  icon 1 (`addWin32ResourceFile`, Zig's own resource compiler). The launcher's window class loads icon 1 (`window.cpp`);
+  SDL3 gives the game's window the exe's first icon by itself.
+- Zig caches the configure step: after `src/recomp/gen` appears, a `zig build` that configured without it still
+  links none of it (undefined `recomp_lookup`...). Changing an option (`-Doptimize=ReleaseFast`) reconfigures.
+- After a build the launcher copies itself to `<out>\otogi-xunchain.exe`. Started from a folder that has `otogi.exe`,
+  `game\default.xbe` or `build\.stamps`, it takes that folder as the install folder; anywhere else, `<exe dir>\Otogi`.
+- Testing by script without stealing focus: `PrintWindow(hwnd, dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)` captures
+  the window even when covered; clicks are posted `WM_MOUSEMOVE` + `WM_LBUTTONDOWN` + `WM_LBUTTONUP` in one go (with a
+  pause between, RmlUi's `TrackMouseEvent` sees the real cursor outside and drops the hover).
+
 ## Versions and releases
 - The version is `build.zig.zon`'s `.version` (semver; 0.6.0 = M6). `build.zig` passes it and the short commit to both
   exes as module `build_info`: the game log's first line, the debug menu, setup's window title and `setup.log`.
@@ -404,7 +459,8 @@
     (`.github/pull_request_template.md`: major, minor, patch, none), and unless none, an entry under Unreleased.
   - `release.yml` on every merged PR (`pull_request_target` closed + merged, so fork PRs get a write token; it checks
     out main, never PR code): bumps by the ticked box, moves Unreleased into a dated section, commits "Release vX.Y.Z"
-    to main, tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the font's OFL text,
+    to main, tags, builds setup, pushes, and publishes a release with `otogi-xunchain.exe` (`otogi-xunchain-setup.exe`
+    up to v0.8.0), the font's OFL text, `THIRD-PARTY-NOTICES.txt` (RmlUi, FreeType),
     and that changelog section as notes. A "none" box releases nothing. Runs are serialized (`concurrency: release`);
     if a merge lands during a build the push fails, and re-running the job bumps again from the new main.
   - By hand: Actions > Release > Run workflow with a bump; "none" there releases the current version as it is.
