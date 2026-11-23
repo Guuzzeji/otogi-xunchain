@@ -166,6 +166,20 @@ fn isCopy(tex: u32) bool {
     return tex != 0 and std.mem.indexOfScalar(u32, &bb_copies, d3d.resData(tex)) != null;
 }
 
+/// The offscreen target the movie (XMV) last drew a YUY2/UYVY frame into, and
+/// when. The movie is 4:3: drawn to the screen it keeps its place in the middle
+/// with black at the sides, as extending it only smears its edge columns (issue #9).
+var movie_rt: u32 = 0;
+var movie_frame: u32 = 0xFFFF_0000;
+
+fn isYuv(xfmt: u32) bool {
+    return xfmt == 0x24 or xfmt == 0x25;
+}
+
+fn isMovie(data: u32, xfmt: u32) bool {
+    return isYuv(xfmt) or (data == movie_rt and gframe -% movie_frame <= 30);
+}
+
 fn addCopy(data: u32) void {
     if (std.mem.indexOfScalar(u32, &bb_copies, data) != null) return;
     bb_copies[bb_copy_next] = data;
@@ -457,6 +471,7 @@ const TexRef = struct {
     cube: bool = false,
     copy: bool = false, // holds the whole wide view (isCopy)
     still: bool = false, // maybe a screen still (stills)
+    movie: bool = false, // a video frame (isMovie): stays 4:3
     fmt: u8 = 0,
     lin: [2]f32 = .{ 0, 0 }, // texel size of a linear texture, whose coordinates the title gives in texels
     gl: gl.GLuint = 0, // the render thread's, once it has the frame (frameResolve)
@@ -524,7 +539,7 @@ fn texRef(res: u32) TexRef {
     const size = mem32(res + 0x10);
     const dims = d3d.surfDims(res);
     const xfmt = (format >> 8) & 0xFF;
-    var r: TexRef = .{ .cube = (format >> 2) & 1 != 0, .fmt = @truncate(xfmt), .copy = isCopy(res) };
+    var r: TexRef = .{ .cube = (format >> 2) & 1 != 0, .fmt = @truncate(xfmt), .copy = isCopy(res), .movie = isMovie(data, xfmt) };
     if (data == d3d.resData(backBuffer())) return .{}; // ponytail: sampling the back buffer is not done
     for (rt_keys.items, 1..) |k, i| if (k.data == data and !k.locked) {
         if (size != 0) r.lin = .{ @floatFromInt(dims.w), @floatFromInt(dims.h) }; // linear: texel coordinates
@@ -2161,7 +2176,8 @@ fn drawGl(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_
         // 2D at a screen edge reaches the wide buffer's edge (backgrounds, banners, tiled
         // pictures, fades, letterbox bars); one spanning the width that extend2d cannot
         // edit, or that draws a back buffer copy back (it holds the whole buffer), stretches.
-        if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639)) {
+        // A movie frame stays 4:3 (isMovie).
+        if (p.key.rhw != 0 and target_fbo == fbo and wide() > 1 and (xs[0] <= 0.5 or xs[1] >= 639) and !d.tex[0].movie) {
             const copy = for (d.tex) |t| {
                 if (t.copy or (xs[0] <= 0.5 and xs[1] >= 639 and t.still)) break true;
             } else false;
@@ -2432,6 +2448,10 @@ fn frameDraw(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, 
         .key = 0,
     };
     for (&d.tex, stage_tex) |*r, t| r.* = texRef(t);
+    if (target_rt != 0 and isYuv(d.tex[0].fmt)) {
+        movie_rt = d3d.resData(render_target);
+        movie_frame = gframe;
+    }
     // An offscreen target holds the whole wide view like a back buffer copy when
     // it is drawn from one, or when widened 3D is drawn into it (m027's after-images).
     const rhw = vshader & 1 == 0 and vshader & 0xE == 4;
@@ -3604,11 +3624,15 @@ export fn sub_000F7080() void {
 // rewriting its per-object constants. Draws are replaced here, so the guest
 // pushbuffer holds no draws; record the calls on the host instead and replay
 // them. A replayed draw sees the state as recorded where the recording
-// changed it (against the state at BeginPushBuffer), the live state elsewhere.
+// changed it (against the state at BeginPushBuffer) or set it (a simple render
+// state's method in the guest pushbuffer, even to the value it had), the live
+// state elsewhere.
 
-const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, state: [d3d.STATE_WORDS]u32 };
+const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, set: u32, state: [d3d.STATE_WORDS]u32 };
 const PbOp = union(enum) { vsc: struct { reg: i32, n: u32, va: u32 }, draw: PbDraw };
-const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp) };
+// put: how far the guest pushbuffer has been scanned; set: the simple render
+// states it has set so far (d3d.simpleStatesSet).
+const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp), put: u32 = 0, set: u32 = 0 };
 var pb_recs: std.ArrayList(PbRec) = .empty;
 var rec_cur: ?usize = null;
 
@@ -3625,8 +3649,12 @@ fn recordDraw(ri: usize, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: 
         for (c, 0..) |*v, i| v.* = ix[i];
         break :blk c.ptr;
     } else null;
-    const op = pb_recs.items[ri].ops.addOne(alloc) catch return;
-    op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = own, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .state = undefined } };
+    const r = &pb_recs.items[ri];
+    const put = d3d.mem32(d3d.mem32(d3d.DEVICE_PTR));
+    if (put > r.put) r.set |= d3d.simpleStatesSet(@as([*]align(1) const u32, @ptrCast(d3d.ptr(r.put)))[0 .. (put - r.put) / 4]);
+    r.put = put;
+    const op = r.ops.addOne(alloc) catch return;
+    op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = own, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .set = r.set, .state = undefined } };
     d3d.stateBlock(&op.draw.state);
 }
 
@@ -3639,7 +3667,10 @@ fn replay(r: *const PbRec) void {
     for (r.ops.items) |*op| switch (op.*) {
         .vsc => |c| vscCopy(c.reg, c.n, c.va),
         .draw => |*d| {
-            for (&eff, live, d.state, r.base) |*e, l, s, b| e.* = if (s != b) s else l;
+            for (&eff, live, d.state, r.base, 0..) |*e, l, s, b, i| {
+                const bit = i -% (128 + d3d.simple_first);
+                e.* = if (s != b or (bit < 32 and d.set >> @intCast(bit) & 1 != 0)) s else l;
+            }
             d3d.state_snap = &eff;
             stage_tex = d.tex;
             vshader = d.vs;
@@ -3664,6 +3695,8 @@ export fn sub_000FA990() void {
     for (pb_recs.items[i].ops.items) |op| if (op == .draw) if (op.draw.idx) |ix| alloc.free(@as([*]u16, @ptrCast(@alignCast(@constCast(ix))))[0..op.draw.n]);
     pb_recs.items[i].ops.clearRetainingCapacity();
     d3d.stateBlock(&pb_recs.items[i].base);
+    pb_recs.items[i].put = d3d.mem32(d3d.mem32(d3d.DEVICE_PTR));
+    pb_recs.items[i].set = 0;
     rec_cur = i;
 }
 
