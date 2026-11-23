@@ -89,7 +89,7 @@
 					<div class="col">
 						<div class="card">
 							<h3>Your disc image</h3>
-							<div class="muted small">An ISO of your own Otogi: Myth of Demons (USA) disc.</div>
+							<div class="muted small">An ISO (redump or XISO) of your own Otogi: Myth of Demons (USA) disc, or the folder of its files: pick the default.xbe in it.</div>
 							<div class="gap"></div>
 							<div class="row">
 								<input class="text grow" type="text" id="iso" onchange="iso" placeholder="C:\path\to\otogi.iso"/>

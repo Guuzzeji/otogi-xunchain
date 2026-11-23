@@ -418,12 +418,13 @@ extern "C" void ui_clipboard(const char* text) { sys->SetClipboardText(text); }
 
 extern "C" const char* win_gpu_name() { return gpu_name; }
 
-// File > Open dialog for a disc image; buf gets the UTF-8 path.
+// File > Open dialog for a disc image, or the default.xbe of a folder of the
+// disc's files; buf gets the UTF-8 path.
 extern "C" bool win_pick_iso(char* buf, int len) {
     wchar_t path[MAX_PATH] = L"";
     OPENFILENAMEW ofn = {sizeof(ofn)};
     ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = L"Xbox disc image (*.iso)\0*.iso\0All files\0*.*\0";
+    ofn.lpstrFilter = L"Xbox disc image or default.xbe\0*.iso;default.xbe\0All files\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
