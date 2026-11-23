@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-23
+
 ### Added
 - A launcher, `otogi-xunchain.exe`, replaces `otogi-xunchain-setup.exe`. Besides building
   the game from your disc, it has a Play page, a Settings page that edits every option in
