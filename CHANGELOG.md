@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-23
+
 ### Added
 - The mouse pointer is hidden over the game while a controller is connected. The new setting
   `show_mouse = 1` keeps it shown; the debug menu (F1) shows it either way.
