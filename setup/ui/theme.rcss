@@ -3,11 +3,11 @@
    cream for the game. RmlUi has no default styles: every element used is here. */
 
 @spritesheet title {
-	src: art/title.jpg;
+	src: art/title.png;
 	band: 0px 25px 1024px 385px;
 }
 @spritesheet raikoh {
-	src: art/raikoh.jpg;
+	src: art/raikoh.png;
 	raikoh: 30px 60px 610px 430px;
 }
 @spritesheet brush {

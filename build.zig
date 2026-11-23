@@ -105,12 +105,12 @@ pub fn build(b: *std.Build) void {
         setup_mod.addOptions("build_info", info);
         setup_mod.addAnonymousImport("commit.txt", .{ .root_source_file = commit_txt });
         const setup = b.addExecutable(.{ .name = "otogi-xunchain", .root_module = setup_mod });
-        setup.subsystem = .windows;
+        if (windows) setup.subsystem = .windows;
         setup_step.dependOn(&b.addInstallArtifact(setup, .{}).step);
     }
 
     // setup/logic.zig: the launcher's settings.ini, release notes and versions.
-    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig", "src/pacer.zig", "setup/logic.zig" }) |f| {
+    inline for (.{ "src/xiso.zig", "src/d3d.zig", "src/pad.zig", "src/pacer.zig", "setup/logic.zig", "setup/png.zig" }) |f| {
         const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(f), .target = b.graph.host, .link_libc = true }) });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
@@ -125,13 +125,20 @@ pub fn build(b: *std.Build) void {
     b.step("pe", "Wrap the XBE in a PE32 for REA/Ghidra: zig build pe -- <xbe> <out.exe>").dependOn(&pe.step);
 }
 
-/// The launcher's module: setup/main.zig, its Win32 + D3D11 host (setup/window.cpp),
-/// RmlUi with its Win32 platform and DX11 renderer.
+/// The launcher's module: setup/main.zig and its window. Windows: Win32 + D3D11
+/// (setup/window.cpp), RmlUi's Win32 platform and DX11 renderer. Linux: SDL3 +
+/// GL ES 3 (setup/window_sdl.cpp), its SDL platform and GL3 renderer, as the game's menus.
 fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     const mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
-    addRmlUi(b, mod, &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, "setup/window.cpp", &.{});
-    mod.addWin32ResourceFile(.{ .file = b.path("setup/launcher.rc") }); // the icon
-    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
+    mod.addImport("host", b.createModule(.{ .root_source_file = b.path("src/host.zig"), .target = target }));
+    if (target.result.os.tag == .windows) {
+        addRmlUi(b, mod, &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, "setup/window.cpp", &.{});
+        mod.addWin32ResourceFile(.{ .file = b.path("setup/launcher.rc") }); // the icon
+        for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
+    } else {
+        addRmlUi(b, mod, &.{ "RmlUi_Platform_SDL.cpp", "RmlUi_Renderer_GL3.cpp" }, "setup/window_sdl.cpp", &.{ "-DRMLUI_SDL_VERSION_MAJOR=3", "-DRMLUI_PLATFORM_EMSCRIPTEN" });
+        for ([_][]const u8{ "SDL3", "GLESv2" }) |l| mod.linkSystemLibrary(l, .{});
+    }
     return mod;
 }
 

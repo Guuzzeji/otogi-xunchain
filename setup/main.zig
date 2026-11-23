@@ -8,16 +8,35 @@
 //! Work files go to <out>\build; each finished step leaves a stamp in
 //! <out>\build\.stamps, so a rerun picks up where it stopped. Once a step runs,
 //! every later step runs too.
-//! The window is RmlUi (setup/window.cpp): setup/ui/launcher.rml and theme.rcss,
-//! filled in by id from here.
+//! The window is RmlUi (setup/window.cpp; setup/window_sdl.cpp on Linux):
+//! setup/ui/launcher.rml and theme.rcss, filled in by id from here.
+//! Paths are written with \ and become / on Linux (os()).
 const std = @import("std");
 const Io = std.Io;
 const w32 = std.os.windows;
 const xiso = @import("xiso");
 const logic = @import("logic.zig");
+const png = @import("png.zig");
+const host = @import("host");
+const windows = host.windows;
 
-extern fn ui_init(title: [*:0]const u16, w: c_int, h: c_int) bool;
+/// A path format with \ as written, / off Windows.
+inline fn os(comptime s: []const u8) []const u8 {
+    if (windows) return s;
+    comptime {
+        var o: [s.len]u8 = s[0..s.len].*;
+        std.mem.replaceScalar(u8, &o, '\\', '/');
+        const f = o;
+        return &f;
+    }
+}
+
+/// The game's exe in the install folder.
+const game_exe = if (windows) "otogi.exe" else "otogi";
+
+extern fn ui_init(title: if (windows) [*:0]const u16 else [*:0]const u8, w: c_int, h: c_int) bool;
 extern fn ui_font(path: [*:0]const u8, fallback: bool) bool;
+extern fn ui_font_as(path: [*:0]const u8, family: [*:0]const u8, bold: bool) bool;
 extern fn ui_load(path: [*:0]const u8) bool;
 extern fn ui_frame() bool;
 extern fn ui_set(id: [*:0]const u8, rml: [*:0]const u8) void;
@@ -29,9 +48,11 @@ extern fn win_pick_iso(buf: [*]u8, len: c_int) bool;
 extern fn win_pick_folder(buf: [*]u8, len: c_int) bool;
 extern fn win_open(path: [*:0]const u8) void;
 extern fn win_gpu_name() [*:0]const u8;
-extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
-extern "kernel32" fn SetEnvironmentVariableA(name: [*:0]const u8, value: [*:0]const u8) callconv(.winapi) c_int;
 extern "kernel32" fn GetDiskFreeSpaceExA(dir: [*:0]const u8, avail: *u64, total: ?*u64, free: ?*u64) callconv(.winapi) c_int;
+
+fn GetTickCount64() u64 {
+    return @intFromFloat(host.nowMs());
+}
 
 /// Release-time `git archive` of the repo (build.zig), and its commit.
 const source_zip = @embedFile("source.zip");
@@ -42,8 +63,8 @@ const version = "v" ++ build_info.version ++ " (" ++ commit ++ ")";
 
 /// Where releases are listed; OTOGI_RELEASES_URL overrides it (to test updates).
 const releases_url = "https://api.github.com/repos/Guuzzeji/otogi-xunchain/releases";
-/// The launcher's asset name in each release.
-const asset_name = "otogi-xunchain.exe";
+/// The launcher's asset name in each release, one per OS (.github/workflows/release.yml).
+const asset_name = if (windows) "otogi-xunchain.exe" else "otogi-xunchain-linux-x86_64";
 /// Bug reports go to issues; questions to discussions (setup/ui/launcher.rml).
 const issues_url = "https://github.com/Guuzzeji/otogi-xunchain/issues";
 
@@ -54,20 +75,34 @@ var remembered: []const u8 = "otogi-setup-iso.txt";
 const need_gb = 5;
 
 const Download = struct { url: []const u8, sha256: []const u8, name: []const u8 };
-const zig_dl: Download = .{
+const zig_dir = if (windows) "zig-x86_64-windows-0.17.0" else "zig-x86_64-linux-0.17.0";
+const zig_dl: Download = if (windows) .{
     .url = "https://ziglang.org/download/0.17.0/zig-x86_64-windows-0.17.0.zip",
     .sha256 = "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428",
     .name = "zig-x86_64-windows-0.17.0.zip",
+} else .{
+    .url = "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+    .sha256 = "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026",
+    .name = "zig-x86_64-linux-0.17.0.tar.xz",
 };
-const python_dl: Download = .{
+// Linux: python-build-standalone, a whole Python that runs from its folder.
+const python_dl: Download = if (windows) .{
     .url = "https://www.python.org/ftp/python/3.14.7/python-3.14.7-embed-amd64.zip",
     .sha256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15",
     .name = "python-3.14.7-embed-amd64.zip",
+} else .{
+    .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.14.7%2B20260929-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    .sha256 = "da5357f47b1d9c8d4c439004d463d893ef688a44c27438a62b47073d26d1377e",
+    .name = "cpython-3.14.7-linux-x86_64.tar.gz",
 };
-const capstone_dl: Download = .{
+const capstone_dl: Download = if (windows) .{
     .url = "https://files.pythonhosted.org/packages/50/e6/6f06fdb6a9ed32b2f7cd9c036b92d5324112c3ef7080f2c71efc367d40dd/capstone-5.0.9-py3-none-win_amd64.whl",
     .sha256 = "732cedbbb56d42e723f14d7af6387f1454194a820b4b96b56d1e53f865ef85d0",
     .name = "capstone-5.0.9-py3-none-win_amd64.whl",
+} else .{
+    .url = "https://files.pythonhosted.org/packages/d1/39/17747862222bb062e86b501f1f148d5ff589b77908b080d30f7f085cbfb7/capstone-5.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    .sha256 = "273fd8d747d2e35c88f91450be51a603ecfaafb00d96d9f315dcb8689c86193e",
+    .name = "capstone-5.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
 };
 
 const steps = [_][:0]const u8{ "Check the disc image", "Extract the game files", "Unpack the source code", "Download Zig and libraries", "Download Python and Capstone", "Translate the game code to C", "Compile the game", "Finish" };
@@ -91,10 +126,12 @@ var step_ms: u64 = 0; // when the current step started
 const step_secs = [_]f32{ 1, 20, 1, 30, 2, 230, 240, 1 };
 var step_left: [steps.len]f32 = step_secs;
 
-/// Cancel: the worker stops at the next step; tools die with the job.
+/// Cancel: the worker stops at the next step; tools die with the job (Windows)
+/// or their process group (Linux: the running tool's pid, 0 between tools).
 var cancel = std.atomic.Value(bool).init(false);
 var cancel_armed_at: u64 = 0;
 var job: ?w32.HANDLE = null;
+var tool_pgid = std.atomic.Value(i32).init(0);
 extern "kernel32" fn CreateJobObjectA(sa: ?*anyopaque, name: ?[*:0]const u8) callconv(.winapi) ?w32.HANDLE;
 extern "kernel32" fn SetInformationJobObject(job: w32.HANDLE, class: c_int, info: *const anyopaque, len: u32) callconv(.winapi) c_int;
 extern "kernel32" fn AssignProcessToJobObject(job: w32.HANDLE, process: w32.HANDLE) callconv(.winapi) c_int;
@@ -103,6 +140,8 @@ extern "kernel32" fn TerminateJobObject(job: w32.HANDLE, code: u32) callconv(.wi
 /// Tools and everything they start live in one job. KILL_ON_JOB_CLOSE: when
 /// the launcher exits (or is closed mid-build) they all die with it.
 fn makeJob() void {
+    // ponytail: on Linux, tools outlive a launcher closed mid-build; PR_SET_PDEATHSIG if that bites.
+    if (!windows) return;
     job = CreateJobObjectA(null, null);
     var info: [144]u8 = @splat(0); // JOBOBJECT_EXTENDED_LIMIT_INFORMATION
     std.mem.writeInt(u32, info[16..20], 0x2000, .little); // BasicLimitInformation.LimitFlags = KILL_ON_JOB_CLOSE
@@ -143,7 +182,7 @@ fn estimateFromStamps(io: Io) f32 {
 
 fn hasStamp(io: Io, name: []const u8) bool {
     var p: [1200]u8 = undefined;
-    const stamp = std.fmt.bufPrint(&p, "{s}\\build\\.stamps\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+    const stamp = std.fmt.bufPrint(&p, os("{s}\\build\\.stamps\\{s}"), .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
     return if (Io.Dir.cwd().access(io, stamp, .{})) |_| true else |_| false;
 }
 
@@ -156,13 +195,40 @@ fn slowFactor(name: []const u8) f32 {
 // launcher looks like the game before any disc is picked; an OFL font
 // (Shippori Mincho B1 Bold, subset) for headings.
 const embedded = .{
-    .{ "launcher.rml", @embedFile("ui/launcher.rml") },
+    .{ "launcher.rml", icons(@embedFile("ui/launcher.rml")) },
     .{ "theme.rcss", @embedFile("ui/theme.rcss") },
-    .{ "art/title.jpg", @embedFile("assets/art/title.jpg") },
-    .{ "art/raikoh.jpg", @embedFile("assets/art/raikoh.jpg") },
+    .{ "art/title.png", @embedFile("assets/art/title.png") },
+    .{ "art/raikoh.png", @embedFile("assets/art/raikoh.png") },
     .{ "art/brush.png", @embedFile("assets/art/brush.png") },
     .{ "ShipporiMinchoB1-Bold.ttf", @embedFile("assets/ShipporiMinchoB1-Bold.ttf") },
 };
+
+/// The page's icons are Segoe MDL2 Assets code points (Windows only, not ours
+/// to ship). On Linux: Unicode symbols, drawn by a system font that has them all
+/// (fontconfig, under the MDL2 family name; see main).
+const icon_map = .{
+    .{ "&#xE921;", "&#x2500;" }, .{ "&#xE922;", "&#x25A1;" }, .{ "&#xE8BB;", "&#x2715;" }, // minimize, maximize, close
+    .{ "&#xE768;", "&#x25B6;" }, .{ "&#xE896;", "&#x2193;" }, .{ "&#xE713;", "&#x2699;" }, // play, install, settings
+    .{ "&#xE74E;", "&#x25A3;" }, .{ "&#xE789;", "&#x2605;" }, .{ "&#xE897;", "?" }, // saves, what's new, help
+    .{ "&#xEBE8;", "&#x2691;" }, .{ "&#xE8BD;", "&#x2709;" }, .{ "&#xE7FC;", "&#x25C6;" }, // bug, question, game save
+    .{ "&#xE707;", "&#x25C7;" }, .{ "&#xE70E;", "&#x25B4;" }, // stage data, version menu
+};
+const icon_charset = "2500 25a1 2715 25b6 2193 2699 25a3 2605 2691 2709 25c6 25c7 25b4";
+
+fn icons(comptime s: []const u8) []const u8 {
+    if (windows) return s;
+    comptime {
+        @setEvalBranchQuota(10_000_000);
+        var o: []const u8 = s;
+        for (icon_map) |m| {
+            var buf: [o.len]u8 = undefined;
+            const n = std.mem.replace(u8, o, m[0], m[1], &buf);
+            const f = buf[0 .. o.len - n * (m[0].len - m[1].len)].*;
+            o = &f;
+        }
+        return o;
+    }
+}
 
 export fn ui_file(path: [*:0]const u8, len: *usize) ?[*]const u8 {
     const p = std.mem.span(path);
@@ -171,6 +237,16 @@ export fn ui_file(path: [*:0]const u8, len: *usize) ?[*]const u8 {
         return e[1].ptr;
     };
     return null;
+}
+
+/// window_sdl.cpp (Linux): an embedded PNG as premultiplied RGBA, freed with free().
+export fn ui_png(path: [*:0]const u8, w: *c_int, h: *c_int) ?[*]u8 {
+    var len: usize = 0;
+    const data = ui_file(path, &len) orelse return null;
+    const img = png.decode(std.heap.c_allocator, data[0..len]) catch return null;
+    w.* = @intCast(img.w);
+    h.* = @intCast(img.h);
+    return img.px.ptr;
 }
 
 /// Commands from on* attributes (onclick="page" value="saves"). Queued: they
@@ -216,19 +292,30 @@ pub fn main(init: std.process.Init) !void {
     const n = std.process.executableDirPath(io, &exe_dir) catch 0;
     // In the install folder (beside otogi.exe or game\), that is the folder;
     // anywhere else, a new Otogi folder beside the launcher.
-    const here = for ([_][]const u8{ "otogi.exe", "game\\default.xbe", "build\\.stamps" }) |f| {
+    const here = for ([_][]const u8{ game_exe, os("game\\default.xbe"), os("build\\.stamps") }) |f| {
         var p: [1100]u8 = undefined;
-        if (Io.Dir.cwd().access(io, std.fmt.bufPrint(&p, "{s}\\{s}", .{ exe_dir[0..n], f }) catch continue, .{})) |_| break true else |_| {}
+        if (Io.Dir.cwd().access(io, std.fmt.bufPrint(&p, os("{s}\\{s}"), .{ exe_dir[0..n], f }) catch continue, .{})) |_| break true else |_| {}
     } else false;
-    _ = std.fmt.bufPrintSentinel(&out_buf, "{s}{s}", .{ exe_dir[0..n], if (here) "" else "\\Otogi" }, 0) catch {};
-    remembered = std.fmt.bufPrint(&remembered_buf, "{s}\\otogi-setup-iso.txt", .{exe_dir[0..n]}) catch remembered;
+    _ = std.fmt.bufPrintSentinel(&out_buf, "{s}{s}", .{ exe_dir[0..n], if (here) "" else os("\\Otogi") }, 0) catch {};
+    remembered = std.fmt.bufPrint(&remembered_buf, os("{s}\\otogi-setup-iso.txt"), .{exe_dir[0..n]}) catch remembered;
     deleteOldSelf(io);
 
-    if (!ui_init(std.unicode.utf8ToUtf16LeStringLiteral("Otogi XUnchain"), 1280, 860)) return error.NoWindow;
-    const windir = std.mem.span(std.c.getenv("WINDIR") orelse "C:\\Windows");
-    for ([_][]const u8{ "segoeui.ttf", "segoeuib.ttf", "consola.ttf", "segmdl2.ttf", "seguiemj.ttf" }) |f| {
-        var p: [300]u8 = undefined;
-        _ = ui_font(z(&p, "{s}\\Fonts\\{s}", .{ windir, f }), std.mem.eql(u8, f, "seguiemj.ttf")); // emoji in release notes
+    if (!ui_init(if (windows) std.unicode.utf8ToUtf16LeStringLiteral("Otogi XUnchain") else "Otogi XUnchain", 1280, 860)) return error.NoWindow;
+    if (windows) {
+        const windir = std.mem.span(std.c.getenv("WINDIR") orelse "C:\\Windows");
+        for ([_][]const u8{ "segoeui.ttf", "segoeuib.ttf", "consola.ttf", "segmdl2.ttf", "seguiemj.ttf" }) |f| {
+            var p: [300]u8 = undefined;
+            _ = ui_font(z(&p, "{s}\\Fonts\\{s}", .{ windir, f }), std.mem.eql(u8, f, "seguiemj.ttf")); // emoji in release notes
+        }
+    } else for ([_]struct { [*:0]const u8, [*:0]const u8, bool }{
+        // The system's sans and mono under the theme's names; the icons from a font that has them.
+        .{ "sans-serif", "Segoe UI", false },
+        .{ "sans-serif:bold", "Segoe UI", true },
+        .{ "monospace", "Consolas", false },
+        .{ ":charset=" ++ icon_charset, "Segoe MDL2 Assets", false },
+    }) |q| {
+        var p: [512]u8 = undefined;
+        _ = ui_font_as(host.fcMatch(q[0], &p) orelse continue, q[1], q[2]);
     }
     _ = ui_font("ShipporiMinchoB1-Bold.ttf", true); // also the fallback for 御伽
     if (!ui_load("launcher.rml")) return error.NoPage;
@@ -244,7 +331,7 @@ pub fn main(init: std.process.Init) !void {
         u.findIso(exe_dir[0..n]);
         for (stamp_names) |s| if (s.len != 0 and !std.mem.eql(u8, s, "extract")) {
             var p: [1200]u8 = undefined;
-            Io.Dir.cwd().deleteFile(io, std.fmt.bufPrint(&p, "{s}\\build\\.stamps\\{s}", .{ args[2], s }) catch continue) catch {};
+            Io.Dir.cwd().deleteFile(io, std.fmt.bufPrint(&p, os("{s}\\build\\.stamps\\{s}"), .{ args[2], s }) catch continue) catch {};
         };
         u.page = .install;
         u.start();
@@ -323,8 +410,8 @@ const Ui = struct {
         defer dir.close(u.io);
         var it = dir.iterate();
         while (it.next(u.io) catch null) |e| {
-            if (e.kind != .file or !std.ascii.endsWithIgnoreCase(e.name, ".iso")) continue;
-            _ = std.fmt.bufPrintSentinel(&iso_buf, "{s}\\{s}", .{ exe_dir, e.name }, 0) catch continue;
+            if ((e.kind != .file and e.kind != .sym_link) or !std.ascii.endsWithIgnoreCase(e.name, ".iso")) continue;
+            _ = std.fmt.bufPrintSentinel(&iso_buf, os("{s}\\{s}"), .{ exe_dir, e.name }, 0) catch continue;
             u.checkIso();
             if (u.usable()) return;
         }
@@ -376,7 +463,7 @@ const Ui = struct {
     /// What the disk says: built, extracted, free space, settings.
     fn refresh(u: *Ui) void {
         u.refreshed_at = GetTickCount64();
-        u.built = hasFile(u.io, "otogi.exe");
+        u.built = hasFile(u.io, game_exe);
         u.extracted = hasStamp(u.io, "extract");
         u.free_gb = freeGb();
         u.loadSettings();
@@ -399,7 +486,7 @@ const Ui = struct {
             if (u.ver_open) return u.handle("ver-menu", "");
             u.page = .play;
         } else if (eql(u8, cmd, "play-main")) {
-            if (u.built and !busy) openOut("otogi.exe") else u.page = .install;
+            if (u.built and !busy) u.play() else u.page = .install;
         } else if (eql(u8, cmd, "iso") and !busy) {
             _ = std.fmt.bufPrintSentinel(&iso_buf, "{s}", .{val}, 0) catch return;
             u.checkIso();
@@ -410,7 +497,7 @@ const Ui = struct {
             u.refresh();
         } else if (eql(u8, cmd, "pick-out") and !busy) {
             var pick: [1024:0]u8 = @splat(0);
-            if (win_pick_folder(&pick, pick.len)) _ = std.fmt.bufPrintSentinel(&out_buf, "{s}\\Otogi", .{std.mem.sliceTo(&pick, 0)}, 0) catch {};
+            if (win_pick_folder(&pick, pick.len)) _ = std.fmt.bufPrintSentinel(&out_buf, os("{s}\\Otogi"), .{std.mem.sliceTo(&pick, 0)}, 0) catch {};
             u.refresh();
         } else if (eql(u8, cmd, "build")) {
             const now = GetTickCount64();
@@ -427,7 +514,7 @@ const Ui = struct {
             u.say(if (u.copyLog(u.helpLogName())) "Log copied." else "There is no log to copy yet.");
         } else if (eql(u8, cmd, "log-open")) {
             var p: [1100:0]u8 = undefined;
-            win_open(z(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }));
+            win_open(z(&p, os("{s}\\{s}"), .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }));
         } else if (eql(u8, cmd, "report")) {
             // From a failed build: its log; from Help: the log on show.
             u.report(if (eql(u8, val, "build")) "setup.log" else u.helpLogName());
@@ -591,8 +678,8 @@ const Ui = struct {
     /// its tail. False if there is none.
     fn copyLog(u: *Ui, name: []const u8) bool {
         var p: [1100]u8 = undefined;
-        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
-        const text = Io.Dir.cwd().readFileAllocOptions(u.io, path, u.gpa, .limited(64 << 20), .of(u8), 0) catch return false;
+        const path = std.fmt.bufPrint(&p, os("{s}\\{s}"), .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+        const text =Io.Dir.cwd().readFileAllocOptions(u.io, path, u.gpa, .limited(64 << 20), .of(u8), 0) catch return false;
         defer u.gpa.free(text);
         ui_clipboard(text.ptr);
         return true;
@@ -608,7 +695,7 @@ const Ui = struct {
         ui_class("log-game", "on", u.help_log == .game);
         ui_class("log-build", "on", u.help_log == .build);
         var p: [1100]u8 = undefined;
-        const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }) catch return;
+        const path = std.fmt.bufPrint(&p, os("{s}\\{s}"), .{ std.mem.sliceTo(&out_buf, 0), u.helpLogName() }) catch return;
         set("help-log-path", "{f}", .{esc(path)});
         const f = Io.Dir.cwd().openFile(u.io, path, .{}) catch {
             set("help-log-info", "", .{});
@@ -648,7 +735,7 @@ const Ui = struct {
     /// Show the tail of <out>\setup.log (ours and the tools' output).
     fn tailLog(u: *Ui) void {
         var path: [1100]u8 = undefined;
-        const p = std.fmt.bufPrint(&path, "{s}\\setup.log", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
+        const p = std.fmt.bufPrint(&path, os("{s}\\setup.log"), .{std.mem.sliceTo(&out_buf, 0)}) catch return;
         const f = Io.Dir.cwd().openFile(u.io, p, .{}) catch return u.drawLog();
         defer f.close(u.io);
         var buf: [64 * 1024]u8 = undefined;
@@ -672,7 +759,7 @@ const Ui = struct {
         _ = u.ini_arena.reset(.retain_capacity);
         const a = u.ini_arena.allocator();
         var p: [1100]u8 = undefined;
-        const path = std.fmt.bufPrint(&p, "{s}\\settings.ini", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
+        const path = std.fmt.bufPrint(&p, os("{s}\\settings.ini"), .{std.mem.sliceTo(&out_buf, 0)}) catch return;
         set("settings-path", "{f}", .{esc(path)});
         u.ini = Io.Dir.cwd().readFileAlloc(u.io, path, a, .limited(64 * 1024)) catch {
             u.ini = &.{};
@@ -705,7 +792,7 @@ const Ui = struct {
         const new = logic.withValue(u.gpa, u.ini, key, value) catch return;
         defer u.gpa.free(new);
         var p: [1100]u8 = undefined;
-        const path = std.fmt.bufPrint(&p, "{s}\\settings.ini", .{std.mem.sliceTo(&out_buf, 0)}) catch return;
+        const path = std.fmt.bufPrint(&p, os("{s}\\settings.ini"), .{std.mem.sliceTo(&out_buf, 0)}) catch return;
         Io.Dir.cwd().writeFile(u.io, .{ .sub_path = path, .data = new }) catch return u.say("Could not write settings.ini.");
         u.loadSettings();
         u.say("Saved. Takes effect the next time the game starts.");
@@ -720,7 +807,7 @@ const Ui = struct {
         set("saves-path", "{f}", .{esc(root)});
         const Save = struct { name: []const u8, game: bool, mtime: i96, size: u64 };
         var saves: std.ArrayList(Save) = .empty;
-        const udata = std.fmt.allocPrint(a, "{s}\\UDATA\\" ++ title_id, .{root}) catch return;
+        const udata = std.fmt.allocPrint(a, os("{s}\\UDATA\\") ++ title_id, .{root}) catch return;
         if (Io.Dir.cwd().openDir(u.io, udata, .{ .iterate = true })) |d| {
             var dir = d;
             defer dir.close(u.io);
@@ -777,9 +864,9 @@ const Ui = struct {
         var src: [700]u8 = undefined;
         var dst: [1200]u8 = undefined;
         var d: [16]u8 = undefined;
-        const from = std.fmt.bufPrint(&src, "{s}\\UDATA", .{saveDir(&p)}) catch return;
+        const from = std.fmt.bufPrint(&src, os("{s}\\UDATA"), .{saveDir(&p)}) catch return;
         const now: i96 = @intCast(std.Io.Clock.real.now(u.io).nanoseconds);
-        const to = std.fmt.bufPrint(&dst, "{s}\\Otogi saves {s}\\UDATA", .{ std.mem.sliceTo(&pick, 0), date(&d, now) }) catch return;
+        const to = std.fmt.bufPrint(&dst, os("{s}\\Otogi saves {s}\\UDATA"), .{ std.mem.sliceTo(&pick, 0), date(&d, now) }) catch return;
         copyTree(u.io, u.gpa, from, to) catch return u.say("Back up failed: could not copy the saves.");
         win_open(z(&p, "{s}", .{std.fs.path.dirname(to).?}));
         u.say("Saves backed up.");
@@ -887,6 +974,16 @@ const Ui = struct {
         }
     }
 
+    /// The game, from its folder (it reads game/ from there). Windows: as
+    /// Explorer would open it.
+    fn play(u: *Ui) void {
+        if (windows) return openOut(game_exe);
+        var p: [1100]u8 = undefined;
+        const out = std.mem.sliceTo(&out_buf, 0);
+        _ = std.process.spawn(u.io, .{ .argv = &.{std.fmt.bufPrint(&p, "{s}/" ++ game_exe, .{out}) catch return}, .cwd = .{ .path = out }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore }) catch
+            u.say("Could not start the game.");
+    }
+
     /// After a downloaded update: run the new launcher to rebuild, and quit.
     fn relaunch(u: *Ui) !void {
         var p: [1100]u8 = undefined;
@@ -902,15 +999,21 @@ const knownSetting = logic.knownSetting;
 var modes: [10][12:0]u8 = undefined;
 var modes_len: usize = 0;
 extern "user32" fn EnumDisplaySettingsW(device: ?[*:0]const u16, mode: u32, dm: *[220]u8) callconv(.winapi) i32;
+extern fn win_modes(wh: *[256]c_int, max: c_int) c_int; // window_sdl.cpp
 
 fn listModes() void {
     var all: [128][2]u32 = undefined;
     var n: usize = 0;
     var dm: [220]u8 = @splat(0); // DEVMODEW
     std.mem.writeInt(u16, dm[68..70], dm.len, .little); // dmSize
+    var sdl: [256]c_int = undefined;
+    const sdl_n: u32 = if (windows) 0 else @intCast(win_modes(&sdl, 128));
     var i: u32 = 0;
-    while (EnumDisplaySettingsW(null, i, &dm) != 0) : (i += 1) {
-        const wh: [2]u32 = .{ std.mem.readInt(u32, dm[172..176], .little), std.mem.readInt(u32, dm[176..180], .little) }; // dmPelsWidth, dmPelsHeight
+    while (if (windows) EnumDisplaySettingsW(null, i, &dm) != 0 else i < sdl_n) : (i += 1) {
+        const wh: [2]u32 = if (windows)
+            .{ std.mem.readInt(u32, dm[172..176], .little), std.mem.readInt(u32, dm[176..180], .little) } // dmPelsWidth, dmPelsHeight
+        else
+            .{ @intCast(sdl[2 * i]), @intCast(sdl[2 * i + 1]) };
         if (wh[0] < 1280 or wh[1] < 720 or n == all.len) continue;
         if (for (all[0..n]) |x| (if (x[0] == wh[0] and x[1] == wh[1]) break true) else false) continue; // one per refresh rate and depth
         all[n] = wh;
@@ -929,9 +1032,12 @@ fn listModes() void {
 
 const title_id = "46530002";
 
-/// %LOCALAPPDATA%\Otogi, where otogi.exe keeps its memory unit (src/main.zig).
+/// Where the game keeps its memory unit (src/main.zig): %LOCALAPPDATA%\Otogi,
+/// on Linux $XDG_DATA_HOME/Otogi (~/.local/share/Otogi).
 fn saveDir(buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}) catch ".";
+    if (windows) return std.fmt.bufPrint(buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}) catch ".";
+    if (std.c.getenv("XDG_DATA_HOME")) |x| return std.fmt.bufPrint(buf, "{s}/Otogi", .{std.mem.span(x)}) catch ".";
+    return std.fmt.bufPrint(buf, "{s}/.local/share/Otogi", .{std.mem.span(std.c.getenv("HOME") orelse ".")}) catch ".";
 }
 
 /// SaveMeta.xbx is UTF-16 "Name=OTOGI01 LV02 00:02\r\n...".
@@ -991,24 +1097,35 @@ fn copyTree(io: Io, gpa: std.mem.Allocator, from: []const u8, to: []const u8) !v
 
 fn hasFile(io: Io, name: []const u8) bool {
     var p: [1100]u8 = undefined;
-    const path = std.fmt.bufPrint(&p, "{s}\\{s}", .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
+    const path = std.fmt.bufPrint(&p, os("{s}\\{s}"), .{ std.mem.sliceTo(&out_buf, 0), name }) catch return false;
     return if (Io.Dir.cwd().access(io, path, .{})) |_| true else |_| false;
 }
 
 fn openOut(comptime name: []const u8) void {
     var p: [1100:0]u8 = undefined;
-    win_open(std.fmt.bufPrintSentinel(&p, "{s}\\" ++ name, .{std.mem.sliceTo(&out_buf, 0)}, 0) catch return);
+    win_open(std.fmt.bufPrintSentinel(&p, os("{s}\\") ++ name, .{std.mem.sliceTo(&out_buf, 0)}, 0) catch return);
 }
 
 /// Free space on the install folder's drive, in GB.
 fn freeGb() ?u64 {
     const out = std.mem.sliceTo(&out_buf, 0);
+    if (!windows) {
+        // The nearest folder that exists: the install folder may not yet.
+        var p: [1024:0]u8 = undefined;
+        var dir: ?[]const u8 = out;
+        while (dir) |d| : (dir = std.fs.path.dirname(d)) {
+            var st: [14]u64 = undefined; // struct statvfs: f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, ...
+            if (statvfs(std.fmt.bufPrintSentinel(&p, "{s}", .{d}, 0) catch return null, &st) == 0) return st[4] * st[1] >> 30;
+        }
+        return null;
+    }
     if (out.len < 3 or out[1] != ':') return null;
     const root: [3:0]u8 = .{ out[0], ':', '\\' };
     var avail: u64 = 0;
     if (GetDiskFreeSpaceExA(&root, &avail, null, null) == 0) return null;
     return avail >> 30;
 }
+extern "c" fn statvfs(path: [*:0]const u8, buf: *[14]u64) c_int;
 
 // ── GitHub releases (a thread at startup) and the update download ──────────
 const Release = struct {
@@ -1102,8 +1219,10 @@ fn swapIn(io: Io, gpa: std.mem.Allocator) !bool {
     {
         const f = try Io.Dir.cwd().openFile(io, new, .{});
         defer f.close(io);
-        var head: [2]u8 = undefined;
-        if (try f.readPositionalAll(io, &head, 0) != 2 or !std.mem.eql(u8, &head, "MZ")) return false; // not an exe
+        const magic = if (windows) "MZ" else "\x7fELF";
+        var head: [magic.len]u8 = undefined;
+        if (try f.readPositionalAll(io, &head, 0) != magic.len or !std.mem.eql(u8, &head, magic)) return false; // not an exe
+        if (!windows) try f.setPermissions(io, .executable_file);
     }
     Io.Dir.cwd().deleteFile(io, old) catch {};
     try move(gpa, exe, old);
@@ -1119,7 +1238,15 @@ extern "kernel32" fn MoveFileExW(from: [*:0]const u16, to: [*:0]const u16, flags
 /// A rename that works on the running exe: Zig's Dir.rename opens the file in a
 /// way Windows refuses for a loaded image (FileBusy); MoveFileEx does not.
 fn move(gpa: std.mem.Allocator, from: []const u8, to: []const u8) !void {
-    const a = try std.unicode.utf8ToUtf16LeAllocZ(gpa, from);
+    if (!windows) {
+        const a = try gpa.dupeSentinel(u8, from, 0);
+        defer gpa.free(a);
+        const b = try gpa.dupeSentinel(u8, to, 0);
+        defer gpa.free(b);
+        if (std.c.rename(a, b) != 0) return error.RenameFailed;
+        return;
+    }
+    const a =try std.unicode.utf8ToUtf16LeAllocZ(gpa, from);
     defer gpa.free(a);
     const b = try std.unicode.utf8ToUtf16LeAllocZ(gpa, to);
     defer gpa.free(b);
@@ -1152,7 +1279,7 @@ fn discFolder(io: Io, path: []const u8) ?[]const u8 {
 /// default.xbe from a disc image (redump or XISO) or a folder of the disc's files.
 fn readXbe(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     if (discFolder(io, path)) |dir| {
-        const p = try std.fmt.allocPrint(gpa, "{s}\\default.xbe", .{dir});
+        const p = try std.fmt.allocPrint(gpa, os("{s}\\default.xbe"), .{dir});
         defer gpa.free(p);
         return Io.Dir.cwd().readFileAlloc(io, p, gpa, .limited(64 << 20));
     }
@@ -1187,7 +1314,7 @@ const Ctx = struct {
     }
 
     fn path(c: *Ctx, comptime f: []const u8, args: anytype) []const u8 {
-        return std.fmt.allocPrint(c.gpa, f, args) catch @panic("OOM");
+        return std.fmt.allocPrint(c.gpa, os(f), args) catch @panic("OOM");
     }
 
     fn done(c: *Ctx, name: []const u8) bool {
@@ -1218,8 +1345,12 @@ const Ctx = struct {
         // Both streams copied to the log here. Given the log file itself (.file),
         // Zig reopens it by name: the tool then writes from offset 0 over the log.
         if (cancel.load(.acquire)) return error.Cancelled;
-        var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe, .create_no_window = true });
-        if (job) |j| _ = AssignProcessToJobObject(j, child.id.?);
+        var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe, .create_no_window = true, .pgid = if (windows) null else 0 });
+        if (windows) {
+            if (job) |j| _ = AssignProcessToJobObject(j, child.id.?);
+        }
+        if (!windows) tool_pgid.store(child.id.?, .release); // its own group: Stop kills it and what it started
+        defer tool_pgid.store(0, .release);
         const err_thread = try std.Thread.spawn(.{}, Ctx.drain, .{ c, child.stderr.? });
         c.drain(child.stdout.?);
         err_thread.join();
@@ -1237,9 +1368,9 @@ fn worker(io: Io, gpa: std.mem.Allocator) void {
     step_at.store(0, .release);
     const out = std.mem.sliceTo(&out_buf, 0);
     Io.Dir.cwd().createDirPath(io, out) catch {};
-    const log = Io.Dir.cwd().createFile(io, std.fmt.allocPrint(gpa, "{s}\\setup.log", .{out}) catch return, .{}) catch |e| return fail("cannot write to the output folder: {t}", .{e});
+    const log = Io.Dir.cwd().createFile(io, std.fmt.allocPrint(gpa, os("{s}\\setup.log"), .{out}) catch return, .{}) catch |e| return fail("cannot write to the output folder: {t}", .{e});
     defer log.close(io);
-    var c: Ctx = .{ .io = io, .gpa = gpa, .out = out, .work = std.fmt.allocPrint(gpa, "{s}\\build", .{out}) catch return, .log = log };
+    var c: Ctx = .{ .io = io, .gpa = gpa, .out = out, .work = std.fmt.allocPrint(gpa, os("{s}\\build"), .{out}) catch return, .log = log };
     Io.Dir.cwd().createDirPath(io, c.path("{s}\\.stamps", .{c.work})) catch {};
     defer finished_ms = GetTickCount64();
     systemInfo(&c);
@@ -1254,7 +1385,7 @@ fn worker(io: Io, gpa: std.mem.Allocator) void {
         if (at == 3 or at == 4) fail("Could not download the build tools ({t}). Check your internet connection and try again.", .{e}) else fail("{s}: {t}", .{ steps[at], e });
         return;
     };
-    c.say("Done: {s}\\otogi.exe", .{out});
+    c.say(os("Done: {s}\\") ++ game_exe, .{out});
     result = .ok;
 }
 
@@ -1262,7 +1393,13 @@ fn worker(io: Io, gpa: std.mem.Allocator) void {
 /// next step boundary. In-process steps (extract, downloads) finish first.
 fn stopBuild() void {
     cancel.store(true, .release);
-    if (job) |j| _ = TerminateJobObject(j, 1);
+    if (windows) {
+        if (job) |j| _ = TerminateJobObject(j, 1);
+    }
+    if (!windows) {
+        const pg = tool_pgid.load(.acquire);
+        if (pg > 0) _ = std.c.kill(-pg, .KILL);
+    }
 }
 
 fn fail(comptime f: []const u8, args: anytype) void {
@@ -1290,12 +1427,29 @@ fn systemInfo(c: *Ctx) void {
 
 /// "Windows 10.0 build 26200; CPU ...; 31 GB RAM; GPU ...": for setup.log and bug reports.
 fn machine(buf: []u8) []const u8 {
+    if (!windows) {
+        var k: [256]u8 = undefined;
+        var d: [4096]u8 = undefined;
+        var cpu: [4096]u8 = undefined;
+        return std.fmt.bufPrint(buf, "Linux {s} ({s}); CPU {s}; {d} GB RAM; GPU {s}", .{ sysField("/proc/sys/kernel/osrelease", "", &k), sysField("/etc/os-release", "PRETTY_NAME=", &d), sysField("/proc/cpuinfo", "model name", &cpu), ram_gb, std.mem.span(win_gpu_name()) }) catch "";
+    }
     var v: OsVersion = .{};
     _ = RtlGetVersion(&v);
     var cpu: [128]u8 = @splat(0);
     var cpu_len: u32 = cpu.len;
     _ = RegGetValueA(0x80000002, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString", 0x2, null, &cpu, &cpu_len); // HKLM, RRF_RT_REG_SZ
     return std.fmt.bufPrint(buf, "Windows {d}.{d} build {d}; CPU {s}; {d} GB RAM; GPU {s}", .{ v.major, v.minor, v.build, std.mem.trim(u8, std.mem.sliceTo(&cpu, 0), " "), ram_gb, std.mem.span(win_gpu_name()) }) catch "";
+}
+
+/// The rest of the first line starting with `key` in a small system file, or "".
+fn sysField(path: [*:0]const u8, key: []const u8, buf: []u8) []const u8 {
+    const fd = std.c.open(path, .{});
+    if (fd < 0) return "";
+    defer _ = std.c.close(fd);
+    const n = std.c.read(fd, buf.ptr, buf.len);
+    var lines = std.mem.splitScalar(u8, buf[0..@intCast(@max(n, 0))], '\n');
+    while (lines.next()) |l| if (std.mem.startsWith(u8, l, key)) return std.mem.trim(u8, l[key.len..], " \t:=\"");
+    return "";
 }
 
 const OsVersion = extern struct { size: u32 = @sizeOf(OsVersion), major: u32 = 0, minor: u32 = 0, build: u32 = 0, platform: u32 = 0, csd: [128]u16 = @splat(0) };
@@ -1309,6 +1463,14 @@ fn pipeline(c: *Ctx) !void {
     // Once game\ is extracted the disc is not needed again (an update rebuilds
     // without it).
     try next(c, 0);
+    // Linux: the game links the system's SDL3, EGL and GL ES (build.zig); without
+    // their headers the compile fails, so say it now, not after the lift.
+    if (!windows) for ([_][]const u8{ "/usr/include/SDL3/SDL.h", "/usr/include/EGL/egl.h", "/usr/include/GLES3/gl3.h" }) |h| {
+        cwd.access(io, h, .{}) catch {
+            fail("{s} is missing: install the SDL3, EGL and GL ES dev packages first (Ubuntu: sudo apt install libsdl3-dev libegl-dev libgles-dev), see the README.", .{h});
+            return error.MissingLibraries;
+        };
+    };
     const iso_path = std.mem.sliceTo(&iso_buf, 0);
     const extracted = if (cwd.access(io, c.path("{s}\\.stamps\\extract", .{c.work}), .{})) |_| true else |_| false;
     var restored: ?[]u8 = null; // default.xbe with the media patch undone
@@ -1323,7 +1485,7 @@ fn pipeline(c: *Ctx) !void {
         switch (logic.checkXbe(data)) {
             .match => {},
             .media_patched => {
-                c.say("default.xbe has extract-xiso's media patch; game\\default.xbe gets the original byte back", .{});
+                c.say(os("default.xbe has extract-xiso's media patch; game\\default.xbe gets the original byte back"), .{});
                 restored = data;
             },
             .other_dump => c.say("WARNING: default.xbe is Otogi (USA) but not the known dump (SHA-1 {s}); building anyway", .{logic.xbe_sha1}),
@@ -1363,12 +1525,13 @@ fn pipeline(c: *Ctx) !void {
 
     // Zig's cache (packages too) stays in the build folder; zig build has
     // no flag for it, the child inherits this.
-    _ = SetEnvironmentVariableA("ZIG_GLOBAL_CACHE_DIR", (std.fmt.allocPrintSentinel(c.gpa, "{s}\\zig-cache", .{c.work}, 0) catch unreachable).ptr);
+    host.setEnv("ZIG_GLOBAL_CACHE_DIR", (std.fmt.allocPrintSentinel(c.gpa, os("{s}\\zig-cache"), .{c.work}, 0) catch unreachable).ptr);
 
     try next(c, 3);
-    const zig = c.path("{s}\\tools\\zig-x86_64-windows-0.17.0\\zig.exe", .{c.work});
+    const tools = c.path("{s}\\tools", .{c.work});
+    const zig = c.path("{s}\\" ++ zig_dir ++ (if (windows) "\\zig.exe" else "\\zig"), .{tools});
     if (!c.done("zig")) {
-        try unzipFile(c, try fetch(c, zig_dl), c.path("{s}\\tools", .{c.work}));
+        if (windows) try unzipFile(c, try fetch(c, zig_dl), tools) else try untar(c, try fetch(c, zig_dl), tools, zig_dir);
         // build.zig.zon's packages (ANGLE, SDL3, RmlUi, FreeType) now, not minutes later
         // in the compile: a network failure should cost seconds.
         var attempt: u32 = 1;
@@ -1383,12 +1546,18 @@ fn pipeline(c: *Ctx) !void {
 
     try next(c, 4);
     const py_dir = c.path("{s}\\tools\\python", .{c.work});
-    const python = c.path("{s}\\python.exe", .{py_dir});
+    const python = c.path(if (windows) "{s}\\python.exe" else "{s}\\bin\\python3", .{py_dir});
     if (!c.done("python")) {
-        try unzipFile(c, try fetch(c, python_dl), py_dir);
-        try unzipFile(c, try fetch(c, capstone_dl), c.path("{s}\\Lib\\site-packages", .{py_dir}));
-        // Embeddable Python reads its whole sys.path from this file.
-        try cwd.writeFile(io, .{ .sub_path = c.path("{s}\\python314._pth", .{py_dir}), .data = c.path("python314.zip\n.\nLib\\site-packages\n{s}\\xboxrecomp\n", .{c.work}) });
+        if (windows) {
+            try unzipFile(c, try fetch(c, python_dl), py_dir);
+            try unzipFile(c, try fetch(c, capstone_dl), c.path("{s}\\Lib\\site-packages", .{py_dir}));
+            // Embeddable Python reads its whole sys.path from this file.
+            try cwd.writeFile(io, .{ .sub_path = c.path("{s}\\python314._pth", .{py_dir}), .data = c.path("python314.zip\n.\nLib\\site-packages\n{s}\\xboxrecomp\n", .{c.work}) });
+        } else {
+            // A whole Python (its folder is "python"); -m finds the toolkit from the working folder.
+            try untar(c, try fetch(c, python_dl), tools, "python");
+            try unzipFile(c, try fetch(c, capstone_dl), c.path("{s}\\lib\\python3.14\\site-packages", .{py_dir}));
+        }
         c.stamp("python");
     }
 
@@ -1428,8 +1597,6 @@ fn installSelf(c: *Ctx) void {
     c.say("launcher copied to {s}", .{dest});
 }
 
-extern "kernel32" fn GetLocalTime(t: *[8]u16) callconv(.winapi) void;
-
 /// <out>\settings.ini, beside otogi.exe: a header with the version and this
 /// version's changelog notes, then the template (the repo's settings.ini, one
 /// comment per setting). Values the player already set are kept, and settings
@@ -1446,10 +1613,9 @@ fn writeSettings(c: *Ctx) !void {
 
     var out: std.Io.Writer.Allocating = .init(c.gpa);
     const w = &out.writer;
-    var t: [8]u16 = undefined; // SYSTEMTIME: year, month, weekday, day, ...
-    GetLocalTime(&t);
+    var today: [16]u8 = undefined;
     try w.print("; Otogi XUnchain {s}: Otogi: Myth of Demons, PC recompilation\n", .{version});
-    try w.print("; Written by otogi-xunchain on {d}-{d:0>2}-{d:0>2}. Rebuilding keeps your values.\n", .{ t[0], t[1], t[3] });
+    try w.print("; Written by otogi-xunchain on {s}. Rebuilding keeps your values.\n", .{date(&today,@intCast(Io.Clock.real.now(io).nanoseconds))});
     // This version's section of CHANGELOG.md (in the unpacked source).
     const log = cwd.readFileAlloc(io, c.path("{s}\\CHANGELOG.md", .{c.work}), c.gpa, .limited(1 << 20)) catch "";
     const head = "## [" ++ build_info.version ++ "]";
@@ -1566,6 +1732,28 @@ fn unzipFile(c: *Ctx, zip: []const u8, dest: []const u8) !void {
         }
     }
     try std.zip.extract(d, &r, .{ .allow_backslashes = true });
+}
+
+/// A .tar.xz or .tar.gz into `dest`; its top folder `top` is replaced whole
+/// (a step stopped part-way leaves one behind).
+fn untar(c: *Ctx, archive: []const u8, dest: []const u8, top: []const u8) !void {
+    c.say("unpacking {s}", .{std.fs.path.basename(archive)});
+    var d = try Io.Dir.cwd().createDirPathOpen(c.io, dest, .{});
+    defer d.close(c.io);
+    try d.deleteTree(c.io, top);
+    const f = try Io.Dir.cwd().openFile(c.io, archive, .{});
+    defer f.close(c.io);
+    var buf: [64 * 1024]u8 = undefined;
+    var r = f.reader(c.io, &buf);
+    if (std.mem.endsWith(u8, archive, ".xz")) {
+        var x: std.compress.xz.Decompress = try .init(&r.interface, c.gpa, try c.gpa.alloc(u8, 64 * 1024));
+        defer x.deinit();
+        try std.tar.extract(c.io, d, &x.reader, .{});
+    } else {
+        var win: [std.compress.flate.max_window_len]u8 = undefined;
+        var g: std.compress.flate.Decompress = .init(&r.interface, .gzip, &win);
+        try std.tar.extract(c.io, d, &g.reader, .{});
+    }
 }
 
 fn unzipBytes(c: *Ctx, bytes: []const u8, dest: []const u8) !void {

@@ -3,6 +3,7 @@
 //! is the settings page and metrics overlay, 1 the F1 debug menu.
 const std = @import("std");
 const sdl = @import("sdl");
+const host = @import("host.zig");
 
 pub const page = 0;
 pub const debug = 1;
@@ -10,9 +11,6 @@ pub const debug = 1;
 extern fn ui_init(window: *sdl.SDL_Window) bool;
 extern fn ui_font(path: [*:0]const u8, fallback: bool) bool;
 extern fn ui_font_as(path: [*:0]const u8, family: [*:0]const u8, bold: bool) bool;
-extern "c" fn popen([*:0]const u8, [*:0]const u8) ?*anyopaque;
-extern "c" fn pclose(*anyopaque) c_int;
-extern "c" fn fread([*]u8, usize, usize, *anyopaque) usize;
 extern fn ui_load(i: c_int, path: [*:0]const u8) bool;
 pub extern fn ui_show(i: c_int, on: bool) void;
 pub extern fn ui_input(i: c_int, e: *const sdl.SDL_Event) void;
@@ -68,7 +66,7 @@ pub fn start(window: *sdl.SDL_Window) bool {
             .{ "monospace", "Consolas", false },
         }) |q| {
             var p: [512]u8 = undefined;
-            _ = ui_font_as(fcMatch(q[0], &p) orelse continue, q[1], q[2]);
+            _ = ui_font_as(host.fcMatch(q[0], &p) orelse continue, q[1], q[2]);
         }
         _ = ui_font("ShipporiMinchoB1-Bold.ttf", true); // headings, and the fallback for 御伽
         if (!ui_load(page, "settings.rml") or !ui_load(debug, "debug.rml")) {
@@ -78,17 +76,6 @@ pub fn start(window: *sdl.SDL_Window) bool {
         state = .on;
     }
     return state == .on;
-}
-
-/// The font file fontconfig picks for `pattern`, or null without fc-match.
-fn fcMatch(pattern: [*:0]const u8, buf: *[512]u8) ?[*:0]const u8 {
-    var cmd: [128]u8 = undefined;
-    const f = popen(std.fmt.bufPrintSentinel(&cmd, "fc-match -f '%{{file}}' '{s}'", .{pattern}, 0) catch return null, "r") orelse return null;
-    const n = fread(buf, 1, buf.len - 1, f);
-    _ = pclose(f);
-    if (n == 0) return null;
-    buf[n] = 0;
-    return buf[0..n :0];
 }
 
 /// Lay out and draw what is shown, over the window (frame buffer 0).

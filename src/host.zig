@@ -65,6 +65,17 @@ pub fn setEnv(name: [*:0]const u8, value: [*:0]const u8) void {
     _ = if (windows) _putenv_s(name, value) else if (value[0] == 0) unsetenv(name) else setenv(name, value, 1);
 }
 
+/// The font file fontconfig picks for `pattern` (Linux), or null without fc-match.
+pub fn fcMatch(pattern: [*:0]const u8, buf: *[512]u8) ?[*:0]const u8 {
+    var cmd: [256]u8 = undefined;
+    const f = popen(std.fmt.bufPrintSentinel(&cmd, "fc-match -f '%{{file}}' '{s}'", .{pattern}, 0) catch return null, "r") orelse return null;
+    const n = fread(buf, 1, buf.len - 1, f);
+    _ = pclose(f);
+    if (n == 0) return null;
+    buf[n] = 0;
+    return buf[0..n :0];
+}
+
 /// The calling thread, for threadCpu.
 pub const Thread = if (windows) ?*anyopaque else c_int;
 pub fn currentThread() Thread {
@@ -154,4 +165,7 @@ extern "c" fn nanosleep(req: *const std.c.timespec, rem: ?*std.c.timespec) c_int
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv([*:0]const u8) c_int;
 extern "c" fn pthread_getcpuclockid(std.c.pthread_t, *c_int) c_int;
+extern "c" fn popen([*:0]const u8, [*:0]const u8) ?*anyopaque;
+extern "c" fn pclose(*anyopaque) c_int;
+extern "c" fn fread([*]u8, usize, usize, *anyopaque) usize;
 extern "c" fn getrusage(who: c_int, usage: *anyopaque) c_int;

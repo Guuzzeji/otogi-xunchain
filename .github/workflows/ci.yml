@@ -1,6 +1,6 @@
 # Every push and pull request: the version has a changelog section, setup builds,
 # the tests pass. The game itself needs the lifted C (from a disc), so CI builds
-# only otogi-xunchain.exe (the launcher), which is what players download.
+# only the launcher (otogi-xunchain.exe, and its Linux twin), which is what players download.
 name: CI
 
 on:
@@ -31,3 +31,22 @@ jobs:
         with:
           name: otogi-xunchain
           path: zig-out/bin/otogi-xunchain.exe
+
+  # Debian 13: the oldest common distro with SDL3 (3.2) and so the oldest glibc the
+  # Linux launcher asks for. git before checkout: setup embeds `git archive HEAD`.
+  linux:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates xz-utils libsdl3-dev libegl-dev libgles-dev
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - run: zig build setup
+      - run: zig build test
+      - run: mv zig-out/bin/otogi-xunchain zig-out/bin/otogi-xunchain-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otogi-xunchain-linux-x86_64
+          path: zig-out/bin/otogi-xunchain-linux-x86_64

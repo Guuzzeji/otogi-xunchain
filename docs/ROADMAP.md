@@ -162,14 +162,16 @@ works; an update from a test release URL swaps the exe and rebuilds.
 
 **Later (not started):** the game's F1 menu and an in-game pause menu on RmlUi (GLES3 branch of RmlUi's GL3 renderer over ANGLE).
 
-## M8: Linux — stage 1 (the game) built 2026-11-22
+## M8: Linux — game 2026-11-22, launcher and release 2026-11-23
 Decisions (user confirmed): a native port, not Proton; staged: game, then launcher, then CI and release; tested in
 WSL2 (WSLg) on the dev machine; worked in its own worktree (`feat-linux`). The Wine smoke test was skipped.
 1. **Game:** `zig build` on Linux targets the host: xboxrecomp's POSIX set, the system's SDL3, EGL and GL ES (Mesa)
    in place of ANGLE, audio on SDL3. Windows is unchanged. See NOTES "Linux".
-2. **Launcher (not started):** `setup/window.cpp`'s twin on RmlUi's SDL3 + GL3 backends; bundled open fonts in place
-   of Segoe; Linux Zig, Python and Capstone downloads; a Linux release asset for self-update.
-3. **CI and release (not started):** an ubuntu leg in `ci.yml`, `otogi-xunchain-linux-x86_64` beside the exe.
+2. **Launcher:** `setup/window_sdl.cpp`, `setup/window.cpp`'s twin on RmlUi's SDL3 + GL3 backends; the system's
+   fonts (fontconfig) in place of Segoe, Unicode symbols for the MDL2 icons; Linux Zig, Python and Capstone
+   downloads; a Linux release asset for self-update. See NOTES "Linux".
+3. **CI and release:** a `debian:trixie` job in `ci.yml` and `release.yml`; `otogi-xunchain-linux-x86_64` beside the exe.
+   The README says Linux is only tested in WSL so far and asks for reports.
 
 **Exit check (stage 1):** title screen with music, slot 02 loads to the hub, a stage plays with a pad; saves land in
 `~/.local/share/Otogi`; Windows build and tests unchanged. Passed 2026-11-23 in WSLg: played with sound (user),

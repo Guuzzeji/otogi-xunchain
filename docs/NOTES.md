@@ -664,3 +664,23 @@
   environment through `host.setEnv`, where an empty value removes it, as `_putenv` does.
 - Guest memory: offset-based, so nothing needs the low 4 GB; `RECOMP_EXT_VMA=1` (set by main.zig on Linux) holds the
   whole 4 GB window, so device windows above guest RAM are not taken by the OS's own maps.
+- Launcher (stage 2, 2026-11-23): `setup/window_sdl.cpp` is `window.cpp`'s twin (same C functions) on RmlUi's SDL3
+  platform and GL3 renderer in GL ES mode, as the game's menus: borderless with `SDL_SetWindowHitTest` for the page's
+  own title bar and edges, SDL gamepads for the pad controls, SDL's file dialogs (portal or zenity; the Browse
+  buttons do nothing without one, the boxes take typed paths), `SDL_OpenURL` (xdg-open) for files and links,
+  `SDL_GetFullscreenDisplayModes` for the resolution list. `setup/main.zig` writes paths with `\` and `os()` turns
+  them to `/` at compile time. Per OS: the downloads (Zig's tar.xz, python-build-standalone 3.14.7 `install_only`
+  tar.gz, Capstone's manylinux wheel into its `site-packages`; no `._pth`: `-m` from `xboxrecomp/` finds the
+  toolkit), Stop (each tool in its own process group, `kill(-pgid)`, for Windows' job), free space (`statvfs` of the
+  nearest existing folder), the system line (`/proc/sys/kernel/osrelease`, `/etc/os-release`, `/proc/cpuinfo`),
+  Play (spawns `<out>/otogi` with the install folder as its working folder), self-update (asset
+  `otogi-xunchain-linux-x86_64`, `\x7fELF` checked, made executable, `rename`). Step 1 fails at once if the SDL3, EGL
+  or GL ES headers are missing, not after the lift. Not done: tools outlive a launcher closed mid-build (no
+  PR_SET_PDEATHSIG); the game is not reaped (a zombie until the launcher exits).
+- Launcher look on Linux: the art is PNG now on both (JPEG has no decoder on Linux without a library, and SDL only
+  reads PNG from 3.4): `setup/png.zig` decodes 8-bit RGB/RGBA, tested against System.Drawing's pixels. Fonts as in
+  the game (fontconfig under Segoe UI and Consolas); the Segoe MDL2 icons become Unicode symbols at compile time
+  (`icons()`, `icon_map`), drawn by whatever font fontconfig finds with all of them (`:charset=`; DejaVu Sans).
+- Release: Linux launchers are built in `debian:trixie` (the oldest common distro with SDL3, so its glibc 2.41 is the
+  floor), in CI and in `release.yml`. The release's version commit and tag go to both build jobs as a git bundle and
+  are pushed only once both launchers built and passed the tests.

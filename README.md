@@ -2,13 +2,13 @@
 
 # Otogi XUnchain: Otogi: Myth of Demons on PC, natively recompiled from the Xbox
 
-*Otogi: Myth of Demons* (FromSoftware, 2003) was an original Xbox exclusive that never left the console. **Otogi XUnchain** is a PC port made by static recompilation: it turns the game into a native Windows exe with widescreen, high frame rates and up to 4x resolution. **No emulator:** every function in the game's `default.xbe` is translated from x86 to C and compiled for your PC, with a small model of the Xbox around it. The game's Direct3D 8 calls are redrawn through OpenGL ES 3 ([ANGLE](https://chromium.googlesource.com/angle/angle) on Direct3D 11, Vulkan or OpenGL).
+*Otogi: Myth of Demons* (FromSoftware, 2003) was an original Xbox exclusive that never left the console. **Otogi XUnchain** is a PC port made by static recompilation: it turns the game into a native Windows exe (and, new and still being tested, a native Linux program) with widescreen, high frame rates and up to 4x resolution. **No emulator:** every function in the game's `default.xbe` is translated from x86 to C and compiled for your PC, with a small model of the Xbox around it. The game's Direct3D 8 calls are redrawn through OpenGL ES 3 ([ANGLE](https://chromium.googlesource.com/angle/angle) on Direct3D 11, Vulkan or OpenGL).
 
 **This repo and its download contain no game code.** You build the game from a dump of your own disc, and the launcher, `otogi-xunchain.exe`, does all of it for you. The only game content shipped is three menu images that the launcher uses for its own look.
 
 ## Features
 
-- Native Windows exe, no emulator
+- Native Windows exe, no emulator; a native Linux version too ([only tested in WSL so far](#linux-only-tested-in-wsl-so-far))
 - 2x to 4x internal resolution
 - 16:9 widescreen (hor+), with the HUD and menus kept in place
 - Frame interpolation up to your monitor's refresh rate (the game logic stays at its native 30)
@@ -40,7 +40,7 @@
 
 You need:
 
-- Windows 10 or 11, 64-bit
+- Windows 10 or 11, 64-bit (or Linux: see [below](#linux-only-tested-in-wsl-so-far))
 - Your own **Otogi: Myth of Demons, USA** disc, dumped: a disc image (`.iso`, redump or XISO) or a folder of its files (with `default.xbe`, as an Xbox 360 or HDD rip leaves it). The launcher checks it, and only this version works for now. A dump that differs from the known good one gets a warning, but you can still build.
 - About 5 GB of free disk space. 16 GB of RAM is best; less works, the build just takes longer.
 - A controller is recommended: Xbox, PlayStation and Switch pads all work, with no extra tools. Keyboard works too.
@@ -58,12 +58,36 @@ The launcher checks your disc and extracts the game files. It then downloads eve
 The launcher also:
 
 - **Settings:** every option in `settings.ini`, with its explanation, saved as you change it. Switches and buttons instead of typing; the fullscreen resolution lists your monitor's own modes, plus Custom.
-- **Saves:** lists your saved games and where they are (`%LOCALAPPDATA%\Otogi`), and backs them up to a folder you pick.
+- **Saves:** lists your saved games and where they are (`%LOCALAPPDATA%\Otogi`, on Linux `~/.local/share/Otogi`), and backs them up to a folder you pick.
 - **What's new:** the notes of every release. When a new one is out, **Update** downloads the new launcher and rebuilds the game from the files it already has (about 8 minutes; the disc is not needed again). Your settings and saves stay.
 - **Versions:** once more than one release has the launcher, a small version button beside **Play** lists them. Pick one and press **Switch to** to rebuild the game as that version, newer or older: handy if an update breaks something for you. When a newer release is out, an **Update to** button shows there too.
 - **Help & logs:** shows the game's and the build's logs as they are written, and has buttons to report a bug on GitHub (your version and PC filled in, the log copied to paste) or ask a question in Discussions.
 
 An Xbox controller works in the launcher too: the d-pad moves, A selects, B goes back, LB and RB switch pages. (In the game itself, PlayStation and Switch pads work as well.)
+
+### Linux (only tested in WSL so far)
+
+There is a native Linux version too: the same launcher and game, built for Linux, drawn with your system's OpenGL ES (Mesa) instead of ANGLE.
+
+> [!WARNING]
+> **Linux has only been tested in WSL2 on Windows 11 (WSLg, Ubuntu 26.04)**, not yet on a real Linux PC, a Steam Deck or other distros. A controller has not been tested on Linux at all. It needs more testing and feedback: if you try it, please [open an issue](../../issues/new/choose) for anything that breaks, or say how it went in [Discussions](../../discussions), with your distro, GPU and `setup.log` or `otogi.log`.
+
+You need, besides the disc, space and RAM above:
+
+- 64-bit x86 Linux with SDL 3.2 or newer (Ubuntu 25.04+, Debian 13, Fedora 42+, Arch and the like).
+- The SDL3, EGL and OpenGL ES development packages and fontconfig, which the build links against:
+  - Ubuntu and Debian: `sudo apt install libsdl3-dev libegl-dev libgles-dev fontconfig`
+  - Fedora: `sudo dnf install SDL3-devel mesa-libEGL-devel mesa-libGLES-devel fontconfig`
+  - Arch: `sudo pacman -S sdl3 mesa fontconfig`
+- For the **Browse** buttons, a file dialog (the desktop portal, or `zenity`). Without one, type the paths into the boxes.
+
+Then:
+
+1. Download `otogi-xunchain-linux-x86_64` from [Releases](https://github.com/Guuzzeji/otogi-xunchain/releases/latest), into the folder with your `.iso` if you like.
+2. Make it runnable and start it: `chmod +x otogi-xunchain-linux-x86_64 && ./otogi-xunchain-linux-x86_64`
+3. As on Windows: **Install**, **Build the game**, then **Play**. The game is `otogi` in the install folder; your saves go to `~/.local/share/Otogi`.
+
+In WSL, Mesa draws on the CPU unless told to use your GPU through Direct3D 12: start the game with `GALLIUM_DRIVER=d3d12` (and `MESA_D3D12_DEFAULT_ADAPTER_NAME=<part of your GPU's name>` if you have more than one).
 
 ## Settings
 
@@ -114,12 +138,13 @@ Known issues:
 
 - Only the USA disc is supported.
 - *Otogi 2: Immortal Warriors* is a different game and is not supported.
+- Linux is new and has only been tested in WSL2 (see [Linux](#linux-only-tested-in-wsl-so-far)): real Linux PCs, the Steam Deck and controllers on Linux are untested. Feedback is very welcome.
 
 The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. Every report helps make the recomp better.
 
 ## Reporting bugs and asking questions
 
-- **[Issues](../../issues/new/choose)** are for things that are broken and need a fix: a crash, a graphics glitch, broken sound or controls, anything that plays differently from the Xbox, or the build failing on your disc. The launcher's **Report on GitHub** button on the Help & logs page opens one for you. Attach `otogi.log` from the game folder (or `setup.log` if the build failed); it has your GPU and Windows version at the top.
+- **[Issues](../../issues/new/choose)** are for things that are broken and need a fix: a crash, a graphics glitch, broken sound or controls, anything that plays differently from the Xbox, or the build failing on your disc. The launcher's **Report on GitHub** button on the Help & logs page opens one for you. Attach `otogi.log` from the game folder (or `setup.log` if the build failed); it has your GPU and system at the top.
 - **[Discussions](../../discussions)** are for everything else: questions in [Q&A](../../discussions/categories/q-a), feature requests and wishes in [Ideas](../../discussions/categories/ideas), clips and screenshots in [Show and tell](../../discussions/categories/show-and-tell).
 
 Not sure which? Start a discussion; if it turns out to be a bug, it gets moved to an issue. Ideas that get picked up become issues too, labeled `enhancement`.
@@ -135,13 +160,15 @@ Not sure which? Start a discussion; if it turns out to be a bug, it gets moved t
 
 ## Building from source
 
-Needs Zig 0.17.0 and Python 3 with `capstone`, plus a disc image. See `docs/NOTES.md` for the lift pipeline; then:
+Needs Zig 0.17.0 and Python 3 with `capstone`, plus a disc image; on Linux also the SDL3, EGL and GL ES dev packages listed under [Linux](#linux-only-tested-in-wsl-so-far). See `docs/NOTES.md` for the lift pipeline; then:
 
 ```
-zig build          # otogi.exe (needs the lifted C in src/recomp/gen)
-zig build setup    # otogi-xunchain.exe, the launcher
+zig build          # otogi.exe (otogi on Linux; needs the lifted C in src/recomp/gen)
+zig build setup    # otogi-xunchain.exe (otogi-xunchain on Linux), the launcher
 zig build test
 ```
+
+`zig build` builds for the system it runs on: Windows or Linux.
 
 A sibling project: [Sneak King recomp](https://github.com/Guuzzeji/sneaky-whopper-recomp).
 
