@@ -15,7 +15,7 @@
 - Window, borderless or fullscreen (Alt+Enter switches)
 - Modern controller handling: the right stick turns the view the usual way, with a smaller dead zone
 - In-game debug menu (F1): frame stats, stage warp, god mode, infinite magic, all weapons
-- A launcher that builds the game, edits its settings, shows your saves and updates it from here
+- A launcher that builds the game, edits its settings, shows your saves, and updates it (or goes back to an earlier version) from here
 
 <table>
 <tr>
@@ -53,25 +53,28 @@ Then:
 
 <p align="center"><img src="docs/img/launcher.png" alt="The launcher's Play page: the Otogi logo on red brocade, Raikoh, a green Play button, and tiles for what's new, saves and settings" width="49%"> <img src="docs/img/launcher-news.png" alt="The launcher's What's new page: every release's notes from GitHub" width="49%"></p>
 
-The launcher checks your disc and extracts the game files. It then downloads everything the build needs (Zig, Python and Capstone, plus the ANGLE and Dear ImGui libraries, each checked against a pinned hash), and only then translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, build again and it carries on from where it stopped.
+The launcher checks your disc and extracts the game files. It then downloads everything the build needs (Zig, Python and Capstone, plus the ANGLE, SDL3 and Dear ImGui libraries, each checked against a pinned hash), and only then translates the game to C and compiles it. Nothing is installed anywhere else on your PC. If a step fails or you stop it, build again and it carries on from where it stopped.
 
 The launcher also:
 
-- **Settings:** every option in `settings.ini`, with its explanation, saved as you change it.
+- **Settings:** every option in `settings.ini`, with its explanation, saved as you change it. Switches and buttons instead of typing; the fullscreen resolution lists your monitor's own modes, plus Custom.
 - **Saves:** lists your saved games and where they are (`%LOCALAPPDATA%\Otogi`), and backs them up to a folder you pick.
 - **What's new:** the notes of every release. When a new one is out, **Update** downloads the new launcher and rebuilds the game from the files it already has (about 8 minutes; the disc is not needed again). Your settings and saves stay.
+- **Versions:** once more than one release has the launcher, a small version button beside **Play** lists them. Pick one and press **Switch to** to rebuild the game as that version, newer or older: handy if an update breaks something for you. When a newer release is out, an **Update to** button shows there too.
 - **Help & logs:** shows the game's and the build's logs as they are written, and has buttons to report a bug on GitHub (your version and PC filled in, the log copied to paste) or ask a question in Discussions.
 
-A controller works too: the d-pad moves, A selects, LB and RB switch pages.
+An Xbox controller works in the launcher too: the d-pad moves, A selects, B goes back, LB and RB switch pages. (In the game itself, PlayStation and Switch pads work as well.)
 
 ## Settings
+
+<p align="center"><img src="docs/img/launcher-settings.png" alt="The launcher's Settings page: window mode, a list of fullscreen resolutions, internal resolution, widescreen, frame rate and more, each with its explanation" width="70%"></p>
 
 The launcher's Settings page edits `settings.ini` beside `otogi.exe`, which has a comment on every line. The main ones:
 
 | Setting | Values |
 |---|---|
 | `window` | 0 window, 1 borderless (default), 2 fullscreen |
-| `resolution` | fullscreen only, such as `1920x1080`; empty keeps the desktop's |
+| `resolution` | fullscreen only, such as `1920x1080` (the launcher lists your monitor's); empty keeps the desktop's |
 | `scale` | internal resolution, 1 (640x480, original) to 4 |
 | `widescreen` | 1 = 16:9, 0 = original 4:3 |
 | `framerate` | 0 = monitor refresh, 30 = original |
