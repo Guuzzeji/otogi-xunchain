@@ -112,7 +112,14 @@ Known issues:
 - Only the USA disc is supported.
 - *Otogi 2: Immortal Warriors* is a different game and is not supported.
 
-The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. If you hit a crash, a graphics glitch, broken sound or anything that plays differently from the Xbox, press **Report on GitHub** on the launcher's Help & logs page, or [open an issue](../../issues) yourself and attach `otogi.log` from the game folder (and `setup.log` if the build failed). Questions that are not bugs are welcome in [Discussions](../../discussions). The log has your GPU and Windows version at the top. Every report helps make the recomp better.
+The game has been playtested, but this recomp was built with a lot of help from AI (see [How AI was used](#how-ai-was-used)) and there are still bugs we haven't found. Every report helps make the recomp better.
+
+## Reporting bugs and asking questions
+
+- **[Issues](../../issues/new/choose)** are for things that are broken and need a fix: a crash, a graphics glitch, broken sound or controls, anything that plays differently from the Xbox, or the build failing on your disc. The launcher's **Report on GitHub** button on the Help & logs page opens one for you. Attach `otogi.log` from the game folder (or `setup.log` if the build failed); it has your GPU and Windows version at the top.
+- **[Discussions](../../discussions)** are for everything else: questions in [Q&A](../../discussions/categories/q-a), feature requests and wishes in [Ideas](../../discussions/categories/ideas), clips and screenshots in [Show and tell](../../discussions/categories/show-and-tell).
+
+Not sure which? Start a discussion; if it turns out to be a bug, it gets moved to an issue. Ideas that get picked up become issues too, labeled `enhancement`.
 
 ## How it works
 
@@ -139,7 +146,7 @@ A sibling project: [Sneak King recomp](https://github.com/Guuzzeji/sneaky-whoppe
 
 To be upfront: this recomp was made with heavy use of AI. [Claude Code](https://claude.com/claude-code) wrote most of the project's own code (the Zig host, the graphics layer, the function overrides, widescreen, input and the launcher) and did much of the reverse engineering and debugging, working from logs, traces and screenshots of the running game. A human directed the work, played the game, checked the results and decided what shipped.
 
-AI makes mistakes that look right, and a recomp has thousands of places for one to hide. The game has been playtested, but expect bugs. If you find one, [open an issue](../../issues): that is the best way to make this recomp better.
+AI makes mistakes that look right, and a recomp has thousands of places for one to hide. The game has been playtested, but expect bugs. If you find one, [open an issue](../../issues/new/choose): that is the best way to make this recomp better.
 
 ## Thank you
 

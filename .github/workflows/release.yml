@@ -1,36 +1,31 @@
 # Releases otogi-xunchain.exe (the launcher) on GitHub, with the changelog section as notes.
-# Automatic: merging a PR into main bumps the version by the box ticked under "Release"
-# in the PR body (major, minor, patch or none), turns the changelog's "Unreleased"
-# section into that version, commits and tags it, then releases. "none" releases nothing.
-# By hand: Actions > Release > Run workflow does the same with a chosen bump;
-# "none" there releases the current version as it is (its section must already exist).
+# By hand only: Actions > Release > Run workflow. Merging a PR releases nothing; its changes
+# wait under "Unreleased" in the changelog until the next run, which turns that section into
+# the new version, commits and tags it, then releases.
+# Bump "auto" takes the biggest box ticked under "Release" (major > minor > patch) among PRs
+# merged into main since the last tag; if none ticked one, nothing is released. A chosen bump
+# overrides it; "none" releases the current version as it is (its section must already exist).
 name: Release
 
 on:
-  pull_request_target:
-    types: [closed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
-        description: Version bump
+        description: Version bump (auto = biggest box ticked in PRs merged since the last release)
         type: choice
-        options: [patch, minor, major, none]
-        default: patch
+        options: [auto, patch, minor, major, none]
+        default: auto
 
 permissions:
   contents: write
 
-# Back-to-back merges release one after another, each from the main the last one left.
+# Back-to-back runs release one after another, each from the main the last one left.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
   release:
-    # pull_request_target (not pull_request) so merged fork PRs get a write token too.
-    # Safe: it checks out main, never the PR's code, and reads the body only through env.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged
     runs-on: windows-latest
     steps:
       - run: git config --global core.autocrlf false
@@ -47,13 +42,20 @@ jobs:
         shell: bash
         env:
           BUMP: ${{ inputs.bump }}
-          BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" != workflow_dispatch ]; then
-            boxes=$(tr -d '\r' <<< "$BODY" | grep -oiE '^\s*- \[x\] (major|minor|patch|none)' || true)
-            [ "$(grep -c . <<< "$boxes")" = 1 ] || { echo "::error::Tick exactly one box under Release in the PR"; exit 1; }
-            BUMP=$(grep -oiE '[a-z]+$' <<< "$boxes" | tr A-Z a-z)
-            [ "$BUMP" = none ] && { echo "Release box: none, nothing to release"; exit 0; }
+          if [ "$BUMP" = auto ]; then
+            last=$(git describe --tags --abbrev=0 --match 'v*')
+            since=$(git log -1 --format=%cI "$last")
+            bodies=$(gh pr list --state merged --base main --search "merged:>$since" --limit 200 --json body --jq '.[].body')
+            boxes=$(tr -d '\r' <<< "$bodies" | grep -oiE '^\s*- \[x\] (major|minor|patch)' | tr A-Z a-z || true)
+            case "$boxes" in
+              *major*) BUMP=major ;;
+              *minor*) BUMP=minor ;;
+              *patch*) BUMP=patch ;;
+              *) echo "Nothing to release: no PR merged since $last ticked major, minor or patch"; exit 0 ;;
+            esac
+            echo "Bump from PRs merged since $last: $BUMP"
           fi
           cur=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
           IFS=. read -r major minor patch <<< "$cur"

@@ -30,6 +30,7 @@ edits settings, lists saves and updates itself from GitHub releases.
 - Unless the box is none, add an entry under `## [Unreleased]` in `CHANGELOG.md` (Added / Changed / Fixed),
   written for players.
 - Never edit `.version` in `build.zig.zon` or add a version section to the changelog by hand. Merging a PR
-  runs `release.yml`: it bumps by the ticked box, dates the changelog section, tags, builds setup and
-  publishes the GitHub release. Actions > Release > Run workflow does the same by hand.
+  releases nothing. The user runs Actions > Release > Run workflow (`release.yml`): by default it bumps by the
+  biggest box among PRs merged since the last tag, dates the changelog section, tags, builds setup and
+  publishes the GitHub release.
 - Pre-1.0 bump guide: minor = new feature or setting, patch = fixes and speedups, major = breaks saves/settings.

@@ -1,0 +1,17 @@
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the "=== Otogi XUnchain" line near the top of otogi.log, or setup's window title. Skip it if it doesn't matter.
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Settings you changed, steps you took. Attach otogi.log if it's about the game misbehaving.
