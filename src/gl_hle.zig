@@ -2756,6 +2756,8 @@ fn frameReplay(prev: ?*const Frame, cur: *Frame, from: usize, to: usize, t: f32)
                 if (p) |q| {
                     lerpInto(@as(*[192 * 4]f32, @ptrCast(&vsc)), @as(*const [192 * 4]f32, @ptrCast(&pf.consts.items[q.vsc])), @as(*const [192 * 4]f32, @ptrCast(&cur.consts.items[d.vsc])), t);
                     lerpInto(@as(*[160]f32, @ptrCast(&xf)), @as(*const [160]f32, @ptrCast(&pf.xfs.items[q.xf])), @as(*const [160]f32, @ptrCast(&cur.xfs.items[d.xf])), t);
+                    // A sprite sheet's cell (the particle program's c159) is a step, not a slide.
+                    if (d.vsi != 0 and programs.items[d.vsi - 1].hash == 0xA8A1DBCD) vsc[159] = cur.consts.items[d.vsc][159];
                 }
             }
             fr_d = d;
