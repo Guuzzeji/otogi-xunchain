@@ -3,7 +3,7 @@
 All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/). The version lives in `build.zig.zon`;
-merging a PR runs the Release workflow, which moves "Unreleased" into a new version section.
+running the Release workflow by hand moves "Unreleased" into a new version section.
 
 ## [Unreleased]
 
