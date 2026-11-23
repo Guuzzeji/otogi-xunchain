@@ -243,6 +243,16 @@
   texture kept last frame's full scene (the glow's back buffer copy uses the same texture); adding it back each frame ran
   away to white. CopyRects now reads any surface that has a host target. A target that widened 3D is drawn into counts
   as a wide copy, so its copy stretches across the 16:9 screen instead of being extended.
+- Raikoh invisible in dash attacks (discussion #18; R with B or Y, all backends and frame rates, game frames too):
+  during the move the game draws him only into a 640x480 after-image target (`0x80D62000`), set with the back
+  buffer's own Z surface (`0x10681C`), then CopyRects it to `0x80AD5000` and draws that over the screen twice
+  (alpha blended, then added); a black quad at alpha 0x40 into the target (no Z) each frame fades the trail.
+  On the Xbox the target draws against the scene's depth, cleared with the back buffer; ours had its own depth
+  buffer that nothing cleared (zero), so every character draw failed the depth test and only his shadow and the
+  sword trail (drawn on the back buffer) showed. SetRenderTarget now starts such a target's depth and stencil
+  from a copy of the back buffer's (a `copy` op with `depth`: scaled blit, the whole wide view when 3D is
+  widened). The depth he draws there does not go back to the back buffer. He shows as a faint dark ghost, as the
+  game's alpha (about 0.8 on the body) and the fade give; not compared with Xbox footage.
 - Tower of Water (m007) waterfall: vertex program 0x1D93961 with fixed-function stage 0 (ripple texture x diffuse),
   added (SRCALPHA, ONE) as stacked strip layers, vertex fog: c158 = (-4e-6, 1), fog colour FFBCC7D7 (`0x18170`, table
   `0x20A3D8`); D3D's fog setup (`0xFC220`) for FOGTABLEMODE NONE is LINEAR (1, 1), and the final combiner

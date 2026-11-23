@@ -19,6 +19,9 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
   build. A different game, or the Japanese release, is still refused.
 
 ### Fixed
+- Raikoh disappeared during dash attacks (dash with light or heavy attack): only the sword
+  trail and his shadow showed. He now shows through the move, drawn with the game's
+  fading after-image effect.
 - XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
   patches one byte of `default.xbe` (the media check). The launcher now recognises that
   patch, accepts the disc as verified and puts the original byte back for the build.
