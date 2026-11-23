@@ -3605,15 +3605,15 @@ export fn sub_000F7080() void {
 // rewriting its per-object constants. Draws are replaced here, so the guest
 // pushbuffer holds no draws; record the calls on the host instead and replay
 // them. A replayed draw sees the state as recorded where the recording
-// changed it (against the state at BeginPushBuffer) or set it (a simple render
-// state's method in the guest pushbuffer, even to the value it had), the live
-// state elsewhere.
+// changed it (against the state at BeginPushBuffer) or set it (a render state's
+// method in the guest pushbuffer, even to the value it had), the live state
+// elsewhere.
 
-const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, set: u32, state: [d3d.STATE_WORDS]u32 };
+const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, set: u128, state: [d3d.STATE_WORDS]u32 };
 const PbOp = union(enum) { vsc: struct { reg: i32, n: u32, va: u32 }, draw: PbDraw };
-// put: how far the guest pushbuffer has been scanned; set: the simple render
-// states it has set so far (d3d.simpleStatesSet).
-const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp), put: u32 = 0, set: u32 = 0 };
+// put: how far the guest pushbuffer has been scanned; set: the render states
+// it has set so far (d3d.statesSet).
+const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp), put: u32 = 0, set: u128 = 0 };
 var pb_recs: std.ArrayList(PbRec) = .empty;
 var rec_cur: ?usize = null;
 
@@ -3632,7 +3632,7 @@ fn recordDraw(ri: usize, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: 
     } else null;
     const r = &pb_recs.items[ri];
     const put = d3d.mem32(d3d.mem32(d3d.DEVICE_PTR));
-    if (put > r.put) r.set |= d3d.simpleStatesSet(@as([*]align(1) const u32, @ptrCast(d3d.ptr(r.put)))[0 .. (put - r.put) / 4]);
+    if (put > r.put) r.set |= d3d.statesSet(@as([*]align(1) const u32, @ptrCast(d3d.ptr(r.put)))[0 .. (put - r.put) / 4]);
     r.put = put;
     const op = r.ops.addOne(alloc) catch return;
     op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = own, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .set = r.set, .state = undefined } };
@@ -3650,7 +3650,7 @@ fn replay(r: *const PbRec) void {
         .draw => |*d| {
             for (&eff, live, d.state, r.base, 0..) |*e, l, s, b, i| {
                 const bit = i -% (128 + d3d.simple_first);
-                e.* = if (s != b or (bit < 32 and d.set >> @intCast(bit) & 1 != 0)) s else l;
+                e.* = if (s != b or (bit < 128 and d.set >> @intCast(bit) & 1 != 0)) s else l;
             }
             d3d.state_snap = &eff;
             stage_tex = d.tex;
