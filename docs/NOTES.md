@@ -280,11 +280,24 @@
   ("recorded where it changed, live elsewhere") took the live state, and that is whatever the game set
   before each RunPushBuffer: 0 when the detail chunks had just been drawn, which depends on what is in
   view. The overlay then drew opaque: the dirt square. Now `recordDraw` scans the guest pushbuffer since the
-  last draw for simple render state methods (`d3d.simpleStatesSet`, NV2A method per D3DRS 57-81) and a state
+  last draw for simple render state methods (`d3d.statesSet`, NV2A method per D3DRS 57-81) and a state
   the recording set wins even when it equals the old value. Checked by camera turns on the path (draw logs:
   the overlays blended in every frame, were opaque in the bad ones before) and in m007.
-  Not covered: complex states (cull mode, stencil fail...) and deferred ones (fog, texture stages) set to
-  the value they already had still replay live.
+- The Green Cave (m009, "stage 10" to players; the hub's stage menu names it) missing its ceiling, a white sky
+  showing through, and walls reduced to brown slabs (issue #14): the same replay leak, through CULLMODE. The
+  recorder calls `SetRenderState_CullMode` inside the recording (`0x25AD1`; NONE for the cave's
+  inward-facing chunks), the value it had at BeginPushBuffer, so the replay used the live cull mode (CCW, left
+  by the draw before) and dropped the ceiling and the inner faces of the walls. Found by replaying with all
+  recorded render states (fixed it), then by group and by index; none of the textures were wrong (dumped:
+  t0 mossy rock, t1 green rock, t2 a 32x32 black additive layer). `d3d.statesSet` now also knows the complex
+  states that write a method of their own, read from each setter in the title: CULLMODE 0x308 (always) and
+  0x39C, FRONTFACE 0x3A0, ZENABLE 0x30C, STENCILENABLE 0x32C, STENCILFAIL 0x370, FOGCOLOR 0x2A8, VERTEXBLEND
+  0x328, FILLMODE 0x38C, BACKFILLMODE 0x390, NORMALIZENORMALS 0x3A4 (the mask is a u128 over D3DRS 57-149).
+  Left live on purpose, as the Xbox does: ZWRITEENABLE and FOGENABLE, which the replay caller `0x254E0` sets
+  per object before each RunPushBuffer and the recorder does not touch (forcing the recorded Z write off
+  showed the pillar hall through the cave wall). Still not covered: deferred states (fog enable, texture
+  stages) and ZBIAS/TEXTUREFACTOR set to the value they had. Checked in m009 (D3D11 and Vulkan), m000,
+  m001, m007.
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.
