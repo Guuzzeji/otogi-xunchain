@@ -90,7 +90,7 @@
   a 40% dead zone per axis, buttons pressed above 0x1E. Controls (Options > Controller Config, Type A): LT lock-on,
   RT dash, A jump, B small attack, X spell, Y great attack. `src/pad.zig` adapts a modern pad: LB/RB also press
   LT/RT (Otogi does not use Black/White), the right stick is inverted on both axes (Otogi orbits the camera;
-  `RECOMP_CAM_INVERT=0` keeps it) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
+  `RECOMP_CAM_INVERT=0` keeps it; `RECOMP_CAM_INVERT_Y=1` flips the vertical back, issue #17) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
   pad (`XInputSetState`, motors at feedback+66; `SDL_RumbleGamepad` on the host).
 - SDL3 is the window, its events and the pads; nothing else. ANGLE still draws (the window is made without SDL's GL
   flag and EGL gets its HWND from `SDL_PROP_WINDOW_WIN32_HWND_POINTER`), XAudio2 still plays. The prebuilt
@@ -164,6 +164,11 @@
   - A full-width `CopyRects` of the back buffer squeezes the whole wide buffer into its 640 columns. A full-width draw
     of such a copy (pause blur, menu desaturate) stretches back; a draw kept in the middle (the title logo's
     refraction) samples it remapped to its 4:3 position (`uploadTscale`, `u_tscale.zw` offset).
+  - The movie (issue #9) stays 4:3 with black sides: extending its full-screen draw of the movie target
+    (X8R8G8B8, filled from the YUY2 frame) only smeared the clamped edge columns into streaks. A target a
+    YUY2/UYVY texture was drawn into in the last 30 frames is the movie target (`isMovie`); a draw sampling it
+    (or a YUY2 texture itself) skips the edge rules. The trailer is the only XMV on the disc; cutscenes are in-engine.
+    Filling 16:9 would mean cropping a quarter of its height.
   - Known: in the pause menu a full-width overlay's clamped texture edge darkens the left pillar a little. Cutscene
     letterbox bars are handled by the full-width rule but were not seen in a test run.
 - Pad script that reaches stage 1 from boot: `RECOMP_PAD_SCRIPT=15000:start,18000:start,21000:a,23000:a,...,61000:a`
@@ -181,7 +186,7 @@
   `game\default.xbe` it switches to the exe's folder first (setup's Play starts it from elsewhere).
 - Setup writes `settings.ini` beside otogi.exe: a header with the version and that version's CHANGELOG.md section,
   then the repo's `settings.ini` as the template (a comment per setting). Values already in the player's file are kept,
-  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, show_mouse,
+  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, cam_invert_y, show_mouse,
   debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.
@@ -266,6 +271,20 @@
   repeats (the first tuning's 1x1 gave long cloth-like streaks), threshold -0.3..0.45 at the top (solid but for the
   darkest grain) to 0.15..0.95 at the bottom (mist). The first tuning's 15% fade-in, then solid white, showed as a
   bright band at each strip's top; 5% under the solid white of the strip above does not.
+- Forbidden Mansion (m001, story stage 1, "stage 2" to players) path flipping between grass and a hard-edged
+  dirt square as the camera turned (issue #14): the ground is a grass base (pushbuffer drawing texture 34)
+  with detail chunks and two dirt/grass overlay layers (textures 77, 80) on top, all vertex program
+  `1D93501` / pixel shader `1E91DA0` (t0/t1 mixed by `oT3.w` = v3.z, 7 combiners). The map recorder
+  (`0x25640`) sets ALPHABLENDENABLE 1, BLENDOP, SRCBLEND and DESTBLEND inside the recording for materials
+  with flag bit 0 (`0x258BB`). The state before BeginPushBuffer already held those values, so the replay
+  ("recorded where it changed, live elsewhere") took the live state, and that is whatever the game set
+  before each RunPushBuffer: 0 when the detail chunks had just been drawn, which depends on what is in
+  view. The overlay then drew opaque: the dirt square. Now `recordDraw` scans the guest pushbuffer since the
+  last draw for simple render state methods (`d3d.simpleStatesSet`, NV2A method per D3DRS 57-81) and a state
+  the recording set wins even when it equals the old value. Checked by camera turns on the path (draw logs:
+  the overlays blended in every frame, were opaque in the bad ones before) and in m007.
+  Not covered: complex states (cull mode, stencil fail...) and deferred ones (fog, texture stages) set to
+  the value they already had still replay live.
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.

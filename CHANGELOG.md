@@ -3,13 +3,23 @@
 All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/). The version lives in `build.zig.zon`;
-merging a PR runs the Release workflow, which moves "Unreleased" into a new version section.
+running the Release workflow by hand moves "Unreleased" into a new version section.
 
 ## [Unreleased]
+
+### Added
+- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
+  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
 
 ### Fixed
 - The ripple over the title screen when you press Start (as it turns grey and the
   New Game / Load Game menu comes in) shows again; nothing was drawn before (#16).
+- Forbidden Mansion (stage 2): the path no longer flips between grass and a hard-edged
+  square of dirt as the camera turns; the dirt blends softly into the grass as on the Xbox.
+  The same fix applies to any map layer the game draws see-through.
+- In widescreen, the trailer that plays when you wait on the title screen no longer has
+  smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
+  bars at the sides (issue #9).
 
 ## [0.11.0] - 2026-11-23
 
