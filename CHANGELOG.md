@@ -8,6 +8,16 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 ## [Unreleased]
 
 ### Added
+- Settings in game: **F10**, or **Back+Start** on a controller, opens a settings page with
+  every option of `settings.ini` and its explanation. The game waits while it is open.
+  Frame rate, V-sync, window mode, fullscreen resolution, camera, mouse pointer, draw and
+  fog distance change at once; the rest are saved and marked "applies after restart".
+  Its text grows with the window, so it stays readable at 1440p and 4K. It has the
+  launcher's look and controls, and works with a controller, the keyboard or the mouse.
+- Metrics while playing (`metrics`, in the settings page, the launcher and the F1 menu):
+  the frame rate, or also frame time, the game's own steps, draws, graphics backend and
+  resolution, as small see-through text in a corner of your choice (`metrics_corner`).
+  The game keeps running underneath.
 - The launcher builds from a folder of the disc's files too (as an Xbox 360 or HDD rip
   leaves them): pick the `default.xbe` in it, or type the folder's path.
 - Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's

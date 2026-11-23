@@ -413,27 +413,99 @@
   they need is built on first use and cached. Dev PC, empty cache: 2.0 s on D3D11, 3.0 s on GL, 0.4 s on
   Vulkan; cached: 0.4 to 0.8 s, 0.5 s, 0.1 s. D3D11 start-up time with a full cache varies run to run.
 
+## Menus in game (RmlUi)
+- Every menu in the game is RmlUi 6.3, the launcher's UI library (Dear ImGui is gone from the project). `build.zig`
+  `addRmlUi` compiles RmlUi's core, FreeType and the given backends plus a host file; the game's copy is a static
+  library `ui` (so its flags stay off the lifted C) with RmlUi's `RmlUi_Platform_SDL` (SDL3,
+  `RMLUI_SDL_VERSION_MAJOR=3`) and `RmlUi_Renderer_GL3`. That renderer picks GL ES 3 (`#version 300 es` shaders,
+  `GLES3/gl3.h`, no glad loader, no `GL_CLAMP_TO_BORDER`/`GL_FRAMEBUFFER_SRGB`) only for Emscripten or Android, so
+  `-DRMLUI_PLATFORM_EMSCRIPTEN` is passed to the backend files alone; RmlUi's core reads that macro only in
+  `LogDefault.cpp`. `NDEBUG` is defined, or the renderer calls `glGetError` after each step.
+- `src/ui.cpp` hosts it (`setup/ui_common.h` is what it shares with the launcher's `setup/window.cpp`: the file
+  interface and `ui_set`/`ui_attr`/`ui_class`/`ui_value`); `src/ui.zig` is its Zig side: the embedded files
+  (`setup/ui/theme.rcss` and the Shippori font through anonymous imports, `src/ui/settings.rml`, `src/ui/debug.rml`),
+  the command queue for on* attributes, start-up. Fonts: Segoe UI and Consolas from `%WINDIR%\Fonts`, as the
+  launcher. RmlUi starts the first time a menu or the overlay is wanted; until then `debug_menu.draw` returns after
+  a few compares.
+- Two contexts: 0 the settings page and metrics overlay (dp = window height / 600: 15 dp text is 27 px at 1080p,
+  36 at 1440p, 54 at 4K), 1 the debug menu (dp 1.25, growing past 1080p). Drawn at the end of `blitWindow`, on the
+  render thread, into frame buffer 0 after the game frame (and its in-between blend), so shots include them and
+  every shown frame has them, held ones too. `ui_frame` saves and restores the GL state the game expects (program,
+  VAO, array buffer, texture and sampler on unit 0, active unit, unpack alignment) and binds sampler 0 to none:
+  the game's samplers would otherwise filter the UI's textures. RmlUi's GL3 renderer draws into its own MSAA layer
+  and blends it over the window; with only the overlay shown, context 0 is sized to the overlay's corner box
+  (`ui.frame`), so that layer stays small. Cost on the dev PC (RX 6700 XT, 1440p): 0.06 ms CPU a frame for the
+  overlay alone, 0.1 ms with the page open.
+- Input (`debug_menu.event`): F1 and F10 toggle. The settings page takes every SDL event while open (key presses do
+  not reach the game). The debug menu takes the mouse, and keys only while one of its text fields has the focus
+  (`ui_typing`), so the game plays with it open and Enter does not click the last button. Pads: `input.poll`
+  turns the merged host pads' d-pad/left stick, A and B into `ui_pad` while the page is open (moves repeat; the
+  first focuses the first control; A clicks; B closes). A move with nothing focused focuses the first control
+  (keyboard too). Navigation is RmlUi's spatial `nav: auto` from the theme; on the page every control sits under
+  its label at the left, so up/down go row by row (beside the label, the right-hand toggles were skipped).
+- Text fields on the settings page apply on Enter (`linebreak` in RmlUi's change event; `ui.cpp`'s listener drops
+  the others), so a half-typed resolution never switches the screen mode. The debug menu's apply as you type.
+- `ui_set` skips markup equal to the last set on the same element; it keys on the element too, since markup set on
+  a parent makes new, empty children (seen: the steppers' values vanished after the form was rebuilt).
+- Testing by script, the window in the background: `PostMessage` WM_KEYDOWN/UP with the scan code in lParam (bits
+  16-23; arrows extended) reaches SDL and the menus; without a scan code SDL sees no arrow keys. Mouse: post
+  WM_MOUSEMOVE, WM_LBUTTONDOWN and WM_LBUTTONUP back to back (SDL's mouse-leave for a pointer outside the window
+  must come after them); a click right after a screenshot was sometimes lost. Typed characters (WM_CHAR from posted
+  key downs) arrived only in some runs: text input needs keyboard focus. Screenshots: `logs\drawlog`.
+
 ## Debug menu (F1)
-- Dear ImGui 1.93.0 with dear_bindings 0.27 (`build.zig.zon`), built by `zig c++`; `build.zig` `addImgui` adds the
-  sources and backends and exposes `dcimgui.h` as module `imgui`. Backend functions are hand-declared externs.
-- `src/debug_menu.zig`: drawn at the end of `blitWindow` (so shots include it), on the GL thread, through
-  `imgui_impl_opengl3` (GLES 3) and `imgui_impl_sdl3`. Closed, it costs nothing. `RECOMP_DEBUG_MENU=1` opens it at
-  boot. Window layout in `debug_menu.ini`.
+- `src/debug_menu.zig` and `src/cheats.zig`, document `src/ui/debug.rml` (the launcher's theme, smaller): a window
+  over the game, dragged by its title bar (`<handle move_target="#document">`). `RECOMP_DEBUG_MENU=1` opens it at
+  boot. Its position is not kept (ImGui kept it in `debug_menu.ini`; that file is no longer read).
 - Render tab: renderer, settings, game/shown fps, guest work time per frame (from the end of one Swap to the start of the
-  next) with a graph and a count of frames over 33.3 ms, last frame's draws/clears/CopyRects/texture uploads
-  (`gl_hle.last`), host cache sizes, pause and frame step (Swap shows the held frame until resumed).
-- Memory tab: hex view and u32 write at a guest VA.
+  next) and the part in draw() as bar graphs (120 frames, 0 to 50 ms; `ui_bars` sets the bars' heights) and a count
+  of frames over 33.3 ms, CPU and RAM, "Profile 3 s" (`logs\sample`), last frame's draws/clears/CopyRects/texture
+  uploads (`gl_hle.last`), frustum tests by call site (fold-out), host cache sizes, pause and frame step (Swap shows
+  the held frame until resumed), and the metrics overlay level (saved to settings.ini as the page does).
+- Memory tab: hex view and u32 write at a guest VA (address and value in hex).
 - Cheats tab (`src/cheats.zig`; addresses from the lifted code, all static): story stage `0x13DAC08`, all-stages flag
   `0x13DAC04`, stage order `0x1B98A0`, stage records `0x1D2C88` (0x3C each, +0x18 bit 0 cleared), exit request
   `0x1D80EC` (-1 none, 1 hub), status `0x13DA270` (level, +0x18 exp, +0x1C money, +0x24 max life), player object
   `0x13C91D0` (HP f32 `0x13D8BA8`, shown HP `+4`, max i32 `+8`; magic f32 `0x13D8BB4`, max `+4`), inventories
   (16-byte entries, +8 owned/quantity): weapons `0x13DA4C8` count `0x13DAAD0`, magic `0x13DA170`/`0x13DA8C8`,
-  accessories `0x13DA2C0`/`0x13DA4C0`, items `0x13DA8D0`/`0x13DA8CC`.
+  accessories `0x13DA2C0`/`0x13DA4C0`, items `0x13DA8D0`/`0x13DA8CC`. Stages are chips (the 29 of the stage order),
+  draw and fog distance are steppers over `logic.distances` (ImGui had sliders, 0.25 to 8).
 - Warp sets the story stage and requests exit 1; the hub then opens on that stage. Tested: stage 1 to m005 (the
-  hub's Next Stage loaded `map\m005`). Give-all, max money, god mode and infinite magic tested in stage 1.
+  hub's Next Stage loaded `map\m005`), and again on RmlUi from m007 (GL backend). Give-all, max money, god mode and
+  infinite magic tested in stage 1.
 - Seen with it: in m005 the magic gauge draws on a white square (not looked into).
-- Testing by script: `Get-Process otogi` gives the window; `SetCursorPos` + `mouse_event` clicks reach ImGui once
-  the window is topmost.
+
+## Settings page (F10, issue #10)
+- `src/settings_menu.zig`, document `src/ui/settings.rml`: the launcher's look (`setup/ui/theme.rcss`, flat Xbox green
+  over the held game frame, dimmed) and its rows: `logic.formRml` writes the form's markup (chips, toggles,
+  steppers, text fields, the resolution chips with Custom), `logic.formValues` sets the values by id (so a change
+  keeps the focus) and `logic.formCommand` turns a click into the key and value to save; the launcher's Settings
+  page uses the same three. F10 or Back+Start on any pad toggles it; B / Esc / Close close it (Esc leaves a text
+  field first). While it is open `debug_menu.holdFrame` holds the game (the debug menu's pause path), key presses
+  go only to the page and the guest pad reads neutral. Back+Start is detected in `input.poll` on the merged host
+  pads; from the moment both are down until both are up the guest sees neither, so the combo does not also reach the
+  game. Back does nothing visible in a stage (tested with `RECOMP_PAD_SCRIPT` in m000); Start is the pause menu, so
+  pressing Start well before Back can still open it under the page.
+- Rows come from `settings.ini` through `setup/logic.zig` (`entries`, `withValue`, the `known` table with labels
+  and choices, shared with the launcher; the game imports it as module `logic`). A key the table lacks shows
+  as a toggle if its value is 0 or 1, else as a text field (`logic.kindOf`; the launcher too now), so new keys appear
+  without code. A change rewrites only its line, `_putenv`s `RECOMP_<KEY>` and, for `known` entries marked `.live`,
+  re-applies on the render thread: framerate (`frRate`), vsync (`applyVsync`), window/resolution (`applyWindow`, the
+  Alt+Enter path), draw/fog distance (`cheats.scales_read`), metrics; cam_invert and show_mouse are read from the
+  environment as used. The rest say "applies after restart". The page shows the file's values: an environment
+  variable that wins over the file is not shown.
+- Scripted: `set <key> <value>` in `logs\cheat` saves and applies as the page does.
+
+## Metrics overlay
+- `metrics` in settings.ini: 0 off, 1 shown frames per second, 2 also the average and worst time between shown frames,
+  the game's own steps a second, its work per step (guest ms, as `RECOMP_FPS` logs it) and draws per step, the
+  backend, the window size and the internal scale. `metrics_corner`: 0 top right, 1 top left, 2 bottom right, 3
+  bottom left. Both live, from the settings page, the F1 Render tab or `logs\cheat`.
+- See-through text with an outline (RmlUi `font-effect: outline`), no panel, in context 0 (`#metrics`), scaled with
+  the window height. It takes no input and never holds the game. Its numbers come from `debug_menu.sampleRates`
+  over half a second, so its markup changes twice a second (`ui_set` skips the same text). It replaces PR #30's
+  `fps_counter` (never released).
+- With the F1 menu open at the top left, the overlay in that corner draws over it.
 
 ## Setup (M6)
 - `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
@@ -477,7 +549,7 @@
   and a game region with North America (bit 0): a warning, the build goes on (a player's mismatched dump built and
   played); anything else (another game, region 2 = Japan) is refused.
 - Downloads (issue #1, "stops when IMG-GUI cannot be fetched"): already front-loaded. Step 3 runs `zig build
-  --fetch` (ANGLE, Dear ImGui, dear_bindings, SDL3; the lazy RmlUi/FreeType are not needed by the player's build),
+  --fetch` (ANGLE, SDL3, RmlUi and FreeType: the game's menus are RmlUi too),
   step 4 Python and Capstone, all before the lift; each is tried 3 times, finished downloads are kept by hash and
   steps by stamp, so Try again resumes.
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
@@ -486,11 +558,12 @@
 ## Launcher (RmlUi, 2026-11-22)
 - Setup became the launcher, `otogi-xunchain.exe`: the same build pipeline (above) plus Play, Settings, Saves and
   What's new pages and self-update. The UI moved from Dear ImGui to RmlUi 6.3 (MIT) with FreeType 2.14.3 for fonts.
-  The game's F1 menu is still ImGui (a later round).
+  The game's menus followed (see "Menus in game").
 - Build: `launcherModule` in `build.zig` compiles RmlUi's `Source/Core` (walked at configure time), its
   `RmlUi_Platform_Win32` and `RmlUi_Renderer_DX11` backends as they ship, and FreeType's default module set, all by
-  `zig c++`/`zig cc`, no CMake. Both packages are lazy, and the launcher step is skipped where `commit.txt` exists
-  (the player's copy of the source), so a player's build never downloads them. ~9.6 MB exe (ReleaseSmall, with
+  `zig c++`/`zig cc`, no CMake (`addRmlUi`, shared with the game's menus). The launcher step is skipped where
+  `commit.txt` exists (the player's copy of the source). RmlUi and FreeType were lazy packages while only the
+  launcher used them; the game needs them now, so every build fetches them. ~9.1 MB exe (ReleaseSmall, with
   `source.zip`).
 - Host (`setup/window.cpp`): Win32 + D3D11 as before, frameless (`WM_NCCALCSIZE` returns 0, DWM frame margin of 1
   keeps the shadow and rounded corners). `WM_NCHITTEST` makes `#titlebar` drag the window unless the point is over
