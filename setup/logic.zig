@@ -85,6 +85,7 @@ pub const known = [_]Known{
     .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
     .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
     .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle, .live = true },
+    .{ .key = "cam_invert_y", .label = "Invert camera up/down", .kind = .toggle, .live = true },
     .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle, .live = true },
     .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper, .live = true },
     .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper, .live = true },
@@ -114,6 +115,45 @@ test stepDistance {
     try std.testing.expectEqual(0.75, stepDistance("", false));
     try std.testing.expectEqual(8, stepDistance("8", true));
     try std.testing.expectEqual(0.25, stepDistance("0.25", false));
+}
+
+/// SHA-1 of default.xbe on the redump of the USA disc: the build is made from it.
+pub const xbe_sha1 = "abf12bb66fcbd9f694c223419a2309c1a5f72293";
+
+pub fn sha1Hex(data: []const u8) [40]u8 {
+    var h: [20]u8 = undefined;
+    std.crypto.hash.Sha1.hash(data, &h, .{});
+    return std.fmt.bytesToHex(h, .lower);
+}
+
+pub const Xbe = enum {
+    /// The redump's default.xbe.
+    match,
+    /// The redump's with extract-xiso's media patch, which `checkXbe` undid.
+    media_patched,
+    /// Otogi (USA) by its certificate, but other bytes: build with a warning.
+    other_dump,
+    /// Not Otogi (USA): another game, or another region's release.
+    wrong_game,
+};
+
+/// What a disc's default.xbe is. extract-xiso (XISOs, repacked HDD rips) turns
+/// the media check's `jge` into `jmp` (one byte); that is undone in `data` when
+/// it gives back the redump's exact bytes.
+pub fn checkXbe(data: []u8) Xbe {
+    if (std.mem.eql(u8, &sha1Hex(data), xbe_sha1)) return .match;
+    if (std.mem.indexOf(u8, data, "\xE8\xCA\xFD\xFF\xFF\x85\xC0\xEB")) |i| {
+        data[i + 7] = 0x7D;
+        if (std.mem.eql(u8, &sha1Hex(data), xbe_sha1)) return .media_patched;
+        data[i + 7] = 0xEB;
+    }
+    // The certificate: title ID 0x46530002 (FS-002), game region with North America.
+    if (data.len < 0x11C or !std.mem.eql(u8, data[0..4], "XBEH")) return .wrong_game;
+    const cert = std.mem.readInt(u32, data[0x118..0x11C], .little) -% std.mem.readInt(u32, data[0x104..0x108], .little);
+    if (cert > data.len - 0xA4) return .wrong_game;
+    const title = std.mem.readInt(u32, data[cert + 8 ..][0..4], .little);
+    const region = std.mem.readInt(u32, data[cert + 0xA0 ..][0..4], .little);
+    return if (title == 0x46530002 and region & 1 != 0) .other_dump else .wrong_game;
 }
 
 /// "0.10.0" > "0.9.2"; a leading "v" is ignored.
@@ -247,6 +287,36 @@ test urlEncode {
     var w: std.Io.Writer = .fixed(&buf);
     try urlEncode(&w, "a b&c=d\n**v0.8**~");
     try std.testing.expectEqualStrings("a%20b%26c%3Dd%0A%2A%2Av0.8%2A%2A~", w.buffered());
+}
+
+test checkXbe {
+    // A bare header and certificate: Otogi's title ID, then the region decides.
+    var x: [0x300]u8 = @splat(0);
+    @memcpy(x[0..4], "XBEH");
+    std.mem.writeInt(u32, x[0x104..0x108], 0x10000, .little);
+    std.mem.writeInt(u32, x[0x118..0x11C], 0x10184, .little);
+    std.mem.writeInt(u32, x[0x18C..0x190], 0x46530002, .little);
+    std.mem.writeInt(u32, x[0x224..0x228], 1, .little);
+    try std.testing.expectEqual(Xbe.other_dump, checkXbe(&x));
+    std.mem.writeInt(u32, x[0x224..0x228], 2, .little); // Japan
+    try std.testing.expectEqual(Xbe.wrong_game, checkXbe(&x));
+    std.mem.writeInt(u32, x[0x224..0x228], 1, .little);
+    std.mem.writeInt(u32, x[0x18C..0x190], 0x4D530004, .little); // another game
+    try std.testing.expectEqual(Xbe.wrong_game, checkXbe(&x));
+    try std.testing.expectEqual(Xbe.wrong_game, checkXbe(x[0..0x100]));
+
+    // The real one, if this checkout has game\ extracted.
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const real = std.Io.Dir.cwd().readFileAlloc(io, "game/default.xbe", gpa, .limited(8 << 20)) catch return error.SkipZigTest;
+    defer gpa.free(real);
+    try std.testing.expectEqual(Xbe.match, checkXbe(real));
+    const at = std.mem.indexOf(u8, real, "\xE8\xCA\xFD\xFF\xFF\x85\xC0\x7D").? + 7;
+    real[at] = 0xEB; // as extract-xiso leaves it
+    try std.testing.expectEqual(Xbe.media_patched, checkXbe(real));
+    try std.testing.expectEqual(@as(u8, 0x7D), real[at]);
+    real[at + 1] ^= 1;
+    try std.testing.expectEqual(Xbe.other_dump, checkXbe(real));
 }
 
 test notesRml {
