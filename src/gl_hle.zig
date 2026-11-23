@@ -829,7 +829,9 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
         try w.writeAll("uniform vec4 u_c[192];\n");
         for (0..16) |i| if (h.inputs & (@as(u16, 1) << @intCast(i)) != 0) try w.print("in vec4 v{d};\n", .{i});
         // oFog.x is a distance for table fog and the factor itself with FOGTABLEMODE
-        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A.
+        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A, and so
+        // does a program that never writes oFog (the strand hair, D730B1B8: at 0 the Crimson
+        // King's mane drew in the fog colour).
         try w.writeAll(
             \\float nv_fog(float f) { float d = abs(f); return u_fog.x == 3.0 ? (u_fog.z - d) / (u_fog.z - u_fog.y)
             \\  : u_fog.x == 1.0 ? exp(-d * u_fog.w) : u_fog.x == 2.0 ? exp(-(d * u_fog.w) * (d * u_fog.w)) : f; }
@@ -839,7 +841,7 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
             \\#define c u_c
             \\void main() {
             \\  vec4 R0 = vec4(0.0), R1 = R0, R2 = R0, R3 = R0, R4 = R0, R5 = R0, R6 = R0, R7 = R0, R8 = R0, R9 = R0, R10 = R0, R11 = R0, R12 = R0;
-            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(0.0);
+            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(1.0);
             \\  vec4 oT0 = vec4(0.0, 0.0, 0.0, 1.0), oT1 = oT0, oT2 = oT0, oT3 = oT0;
             \\  int a0 = 0;
             \\
@@ -1599,14 +1601,16 @@ fn uploadUniforms(p: *Prog) void {
         if (uniNew(p, @as(*const [192 * 4]f32, @ptrCast(&vsc)))) gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
     }
     if (p.key.ps != 0) {
-        const def = &pixel_shaders.items[p.key.ps - 1].def;
+        // Constants from the render state, not the definition: SetPixelShaderConstant
+        // changes them there (the title's ripple sets its colour and fade so).
+        const ps = d3d.psState;
         var c: [16][4]f32 = undefined;
         for (0..8) |i| {
-            c[i] = argbVec(def[PsDef.constant0 + i]);
-            c[8 + i] = argbVec(def[PsDef.constant1 + i]);
+            c[i] = argbVec(ps(PsDef.constant0 + @as(u32, @intCast(i))));
+            c[8 + i] = argbVec(ps(PsDef.constant1 + @as(u32, @intCast(i))));
         }
         if (p.u_psc >= 0 and uniNew(p, @as(*const [64]f32, @ptrCast(&c)))) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
-        const f = [2][4]f32{ argbVec(def[PsDef.final_c0]), argbVec(def[PsDef.final_c1]) };
+        const f = [2][4]f32{ argbVec(ps(PsDef.final_c0)), argbVec(ps(PsDef.final_c1)) };
         if (p.u_psf >= 0 and uniNew(p, @as(*const [8]f32, @ptrCast(&f)))) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
         if (p.u_bump >= 0) {
             var m: [4][4]f32 = undefined;
@@ -3634,15 +3638,15 @@ export fn sub_000F7080() void {
 // rewriting its per-object constants. Draws are replaced here, so the guest
 // pushbuffer holds no draws; record the calls on the host instead and replay
 // them. A replayed draw sees the state as recorded where the recording
-// changed it (against the state at BeginPushBuffer) or set it (a simple render
-// state's method in the guest pushbuffer, even to the value it had), the live
-// state elsewhere.
+// changed it (against the state at BeginPushBuffer) or set it (a render state's
+// method in the guest pushbuffer, even to the value it had), the live state
+// elsewhere.
 
-const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, set: u32, state: [d3d.STATE_WORDS]u32 };
+const PbDraw = struct { prim: u32, n: u32, idx: ?[*]align(1) const u16, base: u32, tex: [4]u32, vs: u32, ps: u32, vb: [4]u32, stride: [4]u32, set: u128, state: [d3d.STATE_WORDS]u32 };
 const PbOp = union(enum) { vsc: struct { reg: i32, n: u32, va: u32 }, draw: PbDraw };
-// put: how far the guest pushbuffer has been scanned; set: the simple render
-// states it has set so far (d3d.simpleStatesSet).
-const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp), put: u32 = 0, set: u32 = 0 };
+// put: how far the guest pushbuffer has been scanned; set: the render states
+// it has set so far (d3d.statesSet).
+const PbRec = struct { pb: u32, base: [d3d.STATE_WORDS]u32, ops: std.ArrayList(PbOp), put: u32 = 0, set: u128 = 0 };
 var pb_recs: std.ArrayList(PbRec) = .empty;
 var rec_cur: ?usize = null;
 
@@ -3661,7 +3665,7 @@ fn recordDraw(ri: usize, xprim: u32, n: u32, idx: ?[*]align(1) const u16, base: 
     } else null;
     const r = &pb_recs.items[ri];
     const put = d3d.mem32(d3d.mem32(d3d.DEVICE_PTR));
-    if (put > r.put) r.set |= d3d.simpleStatesSet(@as([*]align(1) const u32, @ptrCast(d3d.ptr(r.put)))[0 .. (put - r.put) / 4]);
+    if (put > r.put) r.set |= d3d.statesSet(@as([*]align(1) const u32, @ptrCast(d3d.ptr(r.put)))[0 .. (put - r.put) / 4]);
     r.put = put;
     const op = r.ops.addOne(alloc) catch return;
     op.* = .{ .draw = .{ .prim = xprim, .n = n, .idx = own, .base = base, .tex = stage_tex, .vs = vshader, .ps = pshader, .vb = stream_vb[0..4].*, .stride = stream_stride[0..4].*, .set = r.set, .state = undefined } };
@@ -3679,8 +3683,10 @@ fn replay(r: *const PbRec) void {
         .draw => |*d| {
             for (&eff, live, d.state, r.base, 0..) |*e, l, s, b, i| {
                 const bit = i -% (128 + d3d.simple_first);
-                e.* = if (s != b or (bit < 32 and d.set >> @intCast(bit) & 1 != 0)) s else l;
+                e.* = if (s != b or (bit < 128 and d.set >> @intCast(bit) & 1 != 0)) s else l;
             }
+            // The pixel shader block (its constants) goes with the recorded shader.
+            @memcpy(eff[128..][0..PsDef.texture_modes + 1], d.state[128..][0..PsDef.texture_modes + 1]);
             d3d.state_snap = &eff;
             stage_tex = d.tex;
             vshader = d.vs;
