@@ -224,6 +224,12 @@
   for about a third of them, so those draw over the ground in front. `RECOMP_MIST_DEPTH` (default on) keeps the depth
   test for that program (microcode hash `A8A1DBCD`; `HostVs.hash` names programs across runs). The ZENABLE index
   (143) is right: StencilEnable 144 and ZBias 149 match the XbSymbol variables.
+- Fire drawn as boxes (m013 torches, 2026-11-22): a flame is one sprite of `1D94C21` whose c159 is added to its UVs
+  to pick one of 32 cells (64x128) in a 2048x128 sheet (UV = v3 + c159). In-between frames blended c159 with every
+  other constant, so the quad showed the right half of one cell and the left half of the next, with a hard edge
+  between them: a box, not a flame. Game frames were right, which is why draw-log captures (always a game frame)
+  never showed it. c159 of that program now comes from the newer frame unblended. To see an in-between frame, replay
+  the final pass with `fr_prev` at t = 0.5. Other programs that step through a sheet by a constant would need the same.
 
 ## Stage fixes (after M6)
 - In the Heavens (m027) white-out: the character after-image pass draws characters into a 640x480 target (fades it with a

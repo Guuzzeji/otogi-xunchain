@@ -19,6 +19,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 - The frame rate follows the monitor the window is on, also after moving it to another one.
 
 ### Fixed
+- Fire no longer looks like flat boxes with `framerate` above 30: torch flames and other animated sprites
+  showed two halves of their animation side by side on the in-between frames.
 - Keyboard controls work (issue #8): they were listed in the README but never reached the game.
 - A controller is found whichever slot Windows gave it; before, only the first slot was read.
 - The game no longer stays at 30 shown frames a second after one slow moment (opening the
