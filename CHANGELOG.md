@@ -7,6 +7,20 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Added
+- The launcher builds from a folder of the disc's files too (as an Xbox 360 or HDD rip
+  leaves them): pick the `default.xbe` in it, or type the folder's path.
+
+### Changed
+- A dump of the USA disc whose `default.xbe` differs from the known good one no longer
+  blocks the build: the launcher warns that it was modified or misread, and you can still
+  build. A different game, or the Japanese release, is still refused.
+
+### Fixed
+- XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
+  patches one byte of `default.xbe` (the media check). The launcher now recognises that
+  patch, accepts the disc as verified and puts the original byte back for the build.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added

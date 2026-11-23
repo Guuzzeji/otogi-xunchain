@@ -362,7 +362,7 @@
 - `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
   zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in
   `setup/main.zig`. `otogi-xunchain-setup.exe <iso> <out>` starts at once (for tests).
-- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` SHA-1 in the
+- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` in the
   ISO (`src/xiso.zig`), extract to `<out>\game`, unpack the source to `<out>\build`, download Zig 0.17.0, Python
   3.14.7 embeddable and the Capstone 5.0.9 wheel (SHA-256 pinned in `setup/main.zig`, kept in
   `<out>\build\downloads`), lift (xbe_parser, disasm, func_id, abi_analysis, recomp), `zig build --prefix <out>
@@ -390,6 +390,19 @@
   downloads run in-process and finish their step first. Tested: stop during the compile left no processes.
 - The last disc image that checked out is remembered in `otogi-setup-iso.txt` beside the exe; without one, setup
   tries the first `.iso` beside the exe.
+- Dumps (issue #11, discussion #3; `checkXbe` in `setup/logic.zig`). Sources: a redump ISO (XDVDFS at 0x18300000),
+  an XISO (at 0; `Image.open` already tried that base), or a folder of the disc's files (picked as the folder or its
+  `default.xbe`; copied with `copyTree`). `default.xbe` is then one of: the redump's (SHA-1 `abf12bb6...`); the
+  same with extract-xiso's media patch, which XISOs and repacked HDD rips carry: `E8 CA FD FF FF 85 C0 7D`
+  (`call; test eax,eax; jge`) at file offset 0xD5955 becomes `... EB` (`jmp`), the only byte that differs in the
+  owner's XISO (SHA-1 `25f42754...`); setup undoes it in memory, the hash then matches, and the restored file
+  goes into `game\` so the lift is the verified one; any other bytes with the certificate's title ID 0x46530002
+  and a game region with North America (bit 0): a warning, the build goes on (a player's mismatched dump built and
+  played); anything else (another game, region 2 = Japan) is refused.
+- Downloads (issue #1, "stops when IMG-GUI cannot be fetched"): already front-loaded. Step 3 runs `zig build
+  --fetch` (ANGLE, Dear ImGui, dear_bindings, SDL3; the lazy RmlUi/FreeType are not needed by the player's build),
+  step 4 Python and Capstone, all before the lift; each is tried 3 times, finished downloads are kept by hash and
+  steps by stamp, so Try again resumes.
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
   `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
 
