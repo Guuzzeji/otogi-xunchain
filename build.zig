@@ -13,7 +13,10 @@ pub fn build(b: *std.Build) void {
         break :blk rev.captureStdOut(.{});
     };
 
-    const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
+    // Windows: x86_64-windows-gnu. Linux: the host, so the system's SDL3, EGL
+    // and GL ES headers and libraries are found.
+    const target = b.standardTargetOptions(.{ .default_target = if (b.graph.host.result.os.tag == .windows) .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } else .{} });
+    const windows = target.result.os.tag == .windows;
     // ReleaseFast by default: the Debug renderer cannot hold the game's frame rate.
     const optimize = b.option(std.builtin.Optimize, "optimize", "Optimization mode (default fast)") orelse .fast;
 
@@ -32,31 +35,41 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("xboxrecomp/src"));
     inline for (.{ "kernel", "d3d", "audio", "apu", "nv2a", "usb", "input", "video", "platform" }) |d|
         mod.addIncludePath(b.path("xboxrecomp/src/" ++ d));
-    mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-w" } });
+    const c_flags: []const []const u8 = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-w" };
+    mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = c_flags });
+    mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = if (windows) &toolkit_windows else &toolkit_posix, .flags = c_flags });
     addGenerated(b, mod);
 
-    // ANGLE (GL ES 3 on D3D11/Vulkan/GL): headers, import libs, and the 4 DLLs beside the exe.
-    const angle = b.dependency("angle", .{});
     const gl = b.addTranslateC(.{ .root_source_file = b.path("src/gl.h"), .target = target, .optimize = optimize });
-    gl.addIncludePath(angle.path("include"));
-    mod.addImport("gl", gl.createModule());
-    mod.addObjectFile(angle.path("lib/libEGL.dll.lib"));
-    mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
-    inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
-        b.getInstallStep().dependOn(&b.addInstallBinFile(angle.path("bin/" ++ dll), dll).step);
-    // SDL3 (window, events, gamepads): the official prebuilt DLL beside the exe.
-    const sdl_dir = b.dependency("sdl", .{}).path("x86_64-w64-mingw32");
     const sdl = b.addTranslateC(.{ .root_source_file = b.path("src/sdl.h"), .target = target, .optimize = optimize });
-    sdl.addIncludePath(sdl_dir.path(b, "include"));
+    var gles_include: ?std.Build.LazyPath = null;
+    if (windows) {
+        // ANGLE (GL ES 3 on D3D11/Vulkan/GL): headers, import libs, and the 4 DLLs beside the exe.
+        const angle = b.lazyDependency("angle", .{}) orelse return;
+        gles_include = angle.path("include");
+        gl.addIncludePath(angle.path("include"));
+        mod.addObjectFile(angle.path("lib/libEGL.dll.lib"));
+        mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
+        inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
+            b.getInstallStep().dependOn(&b.addInstallBinFile(angle.path("bin/" ++ dll), dll).step);
+        // SDL3 (window, events, gamepads): the official prebuilt DLL beside the exe.
+        const sdl_dir = (b.lazyDependency("sdl", .{}) orelse return).path("x86_64-w64-mingw32");
+        sdl.addIncludePath(sdl_dir.path(b, "include"));
+        mod.addIncludePath(sdl_dir.path(b, "include")); // for ImGui's SDL3 backend
+        mod.addObjectFile(sdl_dir.path(b, "lib/libSDL3.dll.a"));
+        b.getInstallStep().dependOn(&b.addInstallBinFile(sdl_dir.path(b, "bin/SDL3.dll"), "SDL3.dll").step);
+        for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32", "dwmapi" }) |l|
+            mod.linkSystemLibrary(l, .{});
+        mod.addWin32ResourceFile(.{ .file = b.path("src/otogi.rc") }); // the icon
+    } else {
+        // Linux: the system's SDL3, EGL and GL ES (Mesa); audio on SDL3 too.
+        mod.addCSourceFiles(.{ .files = &.{ "src/apu_sdl3.c", "src/linux_stubs.c" }, .flags = c_flags });
+        for ([_][]const u8{ "SDL3", "EGL", "GLESv2", "m" }) |l| mod.linkSystemLibrary(l, .{});
+    }
+    mod.addImport("gl", gl.createModule());
     mod.addImport("sdl", sdl.createModule());
-    mod.addIncludePath(sdl_dir.path(b, "include")); // for ImGui's SDL3 backend
-    mod.addObjectFile(sdl_dir.path(b, "lib/libSDL3.dll.a"));
-    b.getInstallStep().dependOn(&b.addInstallBinFile(sdl_dir.path(b, "bin/SDL3.dll"), "SDL3.dll").step);
-    addImgui(b, mod, target, optimize, &.{ "sdl3", "opengl3" });
-    for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32" }) |l|
-        mod.linkSystemLibrary(l, .{});
+    addImgui(b, mod, target, optimize, gles_include, &.{ "sdl3", "opengl3" });
 
-    mod.addWin32ResourceFile(.{ .file = b.path("src/otogi.rc") }); // the icon
     const exe = b.addExecutable(.{ .name = "otogi", .root_module = mod });
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
@@ -101,11 +114,13 @@ pub fn build(b: *std.Build) void {
 
 /// Dear ImGui (C++) plus its C API from dear_bindings, as module "imgui".
 /// Backends are called through hand-declared externs (see debug_menu.zig).
-fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, comptime backends: []const []const u8) void {
+/// gles_include: ANGLE's GL ES headers on Windows; null takes the system's.
+fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, gles_include: ?std.Build.LazyPath, comptime backends: []const []const u8) void {
     const imgui = b.dependency("imgui", .{});
     const bind = b.dependency("dear_bindings", .{});
     const flags: []const []const u8 = &.{ "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-w", "-DIMGUI_IMPL_OPENGL_ES3", "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS" };
-    for ([_]std.Build.LazyPath{ imgui.path(""), imgui.path("backends"), bind.path(""), bind.path("backends"), b.dependency("angle", .{}).path("include") }) |p| mod.addIncludePath(p);
+    for ([_]std.Build.LazyPath{ imgui.path(""), imgui.path("backends"), bind.path(""), bind.path("backends") }) |p| mod.addIncludePath(p);
+    if (gles_include) |p| mod.addIncludePath(p);
     mod.addCSourceFiles(.{ .root = imgui.path(""), .files = &.{ "imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_demo.cpp" }, .flags = flags });
     mod.addCSourceFile(.{ .file = bind.path("dcimgui.cpp"), .flags = flags });
     inline for (backends) |be| {
@@ -113,7 +128,6 @@ fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTar
         mod.addCSourceFile(.{ .file = bind.path("backends/dcimgui_impl_" ++ be ++ ".cpp"), .flags = flags });
     }
     mod.link_libcpp = true;
-    mod.linkSystemLibrary("dwmapi", .{});
     const tc = b.addTranslateC(.{ .root_source_file = b.path("src/imgui.h"), .target = target, .optimize = optimize });
     tc.addIncludePath(bind.path(""));
     tc.addIncludePath(imgui.path(""));
@@ -180,8 +194,11 @@ fn addGenerated(b: *std.Build, mod: *std.Build.Module) void {
     mod.addCSourceFiles(.{ .root = b.path("src/recomp/gen"), .files = files.items, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-fwrapv", "-w" } });
 }
 
-// Windows source set from xboxrecomp's CMakeLists (minus the SDL/POSIX-only files).
-// input/xinput_device.c is left out too: src/input.zig (SDL3) stands in for it.
+// xboxrecomp's source set, from its CMakeLists: what every host builds, then
+// each host's own. input/xinput_device.c is left out: src/input.zig (SDL3)
+// stands in for it. Linux leaves out the D3D11, Media Foundation, GDI and raw
+// input files (dormant for Otogi: ANGLE or Mesa draws, see src/linux_stubs.c)
+// and SDL2's audio (src/apu_sdl3.c).
 const toolkit_c = [_][]const u8{
     "platform/host_time.c",       "platform/recomp_exit_hook.c",
     "kernel/kernel_path.c",       "kernel/kernel_pool.c",
@@ -196,20 +213,23 @@ const toolkit_c = [_][]const u8{
     "kernel/icall_feedback.c",    "kernel/recomp_trace.c",
     "kernel/nv2a_pb_scan.c",      "kernel/nv2a_pb_exec.c",
     "kernel/nv2a_flip_hold.c",    "kernel/nv2a_vsh_interp.c",
-    "kernel/nv2a_combiner.c",     "d3d/d3d8_device.c",
-    "d3d/d3d8_gamma.c",           "d3d/d3d8_resources.c",
-    "d3d/d3d8_shaders.c",         "d3d/d3d8_states.c",
-    "d3d/d3d8_combiners.c",       "d3d/d3d8_vsh.c",
-    "audio/dsound_device.c",      "audio/wma_decoder.c",
-    "apu/apu_core.c",             "apu/apu_vp.c",
-    "apu/apu_dsp.c",              "apu/apu_mmio_hook.c",
-    "apu/apu_xaudio2.c",          "apu/apu_sdl2.c",
+    "kernel/nv2a_combiner.c",     "audio/dsound_device.c",
+    "audio/wma_decoder.c",        "apu/apu_core.c",
+    "apu/apu_vp.c",               "apu/apu_dsp.c",
+    "apu/apu_mmio_hook.c",        "apu/apu_xaudio2.c",
     "apu/apu_wav.c",              "nv2a/nv2a_core.c",
-    "nv2a/nv2a_pgraph_d3d11.c",   "nv2a/nv2a_pb_replay.c",
-    "nv2a/nv2a_mmio_hook.c",      "nv2a/nv2a_pb_test.c",
-    "usb/ohci.c",                 "usb/usb_gamepad.c",
-    "input/input_map.c",          "input/keyboard.c",
-    "input/mkb_input.c",          "video/video_player.c",
-    "video/video_pump.c",         "video/fb_present.c",
-    "video/gpu_present.c",
+    "nv2a/nv2a_pb_replay.c",      "nv2a/nv2a_mmio_hook.c",
+    "nv2a/nv2a_pb_test.c",        "usb/ohci.c",
+    "usb/usb_gamepad.c",          "input/input_map.c",
+    "input/keyboard.c",           "video/video_player.c",
+    "video/video_pump.c",
 };
+const toolkit_windows = [_][]const u8{
+    "d3d/d3d8_device.c",      "d3d/d3d8_gamma.c",
+    "d3d/d3d8_resources.c",   "d3d/d3d8_shaders.c",
+    "d3d/d3d8_states.c",      "d3d/d3d8_combiners.c",
+    "d3d/d3d8_vsh.c",         "apu/apu_sdl2.c",
+    "nv2a/nv2a_pgraph_d3d11.c", "input/mkb_input.c",
+    "video/fb_present.c",     "video/gpu_present.c",
+};
+const toolkit_posix = [_][]const u8{"platform/win32_compat.c"};

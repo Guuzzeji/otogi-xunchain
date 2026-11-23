@@ -656,8 +656,21 @@ static LONG CALLBACK ac97_write_veh(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-#if !defined(_WIN32) && defined(__aarch64__)
+/* POSIX hosts with a store decoder: arm64, and x86-64 Linux. */
+#if !defined(_WIN32) && (defined(__aarch64__) || (defined(__linux__) && defined(__x86_64__)))
+#define AC97_POSIX_TRAP 1
+#endif
+
+#if defined(AC97_POSIX_TRAP)
+#if defined(__aarch64__)
 #include "../platform/mmio_decode_a64.h"
+#define ac97_emulate(uc, off, dev, rd, wr) \
+    mmio_emulate_a64((ucontext_t *)(uc), off, dev, rd, wr)
+#else
+#include "../platform/mmio_decode.h"
+#define ac97_emulate(uc, off, dev, rd, wr) \
+    mmio_emulate((mmio_ctx_t)(uc), off, dev, rd, wr)
+#endif
 #include <sys/mman.h>
 static size_t g_ac97_hsize;    /* host page: 16 KB on arm64 Darwin */
 
@@ -673,7 +686,7 @@ static void ac97_posix_wr(void *dev, uint32_t off, uint64_t v, int size)
     memcpy((char *)dev + off, &v, size > 8 ? 8 : size);
 }
 
-/* POSIX arm64 half of the AC'97 write trap: the page is PROT_READ, so a
+/* POSIX half of the AC'97 write trap: the page is PROT_READ, so a
  * write arrives as SIGBUS/SIGSEGV; the title's fault handler reaches this
  * through xbox_PosixMmioFault before reporting. The store is emulated onto
  * the page (open for the moment), the controller's reaction applied, and the
@@ -705,8 +718,8 @@ int xbox_Ac97PosixFault(void *ucv, uintptr_t fault)
         __atomic_store_n(&g_ac97_posix_lock, 0, __ATOMIC_RELEASE);
         return 0;
     }
-    ok = mmio_emulate_a64((ucontext_t *)ucv, (uint32_t)(fault - (uintptr_t)g_ac97_page),
-                          g_ac97_page, ac97_posix_rd, ac97_posix_wr);
+    ok = ac97_emulate(ucv, (uint32_t)(fault - (uintptr_t)g_ac97_page),
+                      g_ac97_page, ac97_posix_rd, ac97_posix_wr);
     if (ok)
         ac97_clear_reset_bits();
     mprotect(g_ac97_page, g_ac97_hsize, PROT_READ);
@@ -724,7 +737,7 @@ static void ac97_arm_write_trap(void)
 
     if (!g_mcpx_memory || g_ac97_page)
         return;
-#if !defined(_WIN32) && !defined(__aarch64__)
+#if !defined(_WIN32) && !defined(AC97_POSIX_TRAP)
     /* No POSIX decoder for this host's stores: a trapped write would be a
      * fault nothing services. Leave the page writable. */
     (void)old;
@@ -733,7 +746,7 @@ static void ac97_arm_write_trap(void)
     return;
 #endif
     g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
-#if !defined(_WIN32) && defined(__aarch64__)
+#if defined(AC97_POSIX_TRAP)
     (void)old;
     g_ac97_hsize = (size_t)sysconf(_SC_PAGESIZE);
     if (g_ac97_hsize < AC97_TRAP_BYTES)
@@ -831,7 +844,7 @@ int xbox_VehMmioFault(void *exception_pointers)
     return 0;
 }
 #else
-#if defined(__aarch64__)
+#if defined(AC97_POSIX_TRAP)
 extern bool apu_hook_handle_mmio_posix(void *ucv, uintptr_t fault_addr,
                                        uint32_t fault_xbox_va, int is_write);
 #endif
@@ -839,11 +852,11 @@ extern bool apu_hook_handle_mmio_posix(void *ucv, uintptr_t fault_addr,
 /* POSIX: call from the title's SIGBUS/SIGSEGV handler (SA_SIGINFO) with its
  * ucontext_t * and si_addr; on 1, return from the handler and the thread
  * resumes after the emulated instruction. APU, then AC'97, then OHCI. Only
- * arm64 hosts have a decoder; elsewhere nothing is trapped and this returns
- * 0. */
+ * arm64 and x86-64 Linux hosts have a decoder; elsewhere nothing is trapped
+ * and this returns 0. */
 int xbox_PosixMmioFault(void *ucv, uintptr_t fault)
 {
-#if defined(__aarch64__)
+#if defined(AC97_POSIX_TRAP)
     uint32_t va;
 
     if (!mmio_fault_va(fault, &va))

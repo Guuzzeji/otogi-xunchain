@@ -538,3 +538,32 @@
     merge lands during a build the push fails, and re-running the job bumps again.
     It used to run on every merged PR, which released #19 to #25 as six versions in one night.
   - The bump and changelog shell and the box parser were dry-run locally on scratch copies.
+
+## Linux (M8, 2026-11-22)
+- Build: `zig build` on a Linux host targets the host (Windows still defaults to x86_64-windows-gnu). Needs SDL3, EGL,
+  GL ES dev packages (Ubuntu 26.04: `libsdl3-dev libegl-dev libgles-dev pkg-config`). `toolkit_c` is split into the
+  common set, `toolkit_windows` (D3D11, Media Foundation, GDI, raw input, XAudio2's twin) and `toolkit_posix`
+  (`platform/win32_compat.c`). `src/linux_stubs.c` covers what the left-out files provide and Otogi never calls
+  (the RECOMP_FB_WINDOW debug window, `mkb_merge`). ANGLE and the SDL mingw zip are lazy, so Linux never fetches them.
+- Host: `src/host.zig` holds the few OS calls std has no io-free form of (lock + condition, steady clock, sleep,
+  mkdir, setenv, CPU and RAM for the debug menu); `gl_hle`, `input` and `debug_menu` use it in place of their own
+  kernel32 externs. Paths use `/` (Windows takes it too). Saves: `$XDG_DATA_HOME/Otogi`, else `~/.local/share/Otogi`.
+- Renderer: on Linux SDL makes the GL ES 3.0 context (`SDL_WINDOW_OPENGL`, `SDL_HINT_VIDEO_FORCE_EGL` so the shader
+  cache can hook the EGL display); `angleContext` is Windows only. `eglSetBlobCacheFuncsANDROID` is looked up with
+  `eglGetProcAddress` on both (Mesa does not export it). Mesa has `GL_EXT_depth_clamp` and S3TC.
+- WSLg: Mesa falls back to llvmpipe (~21 ms a frame, still 30 game fps at 2x). `GALLIUM_DRIVER=d3d12
+  MESA_D3D12_DEFAULT_ADAPTER_NAME=AMD` runs it on the GPU through WSL's D3D12 (0.3 ms). Real Linux picks the GPU.
+- Trapped MMIO (RECOMP_AC97_READY): xboxrecomp only decoded faulting x86-64 instructions from a Win32 CONTEXT, so on
+  x86-64 Linux the first DirectSound register access killed the game. `platform/mmio_decode.h` now takes an
+  `mmio_ctx_t` (CONTEXT or `ucontext_t`, gregs indices hard-coded), and the APU hook, the AC'97 write trap
+  (emulated, as on arm64; no trap-flag step) and `xbox_PosixMmioFault` cover x86-64 Linux. `src/main.zig` installs a
+  SIGSEGV/SIGBUS handler that calls it, else prints the crash report (exe offset for `addr2line`).
+- Handles: the bridge passes untagged guest values through as handles (KeSetEvent on a KEVENT it never registered).
+  Win32 rejects them; `win32_compat.c` cast them to objects and crashed (SetEvent on host 0x106B6C). Objects now live
+  in one reserved arena (`obj_of`): a handle is valid only as a live slot there, else ERROR_INVALID_HANDLE / WAIT_FAILED.
+- File names: the disc keeps its case (`media/FONT14.xpr`), the title asks for `d:\media\font14.xpr`.
+  `kernel_path.c`'s POSIX `xbox_translate_path` folds each missing component to the entry that matches ignoring case
+  (`fold_case`); unmatched tails keep the title's spelling, for creates. The nine `d:\sfx\*.dds` misses happen on
+  Windows too.
+- Guest memory: offset-based, so nothing needs the low 4 GB; `RECOMP_EXT_VMA=1` (set by main.zig on Linux) holds the
+  whole 4 GB window, so device windows above guest RAM are not taken by the OS's own maps.

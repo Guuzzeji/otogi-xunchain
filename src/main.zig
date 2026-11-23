@@ -2,6 +2,7 @@
 //! Port of xboxrecomp/templates/new-game/src/main.c.
 const std = @import("std");
 const w = std.os.windows;
+const host = @import("host.zig");
 const build_info = @import("build_info");
 const commit = std.mem.trim(u8, @embedFile("commit.txt"), " \r\n");
 
@@ -34,6 +35,7 @@ extern fn xbox_MemoryLayoutInit(xbe_data: [*]const u8, xbe_size: usize) c_int;
 extern fn xbox_MemoryLayoutShutdown() void;
 extern fn xbox_GetMemoryBase() [*]u8;
 extern fn xbox_VehMmioFault(ep: *w.EXCEPTION_POINTERS) c_int;
+extern fn xbox_PosixMmioFault(ucontext: ?*anyopaque, fault: usize) c_int;
 extern fn xbox_WatchdogStart() void;
 extern fn xbox_kernel_init() void;
 extern fn xbox_kernel_shutdown() void;
@@ -57,7 +59,8 @@ extern fn _open_osfhandle(h: isize, flags: c_int) c_int;
 extern fn _dup2(from: c_int, to: c_int) c_int;
 extern fn __acrt_iob_func(i: c_uint) *anyopaque;
 extern fn setvbuf(f: *anyopaque, buf: ?[*]u8, mode: c_int, size: usize) c_int;
-extern fn _putenv(s: [*:0]const u8) c_int;
+extern "c" var stdout: *anyopaque;
+extern "c" var stderr: *anyopaque;
 
 const SymbolInfo = extern struct {
     SizeOfStruct: u32 = 88, // sizeof(SYMBOL_INFO) on x64; Name is written past it
@@ -84,6 +87,14 @@ const print = std.debug.print;
 /// `log = 0` (RECOMP_LOG=0) leaves them on the console.
 fn openLog() void {
     if (std.c.getenv("RECOMP_LOG")) |e| if (e[0] == '0') return;
+    if (!host.windows) {
+        const fd = std.c.open("otogi.log", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+        if (fd < 0) return;
+        _ = std.c.dup2(fd, 1);
+        _ = std.c.dup2(fd, 2);
+        for ([_]*anyopaque{ stdout, stderr }) |f| _ = setvbuf(f, null, 2, 0); // _IONBF
+        return;
+    }
     const h = CreateFileA("otogi.log", 0x40000000, 1, null, 2, 0, null); // GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS
     if (h == w.INVALID_HANDLE_VALUE) return;
     _ = SetStdHandle(@bitCast(@as(i32, -11)), h);
@@ -99,7 +110,8 @@ fn openLog() void {
 fn printGuestContext(rip: u64) void {
     var sym: SymbolInfo = .{};
     var disp: u64 = 0;
-    if (SymFromAddr(w.GetCurrentProcess(), rip, &disp, &sym) != 0)
+    // Linux has no symbol reader here; sigHandler prints the exe offset for addr2line.
+    if (host.windows and SymFromAddr(w.GetCurrentProcess(), rip, &disp, &sym) != 0)
         print("  in {s}+0x{X}\n", .{ sym.Name[0..sym.NameLen], disp });
     if (g_xbox_mem_offset == 0 or g_esp == 0) return;
     const sp: [*]const u32 = @ptrFromInt(@as(usize, @bitCast(g_xbox_mem_offset)) + g_esp);
@@ -135,6 +147,25 @@ fn vehHandler(ep: *w.EXCEPTION_POINTERS) callconv(.winapi) c_long {
     return 0;
 }
 
+/// Linux's vehHandler: SIGSEGV/SIGBUS. Trapped hardware registers are decoded
+/// and stepped over; anything else is reported, then kills the process.
+fn sigHandler(sig: std.posix.SIG, info: *const std.posix.siginfo_t, uc: ?*anyopaque) callconv(.c) void {
+    const fault = @intFromPtr(info.fields.sigfault.addr);
+    if (xbox_PosixMmioFault(uc, fault) != 0) return;
+    // ucontext_t: uc_flags, uc_link, uc_stack (24 bytes), then gregs; REG_RIP is 16.
+    const rip = if (uc) |u| @as([*]const u64, @ptrCast(@alignCast(@as([*]u8, @ptrCast(u)) + 40)))[16] else 0;
+    print("[CRASH] {s} at RIP=0x{X}, fault addr=0x{X}\n", .{ @tagName(sig), rip, fault });
+    print("  Xbox regs: eax=0x{X:0>8} ecx=0x{X:0>8} edx=0x{X:0>8} esp=0x{X:0>8}\n", .{ g_eax, g_ecx, g_edx, g_esp });
+    print("  Xbox regs: ebx=0x{X:0>8} esi=0x{X:0>8} edi=0x{X:0>8}\n", .{ g_ebx, g_esi, g_edi });
+    print("  Xbox VA of fault: 0x{X:0>8}\n", .{@as(u32, @truncate(fault -% @as(usize, @bitCast(g_xbox_mem_offset))))});
+    print("  exe offset: 0x{X} (addr2line -fe otogi <offset>)\n", .{rip -% @intFromPtr(&__ehdr_start)});
+    printGuestContext(rip);
+    // Back to the default action: returning re-runs the access, which now kills.
+    const dfl: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    std.posix.sigaction(sig, &dfl, null);
+}
+extern const __ehdr_start: u8;
+
 /// settings.ini (beside game\): each `key = value` line sets RECOMP_<KEY>
 /// unless the environment already has it. '#' and ';' start comments.
 /// Returns what it set, for the log (which opens after, as `log` decides).
@@ -153,7 +184,7 @@ fn loadSettings(init: std.process.Init) []const u8 {
         for (n[7..]) |*c| c.* = std.ascii.toUpper(c.*);
         if (std.c.getenv(n) != null) continue;
         var kv: [256]u8 = undefined;
-        _ = _putenv(std.fmt.bufPrintSentinel(&kv, "{s}={s}", .{ n, val }, 0) catch continue);
+        host.setEnv(n, std.fmt.bufPrintSentinel(&kv, "{s}", .{val}, 0) catch continue);
         echo.writer.print("[SETTINGS] {s}={s}\n", .{ n, val }) catch {};
     }
     return echo.written();
@@ -162,7 +193,7 @@ fn loadSettings(init: std.process.Init) []const u8 {
 pub fn main(init: std.process.Init) !void {
     // Real pixels: otherwise Windows' display scaling renders small and
     // stretches it. Before any window, which audio and input open too.
-    const dpi = SetProcessDpiAwarenessContext(-4); // PER_MONITOR_AWARE_V2
+    const dpi = if (host.windows) SetProcessDpiAwarenessContext(-4) else 1; // PER_MONITOR_AWARE_V2
     // game\, settings.ini and logs\ are found from the working directory. A
     // launcher (setup's Play, a shell elsewhere) may leave another one; then
     // use the exe's folder, which is where setup puts them.
@@ -175,7 +206,7 @@ pub fn main(init: std.process.Init) !void {
     openLog();
     print("{s}", .{settings});
     if (dpi == 0) print("[MAIN] DPI awareness not set\n", .{});
-    _ = timeBeginPeriod(1);
+    if (host.windows) _ = timeBeginPeriod(1);
     // Toolkit switches Otogi needs. The environment still wins.
     //  RECOMP_ASYNC_IO: async-opened files must return STATUS_PENDING; the
     //    stream loader only reads the byte count on that path (else disc error).
@@ -186,14 +217,23 @@ pub fn main(init: std.process.Init) !void {
     //    its textures and the second one runs the 64 MB contiguous arena dry
     //    (menus then draw white: their textures fail to load).
     inline for (.{ "RECOMP_KEYBOARD", "RECOMP_ASYNC_IO", "RECOMP_VBLANK", "RECOMP_AC97_READY", "RECOMP_HEAP_RECLAIM" }) |v| {
-        if (std.c.getenv(v) == null) _ = _putenv(v ++ "=1");
+        if (std.c.getenv(v) == null) host.setEnv(v, "1");
     }
+    // Linux: hold the whole 4 GB guest window, so nothing the OS maps lands
+    // where the device windows above guest RAM must go.
+    if (!host.windows and std.c.getenv("RECOMP_EXT_VMA") == null) host.setEnv("RECOMP_EXT_VMA", "1");
     print("=== Otogi XUnchain v{s} ({s}): Otogi: Myth of Demons static recompilation ===\n", .{ build_info.version, commit });
 
     // Symbols up front: SymInitialize allocates, which is unsafe inside the handler.
-    _ = SymSetOptions(0x4 | 0x2); // SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME
-    _ = SymInitialize(w.GetCurrentProcess(), null, 1);
-    _ = AddVectoredExceptionHandler(1, vehHandler);
+    if (host.windows) {
+        _ = SymSetOptions(0x4 | 0x2); // SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME
+        _ = SymInitialize(w.GetCurrentProcess(), null, 1);
+        _ = AddVectoredExceptionHandler(1, vehHandler);
+    } else {
+        const sa: std.posix.Sigaction = .{ .handler = .{ .sigaction = sigHandler }, .mask = std.posix.sigemptyset(), .flags = std.posix.SA.SIGINFO };
+        std.posix.sigaction(.SEGV, &sa, null);
+        std.posix.sigaction(.BUS, &sa, null);
+    }
 
     const xbe = try std.Io.Dir.cwd().readFileAlloc(init.io, "game/default.xbe", init.arena.allocator(), .unlimited);
     if (xbox_MemoryLayoutInit(xbe.ptr, xbe.len) == 0) return error.MemoryLayoutInit;
@@ -206,16 +246,22 @@ pub fn main(init: std.process.Init) !void {
     }
 
     xbox_kernel_init();
-    // D:\ -> game\; saves (U:, T:, Z:) under %LOCALAPPDATA%\Otogi.
+    // D:\ -> game\; saves (U:, T:, Z:) under %LOCALAPPDATA%\Otogi, on Linux
+    // $XDG_DATA_HOME/Otogi (~/.local/share/Otogi).
     var save_buf: [512]u8 = undefined;
-    const save_dir = std.fmt.bufPrintSentinel(&save_buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}, 0) catch "SaveData";
+    const save_dir = (if (host.windows)
+        std.fmt.bufPrintSentinel(&save_buf, "{s}\\Otogi", .{std.mem.span(std.c.getenv("LOCALAPPDATA") orelse ".")}, 0)
+    else if (std.c.getenv("XDG_DATA_HOME")) |x|
+        std.fmt.bufPrintSentinel(&save_buf, "{s}/Otogi", .{std.mem.span(x)}, 0)
+    else
+        std.fmt.bufPrintSentinel(&save_buf, "{s}/.local/share/Otogi", .{std.mem.span(std.c.getenv("HOME") orelse ".")}, 0)) catch "SaveData";
     xbox_path_init("game", save_dir);
     xbox_kernel_bridge_init();
     g_esp = g_xbox_stack_base + g_xbox_stack_size - 16; // XBOX_STACK_TOP
 
     if (recomp_dispatch_init() == 0) print("[BOOT] flat dispatch unavailable; indirect calls use the binary search\n", .{});
     xbox_WatchdogStart(); // inert unless RECOMP_WATCHDOG_SECS is set
-    _ = CreateThread(null, 0, samplerThread, null, 0, null);
+    if (host.windows) _ = CreateThread(null, 0, samplerThread, null, 0, null);
 
     print("Starting game at 0x{X:0>8}, esp 0x{X:0>8}\n", .{ XBE_ENTRY, g_esp });
     xbe_entry_point();
@@ -225,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
     xbox_MemoryLayoutShutdown();
 }
 
-// ── Sampling profiler: `type nul > logs\sample` ─────────────────────────────
+// ── Sampling profiler (Windows): `type nul > logs\sample` ───────────────────
 // Where each busy thread spends its time: every thread is suspended every
 // 2 ms for 3 s and its RIP named through the PDB. The watchdog says where a
 // thread is stuck; this says where a thread that is busy goes.

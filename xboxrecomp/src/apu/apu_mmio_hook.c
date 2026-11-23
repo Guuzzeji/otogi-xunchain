@@ -2,8 +2,8 @@
  * MCPX APU MMIO Hook - trapped APU register access
  *
  * Decodes the faulting instruction with the shared trapped-MMIO decoders
- * (src/platform/mmio_decode.h on x86-64 under a VEH, mmio_decode_a64.h on
- * POSIX arm64 under SIGBUS/SIGSEGV) and routes reads/writes through the MCPX
+ * (src/platform/mmio_decode.h on x86-64 under a VEH or Linux's SIGSEGV,
+ * mmio_decode_a64.h on POSIX arm64 under SIGBUS/SIGSEGV) and routes reads/writes through the MCPX
  * APU register handlers.
  */
 
@@ -29,11 +29,12 @@ void xbox_apu_wr32(uint32_t va, uint32_t value)
     mcpx_apu_mmio_write(g_apu_state, va - 0xFE800000u, value, 4);
 }
 
-/* Windows: a VEH hands over the CONTEXT. POSIX arm64: a SIGBUS/SIGSEGV
- * handler hands over the ucontext (apu_hook_handle_mmio_posix, at the end).
- * x86-64 Linux has no trap yet. */
+/* Windows: a VEH hands over the CONTEXT. POSIX: a SIGBUS/SIGSEGV handler
+ * hands over the ucontext (apu_hook_handle_mmio_posix; arm64's at the end). */
+#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
 #if defined(_WIN32)
 #include <windows.h>
+#endif
 #include "../platform/mmio_decode.h"
 
 /* APU MMIO base in Xbox VA space */
@@ -81,9 +82,9 @@ static void apu_mmio_wr(void *dev, uint32_t off, uint64_t v, int size)
     mcpx_apu_mmio_write((MCPXAPUState *)dev, off, v, (unsigned)size);
 }
 
-static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_write)
+static bool apu_decode_and_handle(mmio_ctx_t ctx, uint32_t mmio_offset, int is_write)
 {
-    const uint8_t *ip = (const uint8_t *)ctx->Rip;
+    const uint8_t *ip = (const uint8_t *)MMIO_RIP(ctx);
 
     (void)is_write;
     if (!g_apu_state) return false;
@@ -94,7 +95,7 @@ static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_wri
     g_apu_mmio_decode_fail++;
     if (g_apu_mmio_decode_fail <= 20) {
         fprintf(stderr, "[APU] MMIO decode fail at RIP=%p offset=0x%X: %02X %02X %02X %02X %02X %02X\n",
-                (void*)ctx->Rip, mmio_offset, ip[0], ip[1], ip[2], ip[3], ip[4], ip[5]);
+                (void*)MMIO_RIP(ctx), mmio_offset, ip[0], ip[1], ip[2], ip[3], ip[4], ip[5]);
         fflush(stderr);
     }
     return false;
@@ -104,7 +105,7 @@ static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_wri
  * Public API (called from VEH in main.c)
  * ============================================================ */
 
-bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
+bool apu_hook_handle_mmio(mmio_ctx_t ctx, uintptr_t fault_addr,
                           uint32_t fault_xbox_va, int is_write)
 {
     uint32_t mmio_offset = fault_xbox_va - APU_MMIO_BASE;
@@ -130,7 +131,19 @@ bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
     return ok;
 }
 
-#endif /* _WIN32 */
+#if !defined(_WIN32)
+/* x86-64 Linux: the SIGSEGV handler's ucontext, through xbox_PosixMmioFault. */
+bool apu_hook_handle_mmio_posix(void *ucv, uintptr_t fault_addr,
+                                uint32_t fault_xbox_va, int is_write)
+{
+    if (fault_xbox_va - APU_MMIO_BASE >= APU_MMIO_SIZE)
+        return false;
+    return apu_hook_handle_mmio((mmio_ctx_t)ucv, fault_addr, fault_xbox_va,
+                                is_write);
+}
+#endif
+
+#endif /* _WIN32 || x86-64 Linux */
 
 #if !defined(_WIN32) && defined(__aarch64__)
 /* POSIX arm64: the same hook over sigaction + ucontext, with the A64 decoder
