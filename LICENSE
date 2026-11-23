@@ -27,7 +27,8 @@ does not cover:
 
 - xboxrecomp/: the vendored xboxrecomp toolkit, under its own license
   (xboxrecomp/LICENSE and xboxrecomp/LICENSES/).
-- Dear ImGui, fetched at build time, under its own license.
+- Dear ImGui, RmlUi (MIT) and FreeType (FreeType License), fetched at build
+  time, under their own licenses (setup/assets/THIRD-PARTY-NOTICES.txt).
 - setup/assets/ShipporiMinchoB1-Bold.ttf: SIL Open Font License 1.1
   (setup/assets/OFL-ShipporiMinchoB1.txt).
 - setup/assets/art/ and docs/img/: images from Otogi: Myth of Demons, which

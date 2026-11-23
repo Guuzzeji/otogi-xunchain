@@ -51,7 +51,7 @@ settings.ini, mkb.ini        copied pattern from Sneak King
 third_party/angle/, game/    gitignored
 ```
 Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `third_party/angle/`, `zig-out/`, `.zig-cache/`. Never commit game data, lifted C, or the XBE. That content is derived from copyrighted material, so it is why the player's own ISO is required.
-  Exception (owner's choice, 2026-11-01): four menu textures ripped from the disc are bundled in otogi-xunchain-setup.exe
+  Exception (owner's choice, 2026-11-01): menu textures ripped from the disc are bundled in the launcher (three since M7)
   for its look (`setup/assets/art/`).
 
 ---
@@ -147,6 +147,20 @@ Write `.gitignore` first: `*.iso`, `game/`, `src/recomp/gen/`, `analysis/`, `thi
 5. **Warning:** show a RAM warning when the machine has less than 16 GB. If needed, drop the build to `-j1`.
 
 **Exit check:** on a clean Windows VM with no VS, Python or zig installed, ISO plus `otogi-xunchain-setup.exe` produce a playable `dist/Otogi/`.
+
+## M7: Launcher (`otogi-xunchain.exe`) — built 2026-11-22
+Decisions (user confirmed): the setup becomes a launcher; RmlUi replaces Dear ImGui in it (compared against ImGui, WebView2,
+Tauri/Electron, Qt/Slint, Noesis/Ultralight: only ImGui and RmlUi can also draw inside the game later); an OG Xbox green look
+over Otogi's art; updates download the new launcher and rebuild; worked in its own worktree (`feat/launcher`).
+1. **UI:** RmlUi 6.3 + FreeType, built by `zig c++`; Win32 + DX11 backends as shipped; frameless window, sidebar pages.
+2. **Pages:** Play, Install (the M6 pipeline), Settings (`settings.ini` as a form), Saves (`%LOCALAPPDATA%\Otogi`, back up),
+   What's new (GitHub releases, Markdown notes).
+3. **Update:** newer release with `otogi-xunchain.exe` → download, swap the running exe, `--rebuild` (all stamps but extract).
+
+**Exit check:** each page works with mouse and pad; a settings change reaches `otogi.log`; a full build from the ISO
+works; an update from a test release URL swaps the exe and rebuilds.
+
+**Later (not started):** the game's F1 menu and an in-game pause menu on RmlUi (GLES3 branch of RmlUi's GL3 renderer over ANGLE).
 
 ---
 

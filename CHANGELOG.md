@@ -7,6 +7,21 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Added
+- A launcher, `otogi-xunchain.exe`, replaces `otogi-xunchain-setup.exe`. Besides building
+  the game from your disc, it has a Play page, a Settings page that edits every option in
+  `settings.ini` with its explanation, a Saves page that lists your saved games and backs
+  them up, and What's new with every release's notes. It works with a controller too.
+- Updates from the launcher: when a new release is out, **Update** downloads it and
+  rebuilds the game from the files you already have (the disc is not needed again).
+  Settings and saves stay. This release is the last one to download by hand. The version
+  list beside Play also goes back to an earlier launcher release, the same way.
+- Help & logs in the launcher: the game's and the build's logs, live, with Copy and Open;
+  **Report on GitHub** opens a new issue with your version and PC filled in and copies the
+  log to paste into it; **Open Discussions** is for questions that are not bugs.
+- Icons for the launcher (green) and the game (the logo's blue and red on black), in
+  Explorer, the taskbar and the title bar.
+
 ## [0.10.2] - 2026-11-23
 
 ### Fixed

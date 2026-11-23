@@ -2,11 +2,12 @@
 
 Otogi: Myth of Demons (Xbox) natively recompiled for Windows. The game's code is lifted
 from the disc to C by `xboxrecomp`, linked with a Zig host, and drawn through ANGLE.
-Players get `otogi-xunchain-setup.exe`, which does the lift and build from their own disc.
+Players get `otogi-xunchain.exe`, a launcher that does the lift and build from their own disc,
+edits settings, lists saves and updates itself from GitHub releases.
 
 ## Layout
 - `src/`: game host, Xbox HLE, renderer (`d3d.zig`, `gl_hle.zig`), debug menu. `src/recomp/gen/` is lifted C (not in git).
-- `setup/`: the setup GUI (Zig + Dear ImGui).
+- `setup/`: the launcher (Zig + RmlUi: `ui/launcher.rml`, `ui/theme.rcss`). The game's F1 menu is still Dear ImGui.
 - `xboxrecomp/`: vendored toolkit (git subtree). Reuse it; don't rewrite or reformat it.
 - `docs/NOTES.md`: how everything works and what was found, one section per area. Add findings there.
 - `docs/ROADMAP.md`: milestones and decisions.
