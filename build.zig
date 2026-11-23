@@ -39,15 +39,21 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = c_flags });
     mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = if (windows) &toolkit_windows else &toolkit_posix, .flags = c_flags });
     addGenerated(b, mod);
+    // settings.ini as a form, shared with the launcher (the F10 settings page).
+    mod.addImport("logic", b.createModule(.{ .root_source_file = b.path("setup/logic.zig"), .target = target, .optimize = optimize }));
 
     const gl = b.addTranslateC(.{ .root_source_file = b.path("src/gl.h"), .target = target, .optimize = optimize });
     const sdl = b.addTranslateC(.{ .root_source_file = b.path("src/sdl.h"), .target = target, .optimize = optimize });
-    var gles_include: ?std.Build.LazyPath = null;
+    // The menus (F1 debug, F10 settings, the metrics overlay): RmlUi drawn
+    // by its GL3 renderer in GL ES 3 mode on ANGLE (Mesa on Linux), fed SDL3's
+    // events (src/ui.cpp), in the launcher's theme and font. A library of its
+    // own, so its flags stay off the lifted C.
+    const ui = b.addLibrary(.{ .name = "ui", .root_module = b.createModule(.{ .target = target, .optimize = .ReleaseSmall, .link_libc = true }) });
     if (windows) {
         // ANGLE (GL ES 3 on D3D11/Vulkan/GL): headers, import libs, and the 4 DLLs beside the exe.
         const angle = b.lazyDependency("angle", .{}) orelse return;
-        gles_include = angle.path("include");
         gl.addIncludePath(angle.path("include"));
+        ui.root_module.addIncludePath(angle.path("include"));
         mod.addObjectFile(angle.path("lib/libEGL.dll.lib"));
         mod.addObjectFile(angle.path("lib/libGLESv2.dll.lib"));
         inline for (.{ "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll" }) |dll|
@@ -55,20 +61,26 @@ pub fn build(b: *std.Build) void {
         // SDL3 (window, events, gamepads): the official prebuilt DLL beside the exe.
         const sdl_dir = (b.lazyDependency("sdl", .{}) orelse return).path("x86_64-w64-mingw32");
         sdl.addIncludePath(sdl_dir.path(b, "include"));
-        mod.addIncludePath(sdl_dir.path(b, "include")); // for ImGui's SDL3 backend
+        ui.root_module.addIncludePath(sdl_dir.path(b, "include"));
         mod.addObjectFile(sdl_dir.path(b, "lib/libSDL3.dll.a"));
         b.getInstallStep().dependOn(&b.addInstallBinFile(sdl_dir.path(b, "bin/SDL3.dll"), "SDL3.dll").step);
-        for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32", "dwmapi" }) |l|
+        for ([_][]const u8{ "kernel32", "bcrypt", "d3d11", "dxgi", "dxguid", "d3dcompiler_47", "mfplat", "mfreadwrite", "mfuuid", "mf", "ole32", "winmm", "xaudio2_8", "dbghelp", "gdi32", "user32" }) |l|
             mod.linkSystemLibrary(l, .{});
         mod.addWin32ResourceFile(.{ .file = b.path("src/otogi.rc") }); // the icon
     } else {
         // Linux: the system's SDL3, EGL and GL ES (Mesa); audio on SDL3 too.
         mod.addCSourceFiles(.{ .files = &.{ "src/apu_sdl3.c", "src/linux_stubs.c" }, .flags = c_flags });
         for ([_][]const u8{ "SDL3", "EGL", "GLESv2", "m" }) |l| mod.linkSystemLibrary(l, .{});
+        for ([_][]const u8{ "SDL3", "GLESv2" }) |l| ui.root_module.linkSystemLibrary(l, .{}); // their headers
     }
     mod.addImport("gl", gl.createModule());
     mod.addImport("sdl", sdl.createModule());
-    addImgui(b, mod, target, optimize, gles_include, &.{ "sdl3", "opengl3" });
+    // RMLUI_PLATFORM_EMSCRIPTEN picks the renderer's GL ES 3 path (shaders, GLES3/gl3.h): only that file reads it.
+    addRmlUi(b, ui.root_module, &.{ "RmlUi_Platform_SDL.cpp", "RmlUi_Renderer_GL3.cpp" }, "src/ui.cpp", &.{ "-DRMLUI_SDL_VERSION_MAJOR=3", "-DRMLUI_PLATFORM_EMSCRIPTEN" });
+    mod.linkLibrary(ui);
+    mod.link_libcpp = true;
+    mod.addAnonymousImport("theme.rcss", .{ .root_source_file = b.path("setup/ui/theme.rcss") });
+    mod.addAnonymousImport("ShipporiMinchoB1-Bold.ttf", .{ .root_source_file = b.path("setup/assets/ShipporiMinchoB1-Bold.ttf") });
 
     const exe = b.addExecutable(.{ .name = "otogi", .root_module = mod });
     b.installArtifact(exe);
@@ -79,10 +91,11 @@ pub fn build(b: *std.Build) void {
     // otogi-xunchain.exe, the launcher: builds the game from the player's ISO,
     // plays it, edits settings, updates. It embeds a `git archive` of HEAD, so
     // commit before `zig build setup`. Not in the player's own build (that copy
-    // has commit.txt): RmlUi and FreeType are then never fetched.
+    // has commit.txt and no .git).
     const setup_step = b.step("setup", "Build otogi-xunchain.exe (the launcher)");
     const test_step = b.step("test", "Run tests");
-    if (b.root.access(b.graph.io, "commit.txt", .{})) |_| {} else |_| if (launcherModule(b, target)) |setup_mod| {
+    if (b.root.access(b.graph.io, "commit.txt", .{})) |_| {} else |_| {
+        const setup_mod = launcherModule(b, target);
         setup_mod.addImport("xiso", b.createModule(.{ .root_source_file = b.path("src/xiso.zig"), .target = target }));
         const archive = b.addSystemCommand(&.{ "git", "archive", "--format=zip", "-o" });
         const source_zip = archive.addOutputFileArg("source.zip");
@@ -112,38 +125,26 @@ pub fn build(b: *std.Build) void {
     b.step("pe", "Wrap the XBE in a PE32 for REA/Ghidra: zig build pe -- <xbe> <out.exe>").dependOn(&pe.step);
 }
 
-/// Dear ImGui (C++) plus its C API from dear_bindings, as module "imgui".
-/// Backends are called through hand-declared externs (see debug_menu.zig).
-/// gles_include: ANGLE's GL ES headers on Windows; null takes the system's.
-fn addImgui(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, gles_include: ?std.Build.LazyPath, comptime backends: []const []const u8) void {
-    const imgui = b.dependency("imgui", .{});
-    const bind = b.dependency("dear_bindings", .{});
-    const flags: []const []const u8 = &.{ "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-w", "-DIMGUI_IMPL_OPENGL_ES3", "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS" };
-    for ([_]std.Build.LazyPath{ imgui.path(""), imgui.path("backends"), bind.path(""), bind.path("backends") }) |p| mod.addIncludePath(p);
-    if (gles_include) |p| mod.addIncludePath(p);
-    mod.addCSourceFiles(.{ .root = imgui.path(""), .files = &.{ "imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_demo.cpp" }, .flags = flags });
-    mod.addCSourceFile(.{ .file = bind.path("dcimgui.cpp"), .flags = flags });
-    inline for (backends) |be| {
-        mod.addCSourceFile(.{ .file = imgui.path("backends/imgui_impl_" ++ be ++ ".cpp"), .flags = flags });
-        mod.addCSourceFile(.{ .file = bind.path("backends/dcimgui_impl_" ++ be ++ ".cpp"), .flags = flags });
-    }
-    mod.link_libcpp = true;
-    const tc = b.addTranslateC(.{ .root_source_file = b.path("src/imgui.h"), .target = target, .optimize = optimize });
-    tc.addIncludePath(bind.path(""));
-    tc.addIncludePath(imgui.path(""));
-    mod.addImport("imgui", tc.createModule());
+/// The launcher's module: setup/main.zig, its Win32 + D3D11 host (setup/window.cpp),
+/// RmlUi with its Win32 platform and DX11 renderer.
+fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+    const mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
+    addRmlUi(b, mod, &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, "setup/window.cpp", &.{});
+    mod.addWin32ResourceFile(.{ .file = b.path("setup/launcher.rc") }); // the icon
+    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
+    return mod;
 }
 
-/// The launcher's module: setup/main.zig, its Win32 + D3D11 host (setup/window.cpp),
-/// RmlUi's core with its Win32 platform and DX11 renderer, and FreeType.
-/// Null until the lazy packages are fetched (zig fetches them and reruns this).
-fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Module {
-    const rml = b.lazyDependency("rmlui", .{}) orelse return null;
-    const ft = b.lazyDependency("freetype", .{}) orelse return null;
-    const mod = b.createModule(.{ .root_source_file = b.path("setup/main.zig"), .target = target, .optimize = .ReleaseSmall, .link_libc = true });
+/// RmlUi 6.3's core (Source/Core, walked at configure time) and FreeType for
+/// its fonts, all by `zig c++`/`zig cc`, no CMake; then `backends` (RmlUi's
+/// Backends/) and the `host` file that drives them, with `flags` added.
+fn addRmlUi(b: *std.Build, mod: *std.Build.Module, backends: []const []const u8, host: []const u8, flags: []const []const u8) void {
+    const rml = b.dependency("rmlui", .{});
+    const ft = b.dependency("freetype", .{});
     mod.addCMacro("RMLUI_STATIC_LIB", "");
     mod.addCMacro("RMLUI_FONT_ENGINE_FREETYPE", "");
     mod.addCMacro("FT2_BUILD_LIBRARY", "");
+    mod.addCMacro("NDEBUG", ""); // else RmlUi asserts, and its GL renderer checks glGetError after each call
     for ([_]std.Build.LazyPath{ rml.path("Include"), rml.path("Backends"), ft.path("include") }) |p| mod.addIncludePath(p);
     mod.addCSourceFiles(.{ .root = ft.path("src"), .files = &freetype_c, .flags = &.{ "-std=c99", "-Os", "-w" } });
 
@@ -157,12 +158,10 @@ fn launcherModule(b: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.M
         if (e.kind == .file and std.mem.endsWith(u8, e.basename, ".cpp")) files.append(b.allocator, b.dupe(e.path)) catch @panic("OOM");
     }
     mod.addCSourceFiles(.{ .root = rml.path("Source/Core"), .files = files.items, .flags = cpp });
-    mod.addCSourceFiles(.{ .root = rml.path("Backends"), .files = &.{ "RmlUi_Platform_Win32.cpp", "RmlUi_Renderer_DX11.cpp" }, .flags = cpp });
-    mod.addCSourceFile(.{ .file = b.path("setup/window.cpp"), .flags = cpp });
-    mod.addWin32ResourceFile(.{ .file = b.path("setup/launcher.rc") }); // the icon
+    const own = std.mem.concat(b.allocator, []const u8, &.{ cpp, flags }) catch @panic("OOM");
+    mod.addCSourceFiles(.{ .root = rml.path("Backends"), .files = backends, .flags = own });
+    mod.addCSourceFile(.{ .file = b.path(host), .flags = own });
     mod.link_libcpp = true;
-    for ([_][]const u8{ "d3d11", "dxgi", "d3dcompiler_47", "dwmapi", "imm32", "xinput1_4", "comdlg32", "user32", "gdi32", "ole32", "shell32", "advapi32", "windowscodecs" }) |l| mod.linkSystemLibrary(l, .{});
-    return mod;
 }
 
 /// FreeType with its default module list (include/freetype/config/ftmodule.h).

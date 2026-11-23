@@ -1,0 +1,90 @@
+<rml>
+<head>
+	<title>Debug</title>
+	<link type="text/rcss" href="theme.rcss"/>
+	<style>
+		/* A window over the game: drag its title bar. src/debug_menu.zig fills it. */
+		body { position: absolute; left: 20dp; top: 20dp; width: 640dp; height: 86%; font-size: 13dp; background-color: #0a1108f0; border: 1dp #2e4a24; border-radius: 4dp; }
+		#bar { flex: 0 0 auto; display: flex; flex-direction: row; align-items: center; height: 30dp; padding-left: 12dp; background-color: #107c10; color: #fff; font-weight: bold; cursor: move; }
+		#bar .grow { flex: 1; }
+		#bar .x { width: 36dp; text-align: center; cursor: pointer; }
+		#bar .x:hover { background-color: #c42b1c; }
+		#tabs { flex: 0 0 auto; padding: 8dp 12dp 2dp; }
+		#scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 0 12dp 12dp; }
+		.page { padding: 0; }
+		h4 { margin: 12dp 0 4dp; }
+		.row { margin: 4dp 0; }
+		.row > * + * { margin-left: 8dp; }
+		.btn { height: 26dp; line-height: 24dp; font-size: 13dp; padding: 0 12dp; margin-right: 0; }
+		.chip { height: 24dp; line-height: 22dp; padding: 0 8dp; font-size: 12dp; }
+		.chips .chip { margin: 0 4dp 4dp 0; }
+		.toggle { width: 36dp; height: 20dp; }
+		.toggle .knob { width: 14dp; height: 12dp; }
+		.toggle.on .knob { left: 19dp; }
+		input.text { width: 120dp; height: 26dp; padding: 4dp 8dp; font-size: 13dp; }
+		.stepper .btn { width: 28dp; }
+		.stepper .val { width: 52dp; }
+		.stepper span { width: 100dp; }
+		.graph { position: relative; height: 56dp; margin-top: 6dp; background-color: #030502; border: 1dp #1a2b14; }
+		.graph div { position: absolute; bottom: 0; background-color: #2fa52f; }
+		.mono { white-space: pre; }
+	</style>
+</head>
+<body>
+	<handle id="bar" move_target="#document"><span class="grow">Debug (F1)</span><span class="x" onclick="debug-close">&#x00D7;</span></handle>
+	<div id="tabs" class="row">
+		<div class="chip on" id="tab-render" onclick="tab" value="render">Render</div>
+		<div class="chip" id="tab-cheats" onclick="tab" value="cheats">Cheats</div>
+		<div class="chip" id="tab-memory" onclick="tab" value="memory">Memory</div>
+	</div>
+	<div id="scroll">
+		<div class="page shown" id="page-render">
+			<p id="r-head"></p>
+			<h4>Frame rate</h4>
+			<p id="r-fps"></p>
+			<div class="graph" id="g-work"></div>
+			<p class="small muted" id="g-work-txt"></p>
+			<div class="graph" id="g-draw"></div>
+			<p class="small muted" id="g-draw-txt"></p>
+			<div class="row"><span id="r-late"></span><div class="btn" onclick="late-reset">Reset</div></div>
+			<h4>CPU and RAM</h4>
+			<p id="r-cpu"></p>
+			<div class="row"><div class="btn" onclick="profile">Profile 3 s to otogi.log</div></div>
+			<h4>Last game frame</h4>
+			<p id="r-frame"></p>
+			<div class="row"><div class="chip" id="cull-btn" onclick="cull">Frustum tests by call site</div></div>
+			<p class="mono small" id="r-cull"></p>
+			<h4>Host caches</h4>
+			<p id="r-caches"></p>
+			<h4>Game</h4>
+			<div class="row"><div class="toggle" id="pause" onclick="pause"><div class="knob"/></div><span>Pause</span><div class="btn" onclick="step">Step frame</div></div>
+			<div class="row"><span>Metrics while playing</span><div class="chip" id="dm-metrics-0" onclick="metrics" value="0">Off</div><div class="chip" id="dm-metrics-1" onclick="metrics" value="1">Frame rate</div><div class="chip" id="dm-metrics-2" onclick="metrics" value="2">Full</div></div>
+		</div>
+
+		<div class="page" id="page-cheats">
+			<h4>Stages</h4>
+			<p id="c-stage"></p>
+			<div class="row"><div class="toggle" id="all-stages" onclick="all-stages"><div class="knob"/></div><span>All stages in stage select</span><div class="btn" onclick="clear-all">Mark all cleared</div></div>
+			<div class="chips" id="warp-list"></div>
+			<div class="row"><div class="btn primary" onclick="warp">Warp (back to the hub on it)</div></div>
+			<p class="small muted">Warp sets the story stage and leaves the current stage; the hub then offers the chosen one. Moving the story stage back re-locks later stages unless all stages are on.</p>
+			<h4>Player</h4>
+			<div class="row"><div class="toggle" id="god" onclick="god"><div class="knob"/></div><span>God mode</span><div class="toggle" id="inf-magic" onclick="magic"><div class="knob"/></div><span>Infinite magic</span></div>
+			<p id="c-player"></p>
+			<div class="row"><span>Money</span><input type="text" class="text" id="money" onchange="money"/><div class="btn" onclick="money-max">Max</div></div>
+			<h4>World</h4>
+			<div class="row stepper"><span>Draw distance</span><div class="btn" onclick="far" value="-">&#x2212;</div><div class="val" id="far-val"></div><div class="btn" onclick="far" value="+">+</div></div>
+			<div class="row stepper"><span>Fog distance</span><div class="btn" onclick="fog" value="-">&#x2212;</div><div class="val" id="fog-val"></div><div class="btn" onclick="fog" value="+">+</div></div>
+			<p id="c-far"></p>
+			<h4>Inventory</h4>
+			<div id="c-inv"></div>
+		</div>
+
+		<div class="page" id="page-memory">
+			<div class="row"><span>Address</span><input type="text" class="text mono" id="mem-addr" onchange="mem-addr"/><span class="small muted">hex</span></div>
+			<p class="mono" id="mem-dump"></p>
+			<div class="row"><span>Value</span><input type="text" class="text mono" id="mem-val" onchange="mem-val"/><div class="btn" onclick="mem-write">Write u32</div></div>
+		</div>
+	</div>
+</body>
+</rml>

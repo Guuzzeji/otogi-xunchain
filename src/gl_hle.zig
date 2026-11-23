@@ -314,6 +314,18 @@ fn blobInit() void {
     sayShader("disk cache on, in shader_cache beside the game");
 }
 
+/// The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
+/// also waits for the monitor's, so frames do not tear. Render thread.
+pub fn applyVsync() void {
+    if (host.windows) _ = gl.eglSwapInterval(dpy, @intFromBool(vsync())) else _ = sdl.SDL_GL_SetSwapInterval(@intFromBool(vsync()));
+}
+
+/// RECOMP_WINDOW and RECOMP_RESOLUTION again (the settings page). Render thread.
+pub fn applyWindow() void {
+    window_mode = if (std.c.getenv("RECOMP_WINDOW")) |m| std.math.clamp(m[0] -| '0', 0, 2) else 0;
+    setFull(window_mode != 0);
+}
+
 /// Window, context and back buffer. RECOMP_GFX=d3d11 (default), vulkan or gl.
 fn glInit() bool {
     if (std.c.getenv("RECOMP_SCALE")) |s| scale = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(s), 10) catch 2, 1, 4);
@@ -335,8 +347,7 @@ fn glInit() bool {
     }
     const flags = sdl.SDL_WINDOW_RESIZABLE | if (host.windows) 0 else sdl.SDL_WINDOW_OPENGL;
     window = sdl.SDL_CreateWindow("Otogi: Myth of Demons", @intCast(bbw() * scale), @intCast(480 * scale), flags) orelse return false;
-    if (std.c.getenv("RECOMP_WINDOW")) |m| window_mode = std.math.clamp(m[0] -| '0', 0, 2);
-    if (window_mode != 0) setFull(true);
+    applyWindow();
     if (!(if (host.windows) angleContext() else sdlContext())) return false;
     // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
     // dome lies past the far plane.
@@ -358,7 +369,7 @@ fn sdlContext() bool {
     dpy = sdl.SDL_EGL_GetCurrentDisplay();
     if (dpy != null) blobInit();
     shader_record = std.c.getenv("RECOMP_SHADER_RECORD") != null;
-    _ = sdl.SDL_GL_SetSwapInterval(@intFromBool(vsync()));
+    applyVsync();
     return true;
 }
 
@@ -395,7 +406,7 @@ fn angleContext() bool {
         std.debug.print("[GL] EGL context failed: 0x{X}\n", .{gl.eglGetError()});
         return false;
     }
-    _ = gl.eglSwapInterval(dpy, @intFromBool(vsync()));
+    applyVsync();
     return true;
 }
 
@@ -857,7 +868,9 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
         try w.writeAll("uniform vec4 u_c[192];\n");
         for (0..16) |i| if (h.inputs & (@as(u16, 1) << @intCast(i)) != 0) try w.print("in vec4 v{d};\n", .{i});
         // oFog.x is a distance for table fog and the factor itself with FOGTABLEMODE
-        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A.
+        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A, and so
+        // does a program that never writes oFog (the strand hair, D730B1B8: at 0 the Crimson
+        // King's mane drew in the fog colour).
         try w.writeAll(
             \\float nv_fog(float f) { float d = abs(f); return u_fog.x == 3.0 ? (u_fog.z - d) / (u_fog.z - u_fog.y)
             \\  : u_fog.x == 1.0 ? exp(-d * u_fog.w) : u_fog.x == 2.0 ? exp(-(d * u_fog.w) * (d * u_fog.w)) : f; }
@@ -867,7 +880,7 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
             \\#define c u_c
             \\void main() {
             \\  vec4 R0 = vec4(0.0), R1 = R0, R2 = R0, R3 = R0, R4 = R0, R5 = R0, R6 = R0, R7 = R0, R8 = R0, R9 = R0, R10 = R0, R11 = R0, R12 = R0;
-            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(0.0);
+            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(1.0);
             \\  vec4 oT0 = vec4(0.0, 0.0, 0.0, 1.0), oT1 = oT0, oT2 = oT0, oT3 = oT0;
             \\  int a0 = 0;
             \\
@@ -1627,14 +1640,16 @@ fn uploadUniforms(p: *Prog) void {
         if (uniNew(p, @as(*const [192 * 4]f32, @ptrCast(&vsc)))) gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
     }
     if (p.key.ps != 0) {
-        const def = &pixel_shaders.items[p.key.ps - 1].def;
+        // Constants from the render state, not the definition: SetPixelShaderConstant
+        // changes them there (the title's ripple sets its colour and fade so).
+        const ps = d3d.psState;
         var c: [16][4]f32 = undefined;
         for (0..8) |i| {
-            c[i] = argbVec(def[PsDef.constant0 + i]);
-            c[8 + i] = argbVec(def[PsDef.constant1 + i]);
+            c[i] = argbVec(ps(PsDef.constant0 + @as(u32, @intCast(i))));
+            c[8 + i] = argbVec(ps(PsDef.constant1 + @as(u32, @intCast(i))));
         }
         if (p.u_psc >= 0 and uniNew(p, @as(*const [64]f32, @ptrCast(&c)))) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
-        const f = [2][4]f32{ argbVec(def[PsDef.final_c0]), argbVec(def[PsDef.final_c1]) };
+        const f = [2][4]f32{ argbVec(ps(PsDef.final_c0)), argbVec(ps(PsDef.final_c1)) };
         if (p.u_psf >= 0 and uniNew(p, @as(*const [8]f32, @ptrCast(&f)))) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
         if (p.u_bump >= 0) {
             var m: [4][4]f32 = undefined;
@@ -2419,7 +2434,7 @@ fn wake() void {
 /// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
 /// the refresh rate of the monitor the window is on (59.94 and such
 /// included), again whenever that changes; 30 is off.
-fn frRate() void {
+pub fn frRate() void {
     var hz: f64 = 0;
     if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseFloat(f64, std.mem.span(e)) catch 0;
     if (hz == 0) {
@@ -2998,7 +3013,7 @@ fn renderThread() void {
         last_present = if (now - due < present_period) due else now;
         frameStats(cur);
         if (frame % 256 == 0) meshSweep();
-        // Debug menu pause: show this frame until resumed or stepped.
+        // Debug menu pause or the settings page: show this frame until resumed or stepped.
         while (debug_menu.holdFrame()) {
             serveSync();
             showFbo(hold[1 - hold_at].fbo);
@@ -3051,9 +3066,10 @@ fn frameStats(f: *const Frame) void {
     fps.sync = 0;
 }
 
-/// A frame again (paused).
+/// A frame again (paused). logs\drawlog then saves only the shot (the menus).
 fn showFbo(src: gl.GLuint) void {
     blitWindow(src);
+    if (remove("logs/drawlog") == 0) writeShot() catch {};
     swapWindow();
 }
 
@@ -3690,6 +3706,8 @@ fn replay(r: *const PbRec) void {
                 const bit = i -% (128 + d3d.simple_first);
                 e.* = if (s != b or (bit < 128 and d.set >> @intCast(bit) & 1 != 0)) s else l;
             }
+            // The pixel shader block (its constants) goes with the recorded shader.
+            @memcpy(eff[128..][0..PsDef.texture_modes + 1], d.state[128..][0..PsDef.texture_modes + 1]);
             d3d.state_snap = &eff;
             stage_tex = d.tex;
             vshader = d.vs;

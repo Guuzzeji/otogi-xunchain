@@ -2,7 +2,7 @@
 //! image, plays it, edits settings.ini, lists the saves, and updates itself from
 //! GitHub releases (then rebuilds).
 //! The build checks the ISO, extracts game\, fetches pinned Zig, the build's
-//! packages (ANGLE, Dear ImGui) and Python (+ Capstone), all before the long
+//! packages (ANGLE, SDL3, RmlUi, FreeType) and Python (+ Capstone), all before the long
 //! steps, lifts the XBE to C, builds, and leaves a playable folder:
 //!   <out>\otogi.exe, the ANGLE DLLs, settings.ini, game\, otogi-xunchain.exe
 //! Work files go to <out>\build; each finished step leaves a stamp in
@@ -191,16 +191,7 @@ export fn ui_event(cmd: [*:0]const u8, value: [*:0]const u8) void {
     cmds_len += 1;
 }
 
-/// Text made safe in markup: "{f}" with esc(s).
-const Esc = struct {
-    s: []const u8,
-    pub fn format(e: Esc, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try logic.escape(w, e.s);
-    }
-};
-fn esc(s: []const u8) Esc {
-    return .{ .s = s };
-}
+const esc = logic.esc;
 
 /// Inner markup of element `id`, formatted. window.cpp skips it if unchanged.
 fn set(id: [*:0]const u8, comptime f: []const u8, args: anytype) void {
@@ -396,6 +387,7 @@ const Ui = struct {
     fn handle(u: *Ui, cmd: []const u8, val: []const u8) void {
         const busy = running.load(.acquire);
         const eql = std.mem.eql;
+        var step_buf: [16]u8 = undefined;
         if (eql(u8, cmd, "page")) {
             u.page = std.meta.stringToEnum(Page, val) orelse return;
             if (u.page == .settings or u.page == .saves or u.page == .help) u.refresh();
@@ -448,24 +440,12 @@ const Ui = struct {
             openOut("");
         } else if (eql(u8, cmd, "open-settings")) {
             openOut("settings.ini");
-        } else if (std.mem.startsWith(u8, cmd, "set:")) {
+        } else if (logic.formCommand(u.entries(), cmd, val, &step_buf)) |kv| {
             if (eql(u8, cmd, "set:resolution")) u.res_custom = false;
-            u.setSetting(cmd[4..], val);
+            u.setSetting(kv[0], kv[1]);
         } else if (eql(u8, cmd, "res-custom")) {
             u.res_custom = true;
             u.loadSettings();
-        } else if (eql(u8, cmd, "res-text")) {
-            u.setSetting("resolution", val);
-        } else if (std.mem.startsWith(u8, cmd, "toggle:")) {
-            const on = for (u.entries()) |e| (if (eql(u8, e.key, cmd[7..])) break eql(u8, e.value, "1")) else false;
-            u.setSetting(cmd[7..], if (on) "0" else "1");
-        } else if (std.mem.startsWith(u8, cmd, "step:")) {
-            const now = for (u.entries()) |e| (if (eql(u8, e.key, cmd[5..])) break std.fmt.parseFloat(f32, e.value) catch 1) else 1;
-            var i: usize = 0;
-            while (i + 1 < distances.len and distances[i] < now - 0.01) i += 1;
-            i = if (eql(u8, val, "-")) i -| 1 else @min(i + 1, distances.len - 1);
-            var b: [16]u8 = undefined;
-            u.setSetting(cmd[5..], std.fmt.bufPrint(&b, "{d}", .{distances[i]}) catch return);
         } else if (eql(u8, cmd, "open-saves")) {
             var p: [600:0]u8 = undefined;
             win_open(z(&p, "{s}", .{saveDir(&p)}));
@@ -705,64 +685,15 @@ const Ui = struct {
         // The form's shape (keys and choices) is set once; values go on by id,
         // so a click keeps the controller's focus where it is.
         var out: std.Io.Writer.Allocating = .init(a);
-        const w = &out.writer;
-        for (es) |e| {
-            const k = knownSetting(e.key);
-            const kind = if (k) |x| x.kind else .text;
-            w.print("<div class=\"setting{s}\"><div class=\"what\"><div class=\"label\">{f}</div><div class=\"help\">{f}</div></div><div class=\"ctl\">", .{ if (kind == .toggle or kind == .stepper) "" else " stack", esc(if (k) |x| x.label else e.key), esc(e.help) }) catch return;
-            switch (kind) {
-                .chips => {
-                    w.writeAll("<div class=\"chips\">") catch return;
-                    var listed = false;
-                    for (k.?.opts) |o| {
-                        listed = listed or std.mem.eql(u8, o.v, e.value);
-                        w.print("<div class=\"chip\" id=\"opt-{s}-{s}\" onclick=\"set:{s}\" value=\"{s}\">{s}</div>", .{ e.key, o.v, e.key, o.v, o.label }) catch return;
-                    }
-                    if (!listed) w.print("<div class=\"chip\" id=\"opt-{f}-{f}\" onclick=\"set:{f}\" value=\"{f}\">{f}</div>", .{ esc(e.key), esc(e.value), esc(e.key), esc(e.value), esc(e.value) }) catch return;
-                    w.writeAll("</div>") catch return;
-                },
-                .toggle => w.print("<div class=\"toggle\" id=\"opt-{s}\" onclick=\"toggle:{s}\"><div class=\"knob\"/></div>", .{ e.key, e.key }) catch return,
-                .stepper => w.print("<div class=\"row stepper\"><div class=\"btn\" onclick=\"step:{s}\" value=\"-\">&#x2212;</div><div class=\"val\" id=\"val-{s}\"></div><div class=\"btn\" onclick=\"step:{s}\" value=\"+\">+</div></div>", .{ e.key, e.key, e.key }) catch return,
-                .text => w.print("<input type=\"text\" class=\"text\" id=\"opt-{f}\" onchange=\"set:{f}\" placeholder=\"default\"/>", .{ esc(e.key), esc(e.key) }) catch return,
-                // The monitor's own modes; Custom shows a field for any other.
-                .resolution => {
-                    w.writeAll("<div class=\"chips\"><div class=\"chip\" id=\"opt-resolution-desktop\" onclick=\"set:resolution\" value=\"\">Desktop's</div>") catch return;
-                    for (modes[0..modes_len]) |*m| {
-                        const t = std.mem.sliceTo(m, 0);
-                        const x = std.mem.indexOfScalar(u8, t, 'x').?;
-                        w.print("<div class=\"chip\" id=\"opt-resolution-{s}\" onclick=\"set:resolution\" value=\"{s}\">{s} &#x00D7; {s}</div>", .{ t, t, t[0..x], t[x + 1 ..] }) catch return;
-                    }
-                    w.writeAll("<div class=\"chip\" id=\"opt-resolution-custom\" onclick=\"res-custom\">Custom</div></div><input type=\"text\" class=\"text custom\" id=\"opt-resolution\" onchange=\"res-text\" placeholder=\"Width x height, such as 1920x1080\"/>") catch return;
-                },
-            }
-            w.writeAll("</div></div>") catch return;
-        }
-        w.writeByte(0) catch return;
+        logic.formRml(&out.writer, es, modes[0..modes_len], false) catch return;
+        out.writer.writeByte(0) catch return;
         ui_set("settings-list", @ptrCast(out.written().ptr));
+        logic.formValues(es, modes[0..modes_len], u.res_custom);
 
         var v: [600]u8 = undefined;
         var sum: std.Io.Writer = .fixed(&v);
         for (es) |e| {
-            var b: [200]u8 = undefined;
-            const k = knownSetting(e.key) orelse {
-                ui_value(z(&b, "opt-{s}", .{e.key}), z(b[100..], "{s}", .{e.value}));
-                continue;
-            };
-            switch (k.kind) {
-                .chips => for (k.opts) |o| ui_class(z(&b, "opt-{s}-{s}", .{ e.key, o.v }), "on", std.mem.eql(u8, o.v, e.value)),
-                .toggle => ui_class(z(&b, "opt-{s}", .{e.key}), "on", std.mem.eql(u8, e.value, "1")),
-                .stepper => set(z(&b, "val-{s}", .{e.key}), "{s}x", .{if (e.value.len == 0) "1" else e.value}),
-                .text => ui_value(z(&b, "opt-{s}", .{e.key}), z(b[100..], "{s}", .{e.value})),
-                .resolution => {
-                    const listed = e.value.len == 0 or for (modes[0..modes_len]) |*m| (if (std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value)) break true) else false;
-                    const custom = u.res_custom or !listed;
-                    ui_class("opt-resolution-desktop", "on", !custom and e.value.len == 0);
-                    for (modes[0..modes_len]) |*m| ui_class(z(&b, "opt-resolution-{s}", .{std.mem.sliceTo(m, 0)}), "on", !custom and std.mem.eql(u8, std.mem.sliceTo(m, 0), e.value));
-                    ui_class("opt-resolution-custom", "on", custom);
-                    ui_class("opt-resolution", "hidden", !custom);
-                    ui_value("opt-resolution", z(&b, "{s}", .{e.value}));
-                },
-            }
+            const k = knownSetting(e.key) orelse continue;
             if (k.summary) for (k.opts) |o| if (std.mem.eql(u8, o.v, e.value)) sum.print("{s}{s}", .{ if (sum.end == 0) "" else " &#x00B7; ", o.label }) catch {};
         }
         set("tile-settings-title", "Display", .{});
@@ -964,37 +895,7 @@ const Ui = struct {
     }
 };
 
-/// Settings the form knows: a label and proper controls. Others get a text field.
-const Known = struct {
-    key: []const u8,
-    label: []const u8,
-    kind: enum { chips, toggle, stepper, text, resolution },
-    opts: []const struct { v: []const u8, label: []const u8 } = &.{},
-    summary: bool = false, // on the Play page's Settings tile
-};
-const known = [_]Known{
-    .{ .key = "window", .label = "Window mode", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Window" }, .{ .v = "1", .label = "Borderless" }, .{ .v = "2", .label = "Fullscreen" } } },
-    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .resolution },
-    .{ .key = "scale", .label = "Internal resolution", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "1", .label = "1x (640x480)" }, .{ .v = "2", .label = "2x" }, .{ .v = "3", .label = "3x" }, .{ .v = "4", .label = "4x" } } },
-    .{ .key = "widescreen", .label = "Widescreen (16:9)", .kind = .toggle },
-    .{ .key = "framerate", .label = "Frame rate", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Monitor's" }, .{ .v = "30", .label = "30 (original)" }, .{ .v = "60", .label = "60" }, .{ .v = "120", .label = "120" }, .{ .v = "144", .label = "144" } } },
-    .{ .key = "vsync", .label = "V-sync", .kind = .toggle },
-    .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
-    .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
-    .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle },
-    .{ .key = "cam_invert_y", .label = "Invert camera up/down", .kind = .toggle },
-    .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle },
-    .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper },
-    .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper },
-    .{ .key = "debug_menu", .label = "Debug menu at start (F1)", .kind = .toggle },
-    .{ .key = "log", .label = "Write otogi.log", .kind = .toggle },
-};
-const distances = [_]f32{ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8 };
-
-fn knownSetting(key: []const u8) ?Known {
-    for (known) |k| if (std.mem.eql(u8, k.key, key)) return k;
-    return null;
-}
+const knownSetting = logic.knownSetting;
 
 /// The primary display's modes, 1280x720 and up, largest first ("1920x1080"):
 /// the choices for the fullscreen resolution (the game sets it on that display).
@@ -1468,7 +1369,7 @@ fn pipeline(c: *Ctx) !void {
     const zig = c.path("{s}\\tools\\zig-x86_64-windows-0.17.0\\zig.exe", .{c.work});
     if (!c.done("zig")) {
         try unzipFile(c, try fetch(c, zig_dl), c.path("{s}\\tools", .{c.work}));
-        // build.zig.zon's packages (ANGLE, Dear ImGui) now, not minutes later
+        // build.zig.zon's packages (ANGLE, SDL3, RmlUi, FreeType) now, not minutes later
         // in the compile: a network failure should cost seconds.
         var attempt: u32 = 1;
         while (true) : (attempt += 1) {

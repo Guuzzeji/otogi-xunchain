@@ -8,6 +8,16 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 ## [Unreleased]
 
 ### Added
+- Settings in game: **F10**, or **Back+Start** on a controller, opens a settings page with
+  every option of `settings.ini` and its explanation. The game waits while it is open.
+  Frame rate, V-sync, window mode, fullscreen resolution, camera, mouse pointer, draw and
+  fog distance change at once; the rest are saved and marked "applies after restart".
+  Its text grows with the window, so it stays readable at 1440p and 4K. It has the
+  launcher's look and controls, and works with a controller, the keyboard or the mouse.
+- Metrics while playing (`metrics`, in the settings page, the launcher and the F1 menu):
+  the frame rate, or also frame time, the game's own steps, draws, graphics backend and
+  resolution, as small see-through text in a corner of your choice (`metrics_corner`).
+  The game keeps running underneath.
 - The launcher builds from a folder of the disc's files too (as an Xbox 360 or HDD rip
   leaves them): pick the `default.xbe` in it, or type the folder's path.
 - Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
@@ -19,6 +29,10 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
   build. A different game, or the Japanese release, is still refused.
 
 ### Fixed
+- The ripple over the title screen when you press Start (as it turns grey and the
+  New Game / Load Game menu comes in) shows again; nothing was drawn before (#16).
+- The Crimson King's mane is crimson again (Palace of Gold and later): it drew as a dark blue or
+  black shape, the colour of the stage's fog.
 - The "There is a problem with the disc you are using" message that could appear in the
   menus (for example after going back and forth between the title and the save list) on
   some PCs. The game now reads its files the same way on every disk.

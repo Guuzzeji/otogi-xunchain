@@ -8,6 +8,7 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const pad = @import("pad.zig");
+const settings_menu = @import("settings_menu.zig");
 
 const host = @import("host.zig");
 
@@ -25,6 +26,7 @@ var connected = false;
 var motors: [2]u16 = .{ 0, 0 }; // what the game last asked for
 var motors_sent: [2]u16 = .{ 0, 0 };
 var pads: [8]?*sdl.SDL_Gamepad = @splat(null);
+var combo_held = false; // Back+Start pressed and not yet both let go
 
 fn name(g: ?*sdl.SDL_Gamepad) [*:0]const u8 {
     const n: ?[*:0]const u8 = sdl.SDL_GetGamepadName(g);
@@ -104,14 +106,29 @@ pub fn poll(menu_open: bool) void {
         pad.merge(&m, read(p orelse continue));
         any = true;
     }
+    // Back+Start opens and closes the settings page. The game sees neither
+    // button from then until both are let go, and no pad while the page is open.
+    const combo = m.buttons & 0x30 == 0x30;
+    if (combo and !combo_held) settings_menu.open = !settings_menu.open;
+    if (combo) combo_held = true;
+    if (m.buttons & 0x30 == 0) combo_held = false;
+    if (combo_held) m.buttons &= ~@as(u16, 0x30);
+    if (settings_menu.open) {
+        // The page's: d-pad or left stick moves, A picks, B closes.
+        var dirs = m.buttons & 0xF;
+        const dead = 16000;
+        if (m.axes[1] > dead) dirs |= 1; // up (read() flips SDL's Y)
+        if (m.axes[1] < -dead) dirs |= 2;
+        if (m.axes[0] < -dead) dirs |= 4;
+        if (m.axes[0] > dead) dirs |= 8;
+        settings_menu.pad(dirs, m.analog[0] != 0, m.analog[1] != 0);
+        m = .{};
+    }
     // With a pad in hand the pointer over the game is in the way: hide it.
-    // settings.ini show_mouse = 1 keeps it; the debug menu sets its own.
-    const S = struct {
-        var show: ?bool = null;
-    };
-    if (S.show == null) S.show = if (std.c.getenv("RECOMP_SHOW_MOUSE")) |e| e[0] != '0' else false;
-    const hide = any and !S.show.?;
-    if (!menu_open and sdl.SDL_CursorVisible() == hide) {
+    // settings.ini show_mouse = 1 keeps it; the menus set their own.
+    const show = if (std.c.getenv("RECOMP_SHOW_MOUSE")) |e| e[0] != '0' else false;
+    const hide = any and !show;
+    if (!menu_open and !settings_menu.open and sdl.SDL_CursorVisible() == hide) {
         _ = if (hide) sdl.SDL_HideCursor() else sdl.SDL_ShowCursor();
         std.debug.print("[INPUT] mouse pointer {s}\n", .{if (hide) "hidden: a pad is connected" else "shown"});
     }

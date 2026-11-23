@@ -1,5 +1,5 @@
-Third-party software in otogi-xunchain.exe (the launcher)
-=========================================================
+Third-party software in otogi-xunchain.exe (the launcher) and otogi.exe (the game)
+==================================================================================
 
 Shippori Mincho B1 (font): SIL Open Font License 1.1, see OFL-ShipporiMinchoB1.txt.
 

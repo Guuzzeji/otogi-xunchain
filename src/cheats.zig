@@ -2,7 +2,8 @@
 //! static: BSS or the XBE's .data). Player-object fields mean something only
 //! during a stage; in menus they are stale.
 const std = @import("std");
-const im = @import("imgui");
+const ui = @import("ui.zig");
+const logic = @import("logic");
 const menu = @import("debug_menu.zig");
 const d3d = @import("d3d.zig");
 const gl_hle = @import("gl_hle.zig");
@@ -52,13 +53,13 @@ var inf_magic = false;
 /// Draw and fog distance, times the stage's own (settings.ini draw_distance,
 /// fog_distance). 1 leaves the game untouched.
 var far_scale: f32 = 1;
-var scales_read = false;
+pub var scales_read = false; // false reads the settings again (the settings page)
 
 fn envScale(name: [*:0]const u8) f32 {
     const v = std.fmt.parseFloat(f32, std.mem.span(std.c.getenv(name) orelse return 1)) catch return 1;
     return if (v >= 0.1 and v <= 16) v else 1;
 }
-var warp_index: c_int = 0;
+var warp_index: usize = 0;
 
 extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
 extern "c" fn fread([*]u8, usize, usize, *anyopaque) usize;
@@ -68,7 +69,8 @@ extern "c" fn remove([*:0]const u8) c_int;
 /// logs\cheat, for scripted testing: read and deleted when it appears, one
 /// command per line: warp <stage id>, stage <id> (the story stage only), god,
 /// ungod, magic, kill, all, clear, give, status, far <x>, fog <x> (draw and fog
-/// distance), cull (last frame's frustum tests). Results go to the log.
+/// distance), cull (last frame's frustum tests), set <key> <value> (settings.ini
+/// as the settings page sets it). Results go to the log.
 fn liveCommands() void {
     const f = fopen("logs/cheat", "rb") orelse return;
     var buf: [512]u8 = undefined;
@@ -82,11 +84,13 @@ fn liveCommands() void {
         if (std.mem.eql(u8, cmd, "warp")) {
             const id = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
             warp_index = for (0..29) |i| {
-                if (p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).* == id) break @intCast(i);
+                if (p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).* == id) break i;
             } else continue;
             warp();
         } else if (std.mem.eql(u8, cmd, "stage")) {
             p32(STAGE).* = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
+        } else if (std.mem.eql(u8, cmd, "set")) {
+            @import("settings_menu.zig").save(it.next() orelse continue, it.rest());
         } else if (std.mem.eql(u8, cmd, "far")) {
             far_scale = std.fmt.parseFloat(f32, it.next() orelse "") catch continue;
         } else if (std.mem.eql(u8, cmd, "fog")) {
@@ -137,55 +141,74 @@ pub fn tick() void {
 }
 var far_touched = false;
 
+/// The Cheats tab's fixed parts (src/ui/debug.rml): a chip per stage, a row per inventory.
+pub fn shape() void {
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    for (0..29) |i| w.print("<div class=\"chip\" id=\"warp-{d}\" onclick=\"warp-pick\" value=\"{d}\">m{d:0>3}</div>", .{ i, i, p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).* }) catch return;
+    ui.set("warp-list", "{s}", .{w.buffered()});
+    w = .fixed(&buf);
+    for (tables, 0..) |t, i| w.print("<div class=\"row\"><div class=\"btn\" onclick=\"give\" value=\"{d}\">Give all {s}</div><span id=\"inv-{d}\"></span></div>", .{ i, t.name, i }) catch return;
+    ui.set("c-inv", "{s}", .{w.buffered()});
+}
+
+/// The Cheats tab, every frame it is shown.
 pub fn tab() void {
-    im.ImGui_SeparatorText("Stages");
-    menu.text("story stage m{d:0>3}, exit request {d}", .{ p32(STAGE).*, @as(i32, @bitCast(p32(EXIT_REQUEST).*)) });
-    var all = p32(ALL_STAGES).* != 0;
-    if (im.ImGui_Checkbox("All stages in stage select", &all)) p32(ALL_STAGES).* = @intFromBool(all);
-    im.ImGui_SameLine();
-    if (im.ImGui_Button("Mark all cleared")) for (0..29) |i| {
-        p32(STAGE_RECORDS + @as(u32, @intCast(i)) * 0x3C + 0x18).* |= 1;
-    };
-    var names: [29 * 8]u8 = undefined;
-    var w: usize = 0;
-    for (0..29) |i| w += (std.fmt.bufPrint(names[w..], "m{d:0>3}\x00", .{p32(STAGE_ORDER + @as(u32, @intCast(i)) * 4).*}) catch break).len;
-    names[w] = 0;
-    im.ImGui_SetNextItemWidth(120);
-    _ = im.ImGui_Combo("##stage", &warp_index, &names);
-    im.ImGui_SameLine();
-    if (im.ImGui_Button("Warp (back to the hub on it)")) warp();
-    im.ImGui_TextWrapped("%s", "Warp sets the story stage and leaves the current stage; the hub then offers the chosen one. Moving the story stage back re-locks later stages unless all stages are on.");
-
-    im.ImGui_SeparatorText("Player");
-    _ = im.ImGui_Checkbox("God mode", &god);
-    im.ImGui_SameLine();
-    _ = im.ImGui_Checkbox("Infinite magic", &inf_magic);
-    menu.text("HP {d:.0}/{d}, magic {d:.0}/{d}", .{ pf(HP).*, p32(HP_MAX).*, pf(MAGIC).*, p32(MAGIC_MAX).* });
-    menu.text("level {d}, exp {d} (in stage {d}), max life {d}", .{ p32(LEVEL).*, p32(EXP).*, p32(STAGE_EXP).*, p32(MAX_LIFE).* });
-    _ = im.ImGui_InputInt("money", @ptrCast(@alignCast(p32(MONEY))));
-    im.ImGui_SameLine();
-    if (im.ImGui_Button("Max")) p32(MONEY).* = 99999;
-
-    im.ImGui_SeparatorText("World");
-    _ = im.ImGui_SliderFloat("Draw distance x", &far_scale, 0.25, 8);
-    _ = im.ImGui_SliderFloat("Fog distance x", &gl_hle.fog_scale, 0.25, 8);
-    menu.text("far plane {d:.0}", .{pf(FAR).*});
-
-    im.ImGui_SeparatorText("Inventory");
-    for (tables, table_max) |t, max| {
+    ui.set("c-stage", "story stage m{d:0>3}, exit request {d}", .{ p32(STAGE).*, @as(i32, @bitCast(p32(EXIT_REQUEST).*)) });
+    ui.ui_class("all-stages", "on", p32(ALL_STAGES).* != 0);
+    for (0..29) |i| {
+        var id: [16]u8 = undefined;
+        ui.ui_class(std.fmt.bufPrintSentinel(&id, "warp-{d}", .{i}, 0) catch continue, "on", i == warp_index);
+    }
+    ui.ui_class("god", "on", god);
+    ui.ui_class("inf-magic", "on", inf_magic);
+    ui.set("c-player", "HP {d:.0}/{d}, magic {d:.0}/{d}<br/>level {d}, exp {d} (in stage {d}), max life {d}", .{ pf(HP).*, p32(HP_MAX).*, pf(MAGIC).*, p32(MAGIC_MAX).*, p32(LEVEL).*, p32(EXP).*, p32(STAGE_EXP).*, p32(MAX_LIFE).* });
+    ui.value("money", "{d}", .{@as(i32, @bitCast(p32(MONEY).*))});
+    ui.set("far-val", "{d}x", .{far_scale});
+    ui.set("fog-val", "{d}x", .{gl_hle.fog_scale});
+    ui.set("c-far", "far plane {d:.0}", .{pf(FAR).*});
+    for (tables, table_max, 0..) |t, max, i| {
         const n = @min(p32(t.count).*, max);
         var owned: u32 = 0;
-        for (0..n) |i| owned += @intFromBool(p32(t.at + @as(u32, @intCast(i)) * 16 + 8).* != 0);
-        var label: [48:0]u8 = undefined;
-        if (im.ImGui_Button(std.fmt.bufPrintSentinel(&label, "Give all {s}", .{t.name}, 0) catch "give")) {
-            for (0..n) |i| {
-                const e = p32(t.at + @as(u32, @intCast(i)) * 16 + 8);
-                e.* = @max(e.*, t.own);
-            }
-        }
-        im.ImGui_SameLine();
-        menu.text("{d}/{d} owned", .{ owned, n });
+        for (0..n) |j| owned += @intFromBool(p32(t.at + @as(u32, @intCast(j)) * 16 + 8).* != 0);
+        var id: [16]u8 = undefined;
+        ui.set(std.fmt.bufPrintSentinel(&id, "inv-{d}", .{i}, 0) catch continue, "{d}/{d} owned", .{ owned, n });
     }
+}
+
+/// A click in the Cheats tab (ui.take). False if it is not one.
+pub fn command(cmd: []const u8, val: []const u8) bool {
+    const eql = std.mem.eql;
+    if (eql(u8, cmd, "all-stages")) {
+        p32(ALL_STAGES).* = @intFromBool(p32(ALL_STAGES).* == 0);
+    } else if (eql(u8, cmd, "clear-all")) {
+        for (0..29) |i| p32(STAGE_RECORDS + @as(u32, @intCast(i)) * 0x3C + 0x18).* |= 1;
+    } else if (eql(u8, cmd, "warp-pick")) {
+        warp_index = @min(std.fmt.parseInt(usize, val, 10) catch warp_index, 28);
+    } else if (eql(u8, cmd, "warp")) {
+        warp();
+    } else if (eql(u8, cmd, "god")) {
+        god = !god;
+    } else if (eql(u8, cmd, "magic")) {
+        inf_magic = !inf_magic;
+    } else if (eql(u8, cmd, "money")) {
+        p32(MONEY).* = @bitCast(std.fmt.parseInt(i32, std.mem.trim(u8, val, " "), 10) catch return true);
+    } else if (eql(u8, cmd, "money-max")) {
+        p32(MONEY).* = 99999;
+    } else if (eql(u8, cmd, "far") or eql(u8, cmd, "fog")) {
+        const s = if (eql(u8, cmd, "far")) &far_scale else &gl_hle.fog_scale;
+        var b: [16]u8 = undefined;
+        s.* = logic.stepDistance(std.fmt.bufPrint(&b, "{d}", .{s.*}) catch "1", eql(u8, val, "+"));
+    } else if (eql(u8, cmd, "give")) {
+        const i = std.fmt.parseInt(usize, val, 10) catch return true;
+        if (i >= tables.len) return true;
+        const t = tables[i];
+        for (0..@min(p32(t.count).*, table_max[i])) |j| {
+            const e = p32(t.at + @as(u32, @intCast(j)) * 16 + 8);
+            e.* = @max(e.*, t.own);
+        }
+    } else return false;
+    return true;
 }
 
 /// Story stage = the pick, then ask the main loop to leave for the hub
