@@ -90,7 +90,7 @@
   a 40% dead zone per axis, buttons pressed above 0x1E. Controls (Options > Controller Config, Type A): LT lock-on,
   RT dash, A jump, B small attack, X spell, Y great attack. `src/pad.zig` adapts a modern pad: LB/RB also press
   LT/RT (Otogi does not use Black/White), the right stick is inverted on both axes (Otogi orbits the camera;
-  `RECOMP_CAM_INVERT=0` keeps it) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
+  `RECOMP_CAM_INVERT=0` keeps it; `RECOMP_CAM_INVERT_Y=1` flips the vertical back, issue #17) and starts at the game's 40% past a 15% host dead zone. Rumble goes to the host
   pad (`XInputSetState`, motors at feedback+66; `SDL_RumbleGamepad` on the host).
 - SDL3 is the window, its events and the pads; nothing else. ANGLE still draws (the window is made without SDL's GL
   flag and EGL gets its HWND from `SDL_PROP_WINDOW_WIN32_HWND_POINTER`), XAudio2 still plays. The prebuilt
@@ -171,7 +171,7 @@
   `game\default.xbe` it switches to the exe's folder first (setup's Play starts it from elsewhere).
 - Setup writes `settings.ini` beside otogi.exe: a header with the version and that version's CHANGELOG.md section,
   then the repo's `settings.ini` as the template (a comment per setting). Values already in the player's file are kept,
-  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, show_mouse,
+  unknown keys are carried over at the end. Settings: window, resolution, scale, widescreen, framerate, vsync, gfx, mist_depth, cam_invert, cam_invert_y, show_mouse,
   debug_menu, log.
 - `settings.ini` (beside `game\`): each `key = value` line sets `RECOMP_<KEY>` unless the environment has it
   (`main.zig` `loadSettings`). The shipped file sets scale, widescreen, framerate, vsync and gfx.

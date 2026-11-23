@@ -7,6 +7,10 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Added
+- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
+  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
