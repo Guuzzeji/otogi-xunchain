@@ -154,6 +154,11 @@
   - A full-width `CopyRects` of the back buffer squeezes the whole wide buffer into its 640 columns. A full-width draw
     of such a copy (pause blur, menu desaturate) stretches back; a draw kept in the middle (the title logo's
     refraction) samples it remapped to its 4:3 position (`uploadTscale`, `u_tscale.zw` offset).
+  - The movie (issue #9) stays 4:3 with black sides: extending its full-screen draw of the movie target
+    (X8R8G8B8, filled from the YUY2 frame) only smeared the clamped edge columns into streaks. A target a
+    YUY2/UYVY texture was drawn into in the last 30 frames is the movie target (`isMovie`); a draw sampling it
+    (or a YUY2 texture itself) skips the edge rules. The trailer is the only XMV on the disc; cutscenes are in-engine.
+    Filling 16:9 would mean cropping a quarter of its height.
   - Known: in the pause menu a full-width overlay's clamped texture edge darkens the left pillar a little. Cutscene
     letterbox bars are handled by the full-width rule but were not seen in a test run.
 - Pad script that reaches stage 1 from boot: `RECOMP_PAD_SCRIPT=15000:start,18000:start,21000:a,23000:a,...,61000:a`

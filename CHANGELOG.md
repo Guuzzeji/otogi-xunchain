@@ -11,6 +11,11 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 - Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
   up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
 
+### Fixed
+- In widescreen, the trailer that plays when you wait on the title screen no longer has
+  smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
+  bars at the sides (issue #9).
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
