@@ -1592,14 +1592,16 @@ fn uploadUniforms(p: *Prog) void {
         if (uniNew(p, @as(*const [192 * 4]f32, @ptrCast(&vsc)))) gl.glUniform4fv(p.u_c, 192, @ptrCast(&vsc));
     }
     if (p.key.ps != 0) {
-        const def = &pixel_shaders.items[p.key.ps - 1].def;
+        // Constants from the render state, not the definition: SetPixelShaderConstant
+        // changes them there (the title's ripple sets its colour and fade so).
+        const ps = d3d.psState;
         var c: [16][4]f32 = undefined;
         for (0..8) |i| {
-            c[i] = argbVec(def[PsDef.constant0 + i]);
-            c[8 + i] = argbVec(def[PsDef.constant1 + i]);
+            c[i] = argbVec(ps(PsDef.constant0 + @as(u32, @intCast(i))));
+            c[8 + i] = argbVec(ps(PsDef.constant1 + @as(u32, @intCast(i))));
         }
         if (p.u_psc >= 0 and uniNew(p, @as(*const [64]f32, @ptrCast(&c)))) gl.glUniform4fv(p.u_psc, 16, @ptrCast(&c));
-        const f = [2][4]f32{ argbVec(def[PsDef.final_c0]), argbVec(def[PsDef.final_c1]) };
+        const f = [2][4]f32{ argbVec(ps(PsDef.final_c0)), argbVec(ps(PsDef.final_c1)) };
         if (p.u_psf >= 0 and uniNew(p, @as(*const [8]f32, @ptrCast(&f)))) gl.glUniform4fv(p.u_psf, 2, @ptrCast(&f));
         if (p.u_bump >= 0) {
             var m: [4][4]f32 = undefined;
@@ -3673,6 +3675,8 @@ fn replay(r: *const PbRec) void {
                 const bit = i -% (128 + d3d.simple_first);
                 e.* = if (s != b or (bit < 128 and d.set >> @intCast(bit) & 1 != 0)) s else l;
             }
+            // The pixel shader block (its constants) goes with the recorded shader.
+            @memcpy(eff[128..][0..PsDef.texture_modes + 1], d.state[128..][0..PsDef.texture_modes + 1]);
             d3d.state_snap = &eff;
             stage_tex = d.tex;
             vshader = d.vs;

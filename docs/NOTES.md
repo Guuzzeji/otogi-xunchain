@@ -144,7 +144,17 @@
 - Debug: `touch logs\drawlog` logs the next frame's draws (and clears, replays) and saves `logs\frame_N.bmp`.
 - BUMPENVMAP (texture mode 6), used by the title-to-menu ripple: the previous stage's V8U8 texel read as signed
   (du, dv) even without COLORSIGN, turned by BUMPENVMAT and added to the coordinates (in texels for linear textures).
-- Offscreen render targets get a depth buffer while the title passes a Z surface, and none for NULL (the movie).
+- Title ripple drew nothing (issue #16): the quad is pixel shader `ps 1DA8040` (stage 0 a point-sampled V8U8
+  ripple, stage 1 BUMPENVMAP into the back buffer copy, BUMPENVMAT 8, stage 2 an A8 mask), colour
+  `copy * c0 * 2`, alpha `c0.a(stage 1) * mask`. Its definition's constants are 0; the game sets them with
+  SetPixelShaderConstant (FFFFE6E6, alpha fading out) and only the render state held them, so it was black
+  with alpha 0 and the alpha test dropped it. Pixel shader constants now come from the render state's
+  pixel shader block (words 0-54 from D3DRS_PSALPHAINPUTS0, a copy of the bound definition that
+  SetPixelShaderConstant edits; checked equal to the definition for every other draw from title to m007).
+  A recorded pushbuffer replays its draws with their recorded block, as with their recorded shader: the
+  merge with live state otherwise mixed another shader's block in. It copies the back buffer before the
+  frame clears, so it ripples the frame before: feedback, which smears it more each frame. Same on all
+  three backends.
 - CPU: the toolkit's `nv2a_ack_thread` (`xbox_memory_layout.c`) looped on `Sleep(0)` and held a core; it now sleeps
   1 ms (toolkit patch). Found with the sampler: `type nul > logs\sample` samples every thread for 3 s and logs the
   hot functions with the nearest return address into the exe. System DLL functions get names; code in the exe

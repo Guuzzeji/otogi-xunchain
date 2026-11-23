@@ -19,6 +19,8 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
   build. A different game, or the Japanese release, is still refused.
 
 ### Fixed
+- The ripple over the title screen when you press Start (as it turns grey and the
+  New Game / Load Game menu comes in) shows again; nothing was drawn before (#16).
 - The Crimson King's mane is crimson again (Palace of Gold and later): it drew as a dark blue or
   black shape, the colour of the stage's fog.
 - The "There is a problem with the disc you are using" message that could appear in the
