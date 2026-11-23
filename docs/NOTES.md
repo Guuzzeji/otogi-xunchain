@@ -402,10 +402,12 @@
     `zig build test`, setup exe as an artifact. The game itself is not built (it needs the lifted C from a disc).
   - `pr.yml` on pull requests (and body edits): exactly one box ticked under "Release" in the PR body
     (`.github/pull_request_template.md`: major, minor, patch, none), and unless none, an entry under Unreleased.
-  - `release.yml` on every merged PR (`pull_request_target` closed + merged, so fork PRs get a write token; it checks
-    out main, never PR code): bumps by the ticked box, moves Unreleased into a dated section, commits "Release vX.Y.Z"
-    to main, tags, builds setup, pushes, and publishes a release with `otogi-xunchain-setup.exe`, the font's OFL text,
-    and that changelog section as notes. A "none" box releases nothing. Runs are serialized (`concurrency: release`);
-    if a merge lands during a build the push fails, and re-running the job bumps again from the new main.
-  - By hand: Actions > Release > Run workflow with a bump; "none" there releases the current version as it is.
+  - `release.yml` only by hand (Actions > Release > Run workflow), so several merged PRs ship as one release. Bump
+    "auto" (the default) reads the bodies of PRs merged into main since the last tag (`gh pr list --search merged:>`
+    the tag commit's time) and takes the biggest ticked box, major > minor > patch; if every box was none it releases
+    nothing. It then moves Unreleased into a dated section, commits "Release vX.Y.Z" to main, tags, builds setup,
+    pushes, and publishes a release with `otogi-xunchain-setup.exe`, the font's OFL text, and that changelog section
+    as notes. A chosen bump overrides auto; "none" releases the current version as it is. Runs are serialized
+    (`concurrency: release`); if a merge lands during a build the push fails, and re-running the job bumps again.
+    Until 0.10.2 it ran on every merged PR, which released #19 to #24 as five versions in one night.
   - The bump and changelog shell and the box parser were dry-run locally on scratch copies.

@@ -1,6 +1,7 @@
 # Every pull request: exactly one box ticked under "Release" in its body, and unless
-# that box is "none", a changelog entry under ## [Unreleased]. Release (release.yml)
-# reads the same box on merge. Reruns when the body is edited, so ticking a box rechecks.
+# that box is "none", a changelog entry under ## [Unreleased]. Release (release.yml, run by
+# hand) bumps by the biggest box among PRs merged since the last release. Reruns when the body
+# is edited, so ticking a box rechecks.
 name: PR
 
 on:
