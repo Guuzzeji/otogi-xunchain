@@ -1,0 +1,54 @@
+name: Bug in the game
+description: Something in the game is broken or plays differently from the Xbox.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! One bug per issue, please. Questions and feature ideas go to [Discussions](https://github.com/Guuzzeji/otogi-xunchain/discussions).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead. On the Xbox it looks or plays like...
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where and how to make it happen
+      description: Stage, place in the stage, and the steps. "Stage 2, start of the path to the mansion, turn the camera left."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the "=== Otogi XUnchain" line near the top of otogi.log, e.g. "v0.10.2 (7695a41)".
+    validations:
+      required: true
+  - type: dropdown
+    id: gfx
+    attributes:
+      label: Graphics backend
+      description: "gfx in settings.ini. If you can, say whether the bug changes with another backend."
+      options: [d3d11, vulkan, gl, not sure]
+    validations:
+      required: true
+  - type: input
+    id: pc
+    attributes:
+      label: PC
+      description: GPU, driver, Windows version, controller (otogi.log has most of this at the top).
+  - type: textarea
+    id: log
+    attributes:
+      label: otogi.log
+      description: Drag otogi.log from the game folder here. It is rewritten every run, so attach it right after the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or video
+      description: A picture of the bug, and of the Xbox version if you have one, helps a lot.

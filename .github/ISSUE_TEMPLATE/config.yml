@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help
+    url: https://github.com/Guuzzeji/otogi-xunchain/discussions/categories/q-a
+    about: How do I, does it support, is this normal. Ask in Discussions.
+  - name: Feature request or idea
+    url: https://github.com/Guuzzeji/otogi-xunchain/discussions/categories/ideas
+    about: New settings, features and wishes go to Discussions > Ideas.

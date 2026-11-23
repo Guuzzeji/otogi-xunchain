@@ -1,0 +1,39 @@
+name: Setup or build problem
+description: Setup won't accept your disc, fails while building, or the game won't start.
+labels: [bug, setup]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Which step failed and the message setup showed.
+    validations:
+      required: true
+  - type: dropdown
+    id: dump
+    attributes:
+      label: Your disc dump
+      options: [Redump ISO (full disc image), XISO, Extracted folder with default.xbe, not sure]
+    validations:
+      required: true
+  - type: input
+    id: region
+    attributes:
+      label: Region
+      description: USA, Japan, Europe...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Setup version
+      description: In the setup window's title.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: setup.log
+      description: Drag setup.log from the install folder here (setup's "Open log file" button shows where it is).
+    validations:
+      required: true
