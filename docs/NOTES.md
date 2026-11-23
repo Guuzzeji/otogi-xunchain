@@ -630,3 +630,61 @@
     merge lands during a build the push fails, and re-running the job bumps again.
     It used to run on every merged PR, which released #19 to #25 as six versions in one night.
   - The bump and changelog shell and the box parser were dry-run locally on scratch copies.
+
+## Linux (M8, 2026-11-22)
+- Build: `zig build` on a Linux host targets the host (Windows still defaults to x86_64-windows-gnu). Needs SDL3, EGL,
+  GL ES dev packages (Ubuntu 26.04: `libsdl3-dev libegl-dev libgles-dev pkg-config`). `toolkit_c` is split into the
+  common set, `toolkit_windows` (D3D11, Media Foundation, GDI, raw input, XAudio2's twin) and `toolkit_posix`
+  (`platform/win32_compat.c`). `src/linux_stubs.c` covers what the left-out files provide and Otogi never calls
+  (the RECOMP_FB_WINDOW debug window, `mkb_merge`). ANGLE and the SDL mingw zip are lazy, so Linux never fetches them.
+- Host: `src/host.zig` holds the few OS calls std has no io-free form of (lock + condition, steady clock, sleep,
+  mkdir, setenv, CPU and RAM for the debug menu); `gl_hle`, `input` and `debug_menu` use it in place of their own
+  kernel32 externs. Paths use `/` (Windows takes it too). Saves: `$XDG_DATA_HOME/Otogi`, else `~/.local/share/Otogi`.
+- Renderer: on Linux SDL makes the GL ES 3.0 context (`SDL_WINDOW_OPENGL`, `SDL_HINT_VIDEO_FORCE_EGL` so the shader
+  cache can hook the EGL display); `angleContext` is Windows only. `eglSetBlobCacheFuncsANDROID` is looked up with
+  `eglGetProcAddress` on both (Mesa does not export it). Mesa has `GL_EXT_depth_clamp` and S3TC.
+- WSLg: Mesa falls back to llvmpipe (~21 ms a frame, still 30 game fps at 2x). `GALLIUM_DRIVER=d3d12
+  MESA_D3D12_DEFAULT_ADAPTER_NAME=AMD` runs it on the GPU through WSL's D3D12 (0.3 ms). Real Linux picks the GPU.
+- Trapped MMIO (RECOMP_AC97_READY): xboxrecomp only decoded faulting x86-64 instructions from a Win32 CONTEXT, so on
+  x86-64 Linux the first DirectSound register access killed the game. `platform/mmio_decode.h` now takes an
+  `mmio_ctx_t` (CONTEXT or `ucontext_t`, gregs indices hard-coded), and the APU hook, the AC'97 write trap
+  (emulated, as on arm64; no trap-flag step) and `xbox_PosixMmioFault` cover x86-64 Linux. `src/main.zig` installs a
+  SIGSEGV/SIGBUS handler that calls it, else prints the crash report (exe offset for `addr2line`).
+- Handles: the bridge passes untagged guest values through as handles (KeSetEvent on a KEVENT it never registered).
+  Win32 rejects them; `win32_compat.c` cast them to objects and crashed (SetEvent on host 0x106B6C). Objects now live
+  in one reserved arena (`obj_of`): a handle is valid only as a live slot there, else ERROR_INVALID_HANDLE / WAIT_FAILED.
+- File names: the disc keeps its case (`media/FONT14.xpr`), the title asks for `d:\media\font14.xpr`.
+  `kernel_path.c`'s POSIX `xbox_translate_path` folds each missing component to the entry that matches ignoring case
+  (`fold_case`); unmatched tails keep the title's spelling, for creates. The nine `d:\sfx\*.dds` misses happen on
+  Windows too.
+- Menus (RmlUi, src/ui.cpp): the same SDL3 + GL3 (GL ES mode) backends on Mesa; the `ui` library links SDL3 and
+  GLESv2 on Linux only for their headers. Segoe UI and Consolas do not exist there and RmlUi does not fall back for
+  a missing family (text is not drawn), so `ui.zig` loads fontconfig's `sans-serif`, `sans-serif:bold` and
+  `monospace` (`fc-match`) under those names (`ui_font_as`, setup/ui_common.h). `settings_menu` sets the
+  environment through `host.setEnv`, where an empty value removes it, as `_putenv` does.
+- Guest memory: offset-based, so nothing needs the low 4 GB; `RECOMP_EXT_VMA=1` (set by main.zig on Linux) holds the
+  whole 4 GB window, so device windows above guest RAM are not taken by the OS's own maps.
+- Launcher (stage 2, 2026-11-23): `setup/window_sdl.cpp` is `window.cpp`'s twin (same C functions) on RmlUi's SDL3
+  platform and GL3 renderer in GL ES mode, as the game's menus: borderless with `SDL_SetWindowHitTest` for the page's
+  own title bar and edges, SDL gamepads for the pad controls, SDL's file dialogs (portal or zenity; the Browse
+  buttons do nothing without one, the boxes take typed paths), `SDL_OpenURL` (xdg-open) for files and links,
+  `SDL_GetFullscreenDisplayModes` for the resolution list. `setup/main.zig` writes paths with `\` and `os()` turns
+  them to `/` at compile time. Per OS: the downloads (Zig's tar.xz, python-build-standalone 3.14.7 `install_only`
+  tar.gz, Capstone's manylinux wheel into its `site-packages`; no `._pth`: `-m` from `xboxrecomp/` finds the
+  toolkit), Stop (each tool in its own process group, `kill(-pgid)`, for Windows' job), free space (`statvfs` of the
+  nearest existing folder), the system line (`/proc/sys/kernel/osrelease`, `/etc/os-release`, `/proc/cpuinfo`),
+  Play (spawns `<out>/otogi` with the install folder as its working folder), self-update (asset
+  `otogi-xunchain-linux-x86_64`, `\x7fELF` checked, made executable, `rename`). Step 1 fails at once if the SDL3, EGL
+  or GL ES headers are missing, not after the lift. Not done: tools outlive a launcher closed mid-build (no
+  PR_SET_PDEATHSIG); the game is not reaped (a zombie until the launcher exits).
+- Launcher frame rate: capped at 60 (10 unfocused) by sleeping, as V-sync does not always hold. On llvmpipe (WSLg's
+  default) a frame costs ~170 ms of CPU across ~3 cores (the hero's mask-image layer, 2x MSAA layers at 1280x860):
+  18 fps, ~315% CPU, whatever the cap. On the GPU (`GALLIUM_DRIVER=d3d12`) 29% of one core. The first full build in
+  WSL from an empty folder took 7 min 20 s (lift 4.6 min, compile 1.7 min with -j1), launcher running meanwhile.
+- Launcher look on Linux: the art is PNG now on both (JPEG has no decoder on Linux without a library, and SDL only
+  reads PNG from 3.4): `setup/png.zig` decodes 8-bit RGB/RGBA, tested against System.Drawing's pixels. Fonts as in
+  the game (fontconfig under Segoe UI and Consolas); the Segoe MDL2 icons become Unicode symbols at compile time
+  (`icons()`, `icon_map`), drawn by whatever font fontconfig finds with all of them (`:charset=`; DejaVu Sans).
+- Release: Linux launchers are built in `debian:trixie` (the oldest common distro with SDL3, so its glibc 2.41 is the
+  floor), in CI and in `release.yml`. The release's version commit and tag go to both build jobs as a git bundle and
+  are pushed only once both launchers built and passed the tests.

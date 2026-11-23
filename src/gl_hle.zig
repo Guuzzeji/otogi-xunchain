@@ -29,6 +29,7 @@ const debug_menu = @import("debug_menu.zig");
 const pacer = @import("pacer.zig");
 const sdl = @import("sdl");
 const input = @import("input.zig");
+const host = @import("host.zig");
 
 const arg = d3d.arg;
 const mem32 = d3d.mem32;
@@ -42,7 +43,6 @@ extern threadlocal var g_eax: u32;
 // window, its events and the pads (input.zig) only: ANGLE draws into the
 // window's HWND, and SDL's own GL and swap calls are not used.
 
-extern "kernel32" fn ExitProcess(u32) callconv(.winapi) noreturn;
 extern fn SDL_SetMainReady() void; // SDL_main.h, which also renames main
 
 /// RECOMP_WINDOW: 0 = a window, 1 = borderless (a window covering the
@@ -86,7 +86,7 @@ fn pumpEvents() void {
     var e: sdl.SDL_Event = undefined;
     while (sdl.SDL_PollEvent(&e)) {
         switch (e.type) {
-            sdl.SDL_EVENT_QUIT => ExitProcess(0), // closing the window ends the game
+            sdl.SDL_EVENT_QUIT => std.process.exit(0), // closing the window ends the game
             sdl.SDL_EVENT_KEY_DOWN => if (!e.key.repeat and e.key.scancode == sdl.SDL_SCANCODE_RETURN and e.key.mod & sdl.SDL_KMOD_ALT != 0) {
                 if (window_mode == 0) window_mode = 1;
                 setFull(!full);
@@ -200,7 +200,8 @@ var samplers: [4]gl.GLuint = @splat(0);
 
 // HWNDs need not be aligned; translate-c types EGLNativeWindowType as a struct pointer.
 extern fn eglCreateWindowSurface(gl.EGLDisplay, gl.EGLConfig, ?*anyopaque, ?*const gl.EGLint) gl.EGLSurface;
-extern fn eglSetBlobCacheFuncsANDROID(gl.EGLDisplay, *const fn (?*const anyopaque, isize, ?*const anyopaque, isize) callconv(.c) void, *const fn (?*const anyopaque, isize, ?*anyopaque, isize) callconv(.c) isize) void;
+// An extension entry point: looked up, as Mesa does not export it.
+const SetBlobCacheFuncs = *const fn (gl.EGLDisplay, *const fn (?*const anyopaque, isize, ?*const anyopaque, isize) callconv(.c) void, *const fn (?*const anyopaque, isize, ?*anyopaque, isize) callconv(.c) isize) callconv(.c) void;
 
 fn hasExt(name: []const u8) bool {
     var n: gl.GLint = 0;
@@ -216,8 +217,8 @@ fn ready() bool {
     if (state == .none) {
         const t = std.Thread.spawn(.{}, renderThread, .{}) catch return false;
         t.detach();
-        game_tid = GetCurrentThreadId();
-        game_thread = OpenThread(0x0800, 0, game_tid); // THREAD_QUERY_LIMITED_INFORMATION
+        game_tid = std.Thread.getCurrentId();
+        game_thread = host.currentThread();
         lock();
         while (state == .none) wait(0xFFFFFFFF);
         unlock();
@@ -226,10 +227,8 @@ fn ready() bool {
 }
 
 /// The game's thread, for the debug menu's CPU readout.
-pub var game_thread: ?*anyopaque = null;
-var game_tid: u32 = 0;
-extern "kernel32" fn OpenThread(access: u32, inherit: i32, id: u32) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
+pub var game_thread: ?host.Thread = null;
+var game_tid: std.Thread.Id = 0;
 
 // ── Shader cache on disk ────────────────────────────────────────────────────
 // ANGLE hands over every compiled program as a blob (EGL_ANDROID_blob_cache)
@@ -245,7 +244,6 @@ extern "c" fn fread(*anyopaque, usize, usize, *anyopaque) usize;
 extern "c" fn fwrite(*const anyopaque, usize, usize, *anyopaque) usize;
 extern "c" fn rename([*:0]const u8, [*:0]const u8) c_int;
 extern "c" fn remove([*:0]const u8) c_int;
-extern "c" fn _mkdir([*:0]const u8) c_int;
 
 var blob_hits: std.atomic.Value(u32) = .init(0);
 var blob_stores: std.atomic.Value(u32) = .init(0);
@@ -254,7 +252,7 @@ var blob_stores: std.atomic.Value(u32) = .init(0);
 fn blobPath(buf: *[96]u8, key: ?*const anyopaque, n: isize, ext: []const u8) ?[*:0]const u8 {
     if (key == null or n <= 0 or n > 32) return null;
     const k: [*]const u8 = @ptrCast(key.?);
-    return (std.fmt.bufPrintSentinel(buf, "shader_cache\\{x}{s}", .{ k[0..@intCast(n)], ext }, 0) catch return null).ptr;
+    return (std.fmt.bufPrintSentinel(buf, "shader_cache/{x}{s}", .{ k[0..@intCast(n)], ext }, 0) catch return null).ptr;
 }
 
 fn blobSet(key: ?*const anyopaque, key_n: isize, value: ?*const anyopaque, n: isize) callconv(.c) void {
@@ -265,7 +263,7 @@ fn blobSet(key: ?*const anyopaque, key_n: isize, value: ?*const anyopaque, n: is
     if (value == null or n <= 0) return;
     // Written whole under another name first: a crash mid-write leaves no
     // half blob under the real one.
-    const tmp = blobPath(&b, key, key_n, std.fmt.bufPrint(&ext, ".{d}.tmp", .{GetCurrentThreadId()}) catch return) orelse return;
+    const tmp = blobPath(&b, key, key_n, std.fmt.bufPrint(&ext, ".{d}.tmp", .{std.Thread.getCurrentId()}) catch return) orelse return;
     const f = fopen(tmp, "wb") orelse return sayShader("cannot write into shader_cache (read-only folder or full disk?); programs are compiled again next run");
     const ok = fwrite(value.?, 1, @intCast(n), f) == n;
     _ = fclose(f);
@@ -309,16 +307,17 @@ fn blobInit() void {
     const exts: ?[*:0]const u8 = gl.eglQueryString(dpy, gl.EGL_EXTENSIONS);
     if (exts == null or std.mem.indexOf(u8, std.mem.span(exts.?), "EGL_ANDROID_blob_cache") == null)
         return sayShader("no disk cache: this graphics backend has no EGL_ANDROID_blob_cache; every program is compiled again each run");
-    _ = _mkdir("shader_cache");
-    eglSetBlobCacheFuncsANDROID(dpy, blobSet, blobGet);
+    const set: SetBlobCacheFuncs = @ptrCast(gl.eglGetProcAddress("eglSetBlobCacheFuncsANDROID") orelse
+        return sayShader("no disk cache: eglSetBlobCacheFuncsANDROID not found; every program is compiled again each run"));
+    host.mkdir("shader_cache");
+    set(dpy, blobSet, blobGet);
     sayShader("disk cache on, in shader_cache beside the game");
 }
 
 /// The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
 /// also waits for the monitor's, so frames do not tear. Render thread.
 pub fn applyVsync() void {
-    const vsync = if (std.c.getenv("RECOMP_VSYNC")) |e| e[0] != '0' else true;
-    _ = gl.eglSwapInterval(dpy, @intFromBool(vsync));
+    if (host.windows) _ = gl.eglSwapInterval(dpy, @intFromBool(vsync())) else _ = sdl.SDL_GL_SetSwapInterval(@intFromBool(vsync()));
 }
 
 /// RECOMP_WINDOW and RECOMP_RESOLUTION again (the settings page). Render thread.
@@ -338,10 +337,49 @@ fn glInit() bool {
         std.debug.print("[GL] SDL_Init failed: {s}\n", .{sdl.SDL_GetError()});
         return false;
     }
-    window = sdl.SDL_CreateWindow("Otogi: Myth of Demons", @intCast(bbw() * scale), @intCast(480 * scale), sdl.SDL_WINDOW_RESIZABLE) orelse return false;
-    const hwnd = sdl.SDL_GetPointerProperty(sdl.SDL_GetWindowProperties(window), sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
+    if (!host.windows) {
+        // Linux: SDL makes the GL ES 3 context (X11 or Wayland), through EGL
+        // so the shader cache can hook into the display.
+        _ = sdl.SDL_SetHint(sdl.SDL_HINT_VIDEO_FORCE_EGL, "1");
+        _ = sdl.SDL_GL_SetAttribute(sdl.SDL_GL_CONTEXT_PROFILE_MASK, sdl.SDL_GL_CONTEXT_PROFILE_ES);
+        _ = sdl.SDL_GL_SetAttribute(sdl.SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        _ = sdl.SDL_GL_SetAttribute(sdl.SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    }
+    const flags = sdl.SDL_WINDOW_RESIZABLE | if (host.windows) 0 else sdl.SDL_WINDOW_OPENGL;
+    window = sdl.SDL_CreateWindow("Otogi: Myth of Demons", @intCast(bbw() * scale), @intCast(480 * scale), flags) orelse return false;
     applyWindow();
+    if (!(if (host.windows) angleContext() else sdlContext())) return false;
+    // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
+    // dome lies past the far plane.
+    if (hasExt("GL_EXT_depth_clamp")) gl.glEnable(gl.GL_DEPTH_CLAMP_EXT) else std.debug.print("[GL] no GL_EXT_depth_clamp: geometry past the far plane is clipped\n", .{});
+    return glInitRest();
+}
 
+/// The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
+/// also waits for the monitor's, so frames do not tear.
+fn vsync() bool {
+    return if (std.c.getenv("RECOMP_VSYNC")) |e| e[0] != '0' else true;
+}
+
+fn sdlContext() bool {
+    if (sdl.SDL_GL_CreateContext(window) == null) {
+        std.debug.print("[GL] GL ES 3 context failed: {s}\n", .{sdl.SDL_GetError()});
+        return false;
+    }
+    dpy = sdl.SDL_EGL_GetCurrentDisplay();
+    if (dpy != null) blobInit();
+    shader_record = std.c.getenv("RECOMP_SHADER_RECORD") != null;
+    applyVsync();
+    return true;
+}
+
+fn swapBuffers() void {
+    if (host.windows) _ = gl.eglSwapBuffers(dpy, surf) else _ = sdl.SDL_GL_SwapWindow(window);
+}
+
+/// ANGLE draws into the window's HWND, on RECOMP_GFX's backend.
+fn angleContext() bool {
+    const hwnd = sdl.SDL_GetPointerProperty(sdl.SDL_GetWindowProperties(window), sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
     var platform: gl.EGLAttrib = gl.EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE;
     if (std.c.getenv("RECOMP_GFX")) |g| {
         const s = std.mem.span(g);
@@ -369,9 +407,10 @@ fn glInit() bool {
         return false;
     }
     applyVsync();
-    // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
-    // dome lies past the far plane.
-    if (hasExt("GL_EXT_depth_clamp")) gl.glEnable(gl.GL_DEPTH_CLAMP_EXT) else std.debug.print("[GL] no GL_EXT_depth_clamp: geometry past the far plane is clipped\n", .{});
+    return true;
+}
+
+fn glInitRest() bool {
     s3tc = hasExt("GL_EXT_texture_compression_s3tc") or
         (hasExt("GL_EXT_texture_compression_dxt1") and hasExt("GL_ANGLE_texture_compression_dxt5"));
 
@@ -1377,7 +1416,7 @@ fn warm() void {
         gl.glClearColor(0.8, 0.8, 0.8, 1);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         gl.glDisable(gl.GL_SCISSOR_TEST);
-        _ = gl.eglSwapBuffers(dpy, surf);
+        swapBuffers();
         pumpEvents();
     }
     warming = false;
@@ -2377,26 +2416,19 @@ var sync_req: ?struct { rt: u32, x: u32, y: u32, w: u32, h: u32, n: usize } = nu
 var sync_px: std.ArrayList(u8) = .empty;
 var sync_have: usize = 0; // ops of `build` the back buffer already holds on top of fr_cur
 
-const SRWLOCK = extern struct { p: ?*anyopaque = null };
-const CONDITION_VARIABLE = extern struct { p: ?*anyopaque = null };
-extern "kernel32" fn AcquireSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
-extern "kernel32" fn ReleaseSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
-extern "kernel32" fn SleepConditionVariableSRW(*CONDITION_VARIABLE, *SRWLOCK, ms: u32, flags: u32) callconv(.winapi) i32;
-extern "kernel32" fn WakeAllConditionVariable(*CONDITION_VARIABLE) callconv(.winapi) void;
-var mtx: SRWLOCK = .{};
-var cond: CONDITION_VARIABLE = .{};
+var mtx: host.Lock = .{};
 fn lock() void {
-    AcquireSRWLockExclusive(&mtx);
+    mtx.lock();
 }
 fn unlock() void {
-    ReleaseSRWLockExclusive(&mtx);
+    mtx.unlock();
 }
 /// Holding the lock: sleep until the other thread wakes this one, or `ms` pass.
 fn wait(ms: u32) void {
-    _ = SleepConditionVariableSRW(&cond, &mtx, ms, 0);
+    mtx.wait(ms);
 }
 fn wake() void {
-    WakeAllConditionVariable(&cond);
+    mtx.wakeAll();
 }
 
 /// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
@@ -2901,7 +2933,6 @@ var fr_t: f32 = 1; // how far into the game frame the replay being drawn is
 /// Frame whose draws are logged: RECOMP_GL_DRAWLOG=<frame>, or the frame after
 /// logs\drawlog appears (deleted at once; also takes a RECOMP_SHOT-style shot).
 var drawlog_frame: u32 = 0;
-extern "kernel32" fn DeleteFileA([*:0]const u8) callconv(.winapi) i32;
 
 /// The render thread: takes each frame the game thread finishes, shows it at
 /// in-between times inside its 30 Hz slot and as recorded at the slot's end.
@@ -2972,7 +3003,7 @@ fn renderThread() void {
         if (frame == 1) if (std.c.getenv("RECOMP_GL_DRAWLOG")) |e| {
             drawlog_frame = std.fmt.parseInt(u32, std.mem.span(e), 10) catch 0;
         };
-        if (DeleteFileA("logs\\drawlog") != 0) drawlog_frame = frame + 1;
+        if (remove("logs/drawlog") == 0) drawlog_frame = frame + 1;
         blitWindow(hold[1 - hold_at].fbo);
         if (frame == drawlog_frame) writeShot() catch {} else maybeShot();
         if (last_present != 0) waitServing(due);
@@ -2986,7 +3017,7 @@ fn renderThread() void {
         while (debug_menu.holdFrame()) {
             serveSync();
             showFbo(hold[1 - hold_at].fbo);
-            Sleep(10);
+            host.sleepMs(10);
         }
     }
 }
@@ -3038,7 +3069,7 @@ fn frameStats(f: *const Frame) void {
 /// A frame again (paused). logs\drawlog then saves only the shot (the menus).
 fn showFbo(src: gl.GLuint) void {
     blitWindow(src);
-    if (DeleteFileA("logs\\drawlog") != 0) writeShot() catch {};
+    if (remove("logs/drawlog") == 0) writeShot() catch {};
     swapWindow();
 }
 
@@ -3046,7 +3077,7 @@ var swap_at: f64 = 0;
 var swap_gap: f64 = 0; // longest time between shown frames, for RECOMP_FPS
 
 fn swapWindow() void {
-    _ = gl.eglSwapBuffers(dpy, surf);
+    swapBuffers();
     shown += 1;
     const now = nowMs();
     if (swap_at != 0) swap_gap = @max(swap_gap, now - swap_at);
@@ -3104,7 +3135,7 @@ fn writeShot() !void {
     std.mem.writeInt(u16, hdr[26..28], 1, .little);
     std.mem.writeInt(u16, hdr[28..30], 32, .little);
     var name_buf: [64]u8 = undefined;
-    const name = try std.fmt.bufPrintSentinel(&name_buf, "logs\\frame_{d}.bmp", .{frame}, 0);
+    const name = try std.fmt.bufPrintSentinel(&name_buf, "logs/frame_{d}.bmp", .{frame}, 0);
     const f = std.c.fopen(name, "wb") orelse return error.Open;
     defer _ = std.c.fclose(f);
     _ = std.c.fwrite(&hdr, 1, hdr.len, f);
@@ -3172,17 +3203,7 @@ extern fn sub_000FA990_gen() void;
 extern fn sub_000FAA00_gen() void;
 extern fn sub_000FA6F0_gen() void;
 
-extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) i32;
-extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) i32;
-extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
-
-pub fn nowMs() f64 {
-    var f: i64 = 0;
-    var t: i64 = 0;
-    _ = QueryPerformanceFrequency(&f);
-    _ = QueryPerformanceCounter(&t);
-    return @as(f64, @floatFromInt(t)) * 1000 / @as(f64, @floatFromInt(f));
-}
+pub const nowMs = host.nowMs;
 
 var last_present: f64 = 0;
 
@@ -3473,7 +3494,7 @@ fn toGuest(data: u32, all: bool) void {
 /// under D3DTexture_LockRect and D3DSurface_LockRect: see toGuest.
 export fn sub_000FE580() void {
     const res = arg(0);
-    if (res != 0 and state == .ready and GetCurrentThreadId() == game_tid) toGuest(d3d.resData(res), false);
+    if (res != 0 and state == .ready and std.Thread.getCurrentId() == game_tid) toGuest(d3d.resData(res), false);
     sub_000FE580_gen();
 }
 

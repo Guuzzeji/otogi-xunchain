@@ -58,6 +58,11 @@ static Files files;
 
 // A font from the exe (ui_file) or from disk.
 extern "C" bool ui_font(const char* path, bool fallback) { return Rml::LoadFontFace(path, fallback); }
+// A font under another family name: on Linux the system's sans and mono stand
+// in for the theme's Segoe UI and Consolas.
+extern "C" bool ui_font_as(const char* path, const char* family, bool bold) {
+    return Rml::LoadFontFace(path, family, Rml::Style::FontStyle::Normal, bold ? Rml::Style::FontWeight::Bold : Rml::Style::FontWeight::Normal);
+}
 
 // ── Zig sets the page by element id. Unchanged values cost nothing. ─────────
 static std::unordered_map<Rml::String, std::pair<Rml::Element*, Rml::String>> last;

@@ -72,11 +72,11 @@ extern "c" fn remove([*:0]const u8) c_int;
 /// distance), cull (last frame's frustum tests), set <key> <value> (settings.ini
 /// as the settings page sets it). Results go to the log.
 fn liveCommands() void {
-    const f = fopen("logs\\cheat", "rb") orelse return;
+    const f = fopen("logs/cheat", "rb") orelse return;
     var buf: [512]u8 = undefined;
     const n = fread(&buf, 1, buf.len, f);
     _ = fclose(f);
-    _ = remove("logs\\cheat");
+    _ = remove("logs/cheat");
     var lines = std.mem.tokenizeAny(u8, buf[0..n], "\r\n");
     while (lines.next()) |line| {
         var it = std.mem.tokenizeScalar(u8, line, ' ');

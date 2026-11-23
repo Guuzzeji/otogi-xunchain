@@ -3,12 +3,14 @@
 //! is the settings page and metrics overlay, 1 the F1 debug menu.
 const std = @import("std");
 const sdl = @import("sdl");
+const host = @import("host.zig");
 
 pub const page = 0;
 pub const debug = 1;
 
 extern fn ui_init(window: *sdl.SDL_Window) bool;
 extern fn ui_font(path: [*:0]const u8, fallback: bool) bool;
+extern fn ui_font_as(path: [*:0]const u8, family: [*:0]const u8, bold: bool) bool;
 extern fn ui_load(i: c_int, path: [*:0]const u8) bool;
 pub extern fn ui_show(i: c_int, on: bool) void;
 pub extern fn ui_input(i: c_int, e: *const sdl.SDL_Event) void;
@@ -50,11 +52,21 @@ pub fn start(window: *sdl.SDL_Window) bool {
             std.debug.print("[UI] RmlUi did not start: no menus\n", .{});
             return false;
         }
-        // Segoe UI and Consolas from Windows, as the launcher has them.
-        const windir = std.mem.span(std.c.getenv("WINDIR") orelse "C:\\Windows");
-        for ([_][]const u8{ "segoeui.ttf", "segoeuib.ttf", "consola.ttf" }) |f| {
-            var p: [300]u8 = undefined;
-            _ = ui_font(std.fmt.bufPrintSentinel(&p, "{s}\\Fonts\\{s}", .{ windir, f }, 0) catch continue, false);
+        if (@import("builtin").os.tag == .windows) {
+            // Segoe UI and Consolas from Windows, as the launcher has them.
+            const windir = std.mem.span(std.c.getenv("WINDIR") orelse "C:\\Windows");
+            for ([_][]const u8{ "segoeui.ttf", "segoeuib.ttf", "consola.ttf" }) |f| {
+                var p: [300]u8 = undefined;
+                _ = ui_font(std.fmt.bufPrintSentinel(&p, "{s}\\Fonts\\{s}", .{ windir, f }, 0) catch continue, false);
+            }
+        } else for ([_]struct { [*:0]const u8, [*:0]const u8, bool }{
+            // Linux: the system's sans and mono (fontconfig) under the theme's names.
+            .{ "sans-serif", "Segoe UI", false },
+            .{ "sans-serif:bold", "Segoe UI", true },
+            .{ "monospace", "Consolas", false },
+        }) |q| {
+            var p: [512]u8 = undefined;
+            _ = ui_font_as(host.fcMatch(q[0], &p) orelse continue, q[1], q[2]);
         }
         _ = ui_font("ShipporiMinchoB1-Bold.ttf", true); // headings, and the fallback for 御伽
         if (!ui_load(page, "settings.rml") or !ui_load(debug, "debug.rml")) {

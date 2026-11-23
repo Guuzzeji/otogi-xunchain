@@ -1,10 +1,13 @@
-# Releases otogi-xunchain.exe (the launcher) on GitHub, with the changelog section as notes.
+# Releases the launcher on GitHub, for Windows (otogi-xunchain.exe) and Linux
+# (otogi-xunchain-linux-x86_64), with the changelog section as notes.
 # By hand only: Actions > Release > Run workflow. Merging a PR releases nothing; its changes
 # wait under "Unreleased" in the changelog until the next run, which turns that section into
 # the new version, commits and tags it, then releases.
 # Bump "auto" takes the biggest box ticked under "Release" (major > minor > patch) among PRs
 # merged into main since the last tag; if none ticked one, nothing is released. A chosen bump
 # overrides it; "none" releases the current version as it is (its section must already exist).
+# The version commit and tag travel to the build jobs as a git bundle and are pushed only
+# once both launchers built and passed the tests.
 name: Release
 
 on:
@@ -25,17 +28,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: windows-latest
+  version:
+    name: Version, changelog and tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0
 
       - name: Version and changelog
         id: version
@@ -82,24 +84,117 @@ jobs:
           awk -v v="$new" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/{f=0} f' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || { echo "::error::CHANGELOG.md has no notes for $new"; exit 1; }
           git tag "v$new"
+          git bundle create release.bundle main "v$new"
           echo "version=$new" >> "$GITHUB_OUTPUT"
 
-      # After the commit: setup embeds `git archive HEAD` and the new version.
       - if: steps.version.outputs.version
-        run: zig build setup
-      - if: steps.version.outputs.version
-        run: zig build test
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            release.bundle
+            notes.md
 
-      # ponytail: a PR merged during the build makes this push fail (not fast-forward).
-      # Re-run the job: nothing was pushed, so it bumps again from the new main. Rebase here if that gets common.
+  # After the version commit: setup embeds `git archive HEAD` and the new version.
+  windows:
+    name: Windows launcher (otogi-xunchain.exe)
+    needs: version
+    if: needs.version.outputs.version
+    runs-on: windows-latest
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: ../release
+      - name: Check out the version commit
+        shell: bash
+        run: |
+          v="v${{ needs.version.outputs.version }}"
+          git fetch ../release/release.bundle "refs/tags/$v:refs/tags/$v"
+          git checkout -q "$v"
+      - name: Install Zig 0.17.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build the Windows launcher
+        run: zig build setup
+      - name: Test
+        run: zig build test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otogi-xunchain-windows
+          path: zig-out/bin/otogi-xunchain.exe
+
+  # Debian 13, as in ci.yml: the oldest common distro with SDL3, so the oldest glibc asked for.
+  linux:
+    name: Linux launcher (otogi-xunchain-linux-x86_64)
+    needs: version
+    if: needs.version.outputs.version
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install git and the SDL3, EGL and GL ES dev packages
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates xz-utils libsdl3-dev libegl-dev libgles-dev
+          git config --global --add safe.directory '*' # the checkout is not the container user's
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: ../release
+      - name: Check out the version commit
+        shell: bash
+        run: |
+          v="v${{ needs.version.outputs.version }}"
+          git fetch ../release/release.bundle "refs/tags/$v:refs/tags/$v"
+          git checkout -q "$v"
+      - name: Install Zig 0.17.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build the Linux launcher
+        run: |
+          zig build setup
+          mv zig-out/bin/otogi-xunchain zig-out/bin/otogi-xunchain-linux-x86_64
+      - name: Test
+        run: zig build test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: otogi-xunchain-linux-x86_64
+          path: zig-out/bin/otogi-xunchain-linux-x86_64
+
+  # ponytail: a PR merged during the builds makes this push fail (not fast-forward).
+  # Re-run the workflow: nothing was pushed, so it bumps again from the new main. Rebase here if that gets common.
+  publish:
+    name: Push the version and publish both launchers
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: ../out
       - name: Push and publish
-        if: steps.version.outputs.version
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v="v${{ steps.version.outputs.version }}"
-          git push origin HEAD:main "$v"
-          # The launcher updates itself from the asset named otogi-xunchain.exe (asset_name in setup/main.zig).
-          gh release create "$v" zig-out/bin/otogi-xunchain.exe setup/assets/OFL-ShipporiMinchoB1.txt setup/assets/THIRD-PARTY-NOTICES.txt \
-            --title "Otogi XUnchain $v" --notes-file notes.md
+          v="v${{ needs.version.outputs.version }}"
+          out=../out
+          git fetch "$out/release/release.bundle" "refs/tags/$v:refs/tags/$v"
+          git push origin "$v^{commit}:refs/heads/main" "$v"
+          # The launcher updates itself from the asset named for its OS (asset_name in setup/main.zig).
+          gh release create "$v" "$out/otogi-xunchain-windows/otogi-xunchain.exe" "$out/otogi-xunchain-linux-x86_64/otogi-xunchain-linux-x86_64" \
+            setup/assets/OFL-ShipporiMinchoB1.txt setup/assets/THIRD-PARTY-NOTICES.txt \
+            --title "Otogi XUnchain $v" --notes-file "$out/release/notes.md"

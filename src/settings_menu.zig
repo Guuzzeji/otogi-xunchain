@@ -14,7 +14,7 @@ const gl_hle = @import("gl_hle.zig");
 const cheats = @import("cheats.zig");
 const debug_menu = @import("debug_menu.zig");
 
-extern fn _putenv(s: [*:0]const u8) c_int;
+const host = @import("host.zig");
 extern "c" fn fopen([*:0]const u8, [*:0]const u8) ?*anyopaque;
 extern "c" fn fread([*]u8, usize, usize, *anyopaque) usize;
 extern "c" fn fwrite([*]const u8, usize, usize, *anyopaque) usize;
@@ -86,10 +86,11 @@ pub fn save(key: []const u8, value: []const u8) void {
     _ = fclose(f);
     status = if (ok) "" else "Could not write settings.ini.";
     std.debug.print("[SETTINGS] {s} = {s}{s}\n", .{ key, value, if (ok) "" else " (could not write settings.ini)" });
-    var kv: [256]u8 = undefined;
-    const s = std.fmt.bufPrintSentinel(&kv, "RECOMP_{s}={s}", .{ key, value }, 0) catch return;
-    for (s[7 .. 7 + key.len]) |*c| c.* = std.ascii.toUpper(c.*);
-    _ = _putenv(s); // an empty value removes it: the default
+    var name: [64]u8 = undefined;
+    var val: [256]u8 = undefined;
+    const n = std.fmt.bufPrintSentinel(&name, "RECOMP_{s}", .{key}, 0) catch return;
+    for (n[7..]) |*c| c.* = std.ascii.toUpper(c.*);
+    host.setEnv(n, std.fmt.bufPrintSentinel(&val, "{s}", .{value}, 0) catch return); // an empty value removes it: the default
     const eql = std.mem.eql;
     if (eql(u8, key, "framerate")) gl_hle.frRate();
     if (eql(u8, key, "vsync")) gl_hle.applyVsync();

@@ -816,6 +816,50 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              s_game_dir, s_save_dir, s_user_dir);
 }
 
+/* Xbox paths are case-insensitive and titles do not keep to the disc's case
+ * (Otogi opens d:\media\font14.xpr; the disc has media/FONT14.xpr). Each
+ * component after `from` that does not exist as spelled takes the name of
+ * the directory entry that matches ignoring case. Stops at the first with no
+ * match, so a file about to be created keeps the title's spelling. */
+#include <dirent.h>
+#include <strings.h>
+static void fold_case(char* path, size_t from)
+{
+    struct stat st;
+    char* comp = path + from;
+
+    if (stat(path, &st) == 0)
+        return;
+    while (*comp == '/') comp++;
+    while (*comp) {
+        char* end = strchr(comp, '/');
+        char saved = end ? *end : '\0';
+        DIR* d;
+        struct dirent* de;
+        int found = 0;
+
+        if (end) *end = '\0';
+        if (lstat(path, &st) != 0) {
+            comp[-1] = '\0';                       /* the directory it is in */
+            d = opendir(comp - 1 == path ? "/" : path);
+            comp[-1] = '/';
+            while (d && (de = readdir(d)) != NULL) {
+                if (strlen(de->d_name) == strlen(comp) && strcasecmp(de->d_name, comp) == 0) {
+                    memcpy(comp, de->d_name, strlen(comp));
+                    found = 1;
+                    break;
+                }
+            }
+            if (d) closedir(d);
+        } else {
+            found = 1;
+        }
+        if (end) *end = saved;
+        if (!found || !end) return;
+        comp = end + 1;
+    }
+}
+
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
 {
     const char* remainder = NULL;
@@ -890,6 +934,7 @@ translate:
             while (n > 1 && host_path_buf[n - 1] == '/')
                 host_path_buf[--n] = '\0';
         }
+        fold_case(host_path_buf, strlen(base_dir) + (sub_dir ? strlen(sub_dir) : 0));
 
         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
         /* As the Win32 backend does: the bridge reads back the host path

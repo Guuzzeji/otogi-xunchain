@@ -10,9 +10,7 @@ const sdl = @import("sdl");
 const pad = @import("pad.zig");
 const settings_menu = @import("settings_menu.zig");
 
-const SRWLOCK = extern struct { p: ?*anyopaque = null };
-extern "kernel32" fn AcquireSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
-extern "kernel32" fn ReleaseSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
+const host = @import("host.zig");
 
 extern fn xbox_InputKeySet(vk: c_int, down: c_int) void;
 extern fn xbox_InputKeysClear() void;
@@ -22,7 +20,7 @@ extern fn mkb_merge(port: u32, state: *State) c_int;
 /// XBOX_INPUT_STATE
 const State = extern struct { packet: u32 = 0, pad: pad.Pad = .{} };
 
-var mtx: SRWLOCK = .{};
+var mtx: host.Lock = .{};
 var now: pad.Pad = .{}; // every host pad, merged
 var connected = false;
 var motors: [2]u16 = .{ 0, 0 }; // what the game last asked for
@@ -134,11 +132,11 @@ pub fn poll(menu_open: bool) void {
         _ = if (hide) sdl.SDL_HideCursor() else sdl.SDL_ShowCursor();
         std.debug.print("[INPUT] mouse pointer {s}\n", .{if (hide) "hidden: a pad is connected" else "shown"});
     }
-    AcquireSRWLockExclusive(&mtx);
+    mtx.lock();
     now = m;
     connected = any;
     const want = motors;
-    ReleaseSRWLockExclusive(&mtx);
+    mtx.unlock();
     if (std.mem.eql(u16, &want, &motors_sent)) return;
     motors_sent = want;
     // ponytail: SDL's rumble ends by itself, XInput's holds: a minute is
@@ -152,9 +150,9 @@ export fn xbox_InputInit() void {}
 export fn xbox_InputGetState(port: u32, state: ?*State) u32 {
     const s = state orelse return 1167; // ERROR_DEVICE_NOT_CONNECTED
     if (port != 0) return 1167;
-    AcquireSRWLockExclusive(&mtx);
+    mtx.lock();
     s.* = .{ .pad = now };
-    ReleaseSRWLockExclusive(&mtx);
+    mtx.unlock();
     var kb: State = .{};
     if (xbox_InputKeyboardPoll(&kb) != 0) pad.merge(&s.pad, kb.pad);
     _ = mkb_merge(0, s);
@@ -163,9 +161,9 @@ export fn xbox_InputGetState(port: u32, state: ?*State) u32 {
 
 export fn xbox_InputSetState(port: u32, vib: ?*const [2]u16) u32 {
     if (port != 0 or vib == null) return 1167;
-    AcquireSRWLockExclusive(&mtx);
+    mtx.lock();
     motors = vib.?.*;
-    ReleaseSRWLockExclusive(&mtx);
+    mtx.unlock();
     return 0;
 }
 

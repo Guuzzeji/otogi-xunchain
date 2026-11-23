@@ -8,10 +8,12 @@
         .angle = .{
             .url = "https://github.com/Guuzzeji/sneaky-whopper-recomp/releases/download/angle-feebf60/angle-feebf60-win-x64.zip",
             .hash = "N-V-__8AAIvH-wArHOCo819CSIXEEiYqgDj9midIDT28UpUS",
+            .lazy = true, // Windows only, as is the SDL3 below; Linux uses the system's
         },
         .sdl = .{
             .url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-devel-3.4.20-mingw.zip",
             .hash = "N-V-__8AAL9ILQGkesJ01FUn3IxjuW4Yn80-3DaH5ruILsb6",
+            .lazy = true,
         },
         // The UI of the launcher and the game's menus (RmlUi 6.3, MIT) and its
         // font engine (FreeType, FTL).

@@ -10,11 +10,12 @@ Bundled in otogi-xunchain.exe (the launcher):
 like the game before any disc is picked. They are FromSoftware/Sega's, shipped by the project owner's choice
 (2026-11-01) as the one exception to the no-game-data rule in docs/ROADMAP.md.
 
-- `title.jpg`: `menu/title.dds` (1024x512, BGRA, composited on black), the logo on the title brocade.
-- `raikoh.jpg`: `menu/fe_end00.dds` (DXT1), Raikoh with his sword.
+- `title.png`: `menu/title.dds` (1024x512, BGRA, composited on black), the logo on the title brocade.
+- `raikoh.png`: `menu/fe_end00.dds` (DXT1), Raikoh with his sword.
 - `brush.png`: `menu/fe_lo000.dds` (DXT3), the red brush stroke; PNG for its alpha.
 
-Decoded with a small DXT1/3/5 reader, saved as JPEG quality 90.
+Decoded with a small DXT1/3/5 reader, saved as JPEG quality 90, then as PNG (2026-11-23) so the Linux
+launcher can decode them without a JPEG library (setup/png.zig).
 
 `otogi-xunchain.ico` (the launcher's icon) and `src/otogi.ico` (the game's) are drawn by `make-icons.ps1`
 (System.Drawing, no tools to install): the logo's "O・" as an open ring, a ring inside it and the dot beside it,

@@ -84,7 +84,7 @@
 			<!-- Install -->
 			<div class="page" id="page-install">
 				<h1>Install</h1>
-				<div class="lede">Builds the game from your own disc: extracts it, translates the Xbox code to C and compiles it for Windows.</div>
+				<div class="lede">Builds the game from your own disc: extracts it, translates the Xbox code to C and compiles it for your PC.</div>
 				<div class="cols">
 					<div class="col">
 						<div class="card">
@@ -92,7 +92,7 @@
 							<div class="muted small">An ISO (redump or XISO) of your own Otogi: Myth of Demons (USA) disc, or the folder of its files: pick the default.xbe in it.</div>
 							<div class="gap"></div>
 							<div class="row">
-								<input class="text grow" type="text" id="iso" onchange="iso" placeholder="C:\path\to\otogi.iso"/>
+								<input class="text grow" type="text" id="iso" onchange="iso" placeholder="The path of your .iso"/>
 								<div class="btn" onclick="pick-iso">Browse</div>
 							</div>
 							<div class="gap"></div>
@@ -190,7 +190,7 @@
 					<div class="col card help">
 						<span class="icon">&#xEBE8;</span>
 						<h3>Report a bug</h3>
-						<p class="muted small">A crash, a graphics glitch, broken sound, or anything that plays differently from the Xbox. Opens a new GitHub issue with your version, Windows and graphics card filled in, and copies the log below so you can paste it in.</p>
+						<p class="muted small">A crash, a graphics glitch, broken sound, or anything that plays differently from the Xbox. Opens a new GitHub issue with your version, system and graphics card filled in, and copies the log below so you can paste it in.</p>
 						<div class="row actions">
 							<div class="btn primary" onclick="report">Report on GitHub</div>
 							<div class="btn" onclick="url" value="https://github.com/Guuzzeji/otogi-xunchain/issues">Known issues</div>

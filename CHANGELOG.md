@@ -7,6 +7,13 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 
 ## [Unreleased]
 
+### Added
+- A Linux version: `otogi-xunchain-linux-x86_64`, the same launcher, builds and plays the
+  game natively on Linux (SDL3, OpenGL ES through Mesa), and updates itself like the Windows
+  one. **Only tested in WSL2 on Windows 11 so far**: real Linux PCs, the Steam Deck and
+  controllers on Linux still need testing, and feedback is very welcome. See the README for
+  what to install first.
+
 ## [0.12.0] - 2026-11-23
 
 ### Added
