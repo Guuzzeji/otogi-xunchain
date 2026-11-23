@@ -19,6 +19,9 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
   build. A different game, or the Japanese release, is still refused.
 
 ### Fixed
+- The "There is a problem with the disc you are using" message that could appear in the
+  menus (for example after going back and forth between the title and the save list) on
+  some PCs. The game now reads its files the same way on every disk.
 - Raikoh disappeared during dash attacks (dash with light or heavy attack): only the sword
   trail and his shadow showed. He now shows through the move, drawn with the game's
   fading after-image effect.
