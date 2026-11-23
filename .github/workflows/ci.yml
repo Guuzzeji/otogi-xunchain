@@ -1,6 +1,6 @@
-# Every push and pull request: the version has a changelog section, setup builds,
-# the tests pass. The game itself needs the lifted C (from a disc), so CI builds
-# only the launcher (otogi-xunchain.exe, and its Linux twin), which is what players download.
+# Every push and pull request, one job per OS: setup builds and the tests pass (and on
+# Windows, the version has a changelog section). The game itself needs the lifted C (from
+# a disc), so CI builds only the launchers, which is what players download.
 name: CI
 
 on:
@@ -9,12 +9,14 @@ on:
   pull_request:
 
 jobs:
-  build:
+  windows:
+    name: Windows launcher (otogi-xunchain.exe)
     runs-on: windows-latest
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - name: Install Zig 0.17.0
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
 
@@ -24,30 +26,38 @@ jobs:
           version=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
 
-      - run: zig build setup
-      - run: zig build test
+      - name: Build the Windows launcher
+        run: zig build setup
+      - name: Test
+        run: zig build test
 
       - uses: actions/upload-artifact@v4
         with:
-          name: otogi-xunchain
+          name: otogi-xunchain-windows
           path: zig-out/bin/otogi-xunchain.exe
 
   # Debian 13: the oldest common distro with SDL3 (3.2) and so the oldest glibc the
   # Linux launcher asks for. git before checkout: setup embeds `git archive HEAD`.
   linux:
+    name: Linux launcher (otogi-xunchain-linux-x86_64)
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - run: |
+      - name: Install git and the SDL3, EGL and GL ES dev packages
+        run: |
           apt-get update && apt-get install -y --no-install-recommends git ca-certificates xz-utils libsdl3-dev libegl-dev libgles-dev
           git config --global --add safe.directory '*' # the checkout is not the container user's
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - name: Install Zig 0.17.0
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - run: zig build setup
-      - run: zig build test
-      - run: mv zig-out/bin/otogi-xunchain zig-out/bin/otogi-xunchain-linux-x86_64
+      - name: Build the Linux launcher
+        run: |
+          zig build setup
+          mv zig-out/bin/otogi-xunchain zig-out/bin/otogi-xunchain-linux-x86_64
+      - name: Test
+        run: zig build test
       - uses: actions/upload-artifact@v4
         with:
           name: otogi-xunchain-linux-x86_64
