@@ -243,6 +243,16 @@
   texture kept last frame's full scene (the glow's back buffer copy uses the same texture); adding it back each frame ran
   away to white. CopyRects now reads any surface that has a host target. A target that widened 3D is drawn into counts
   as a wide copy, so its copy stretches across the 16:9 screen instead of being extended.
+- Raikoh invisible in dash attacks (discussion #18; R with B or Y, all backends and frame rates, game frames too):
+  during the move the game draws him only into a 640x480 after-image target (`0x80D62000`), set with the back
+  buffer's own Z surface (`0x10681C`), then CopyRects it to `0x80AD5000` and draws that over the screen twice
+  (alpha blended, then added); a black quad at alpha 0x40 into the target (no Z) each frame fades the trail.
+  On the Xbox the target draws against the scene's depth, cleared with the back buffer; ours had its own depth
+  buffer that nothing cleared (zero), so every character draw failed the depth test and only his shadow and the
+  sword trail (drawn on the back buffer) showed. SetRenderTarget now starts such a target's depth and stencil
+  from a copy of the back buffer's (a `copy` op with `depth`: scaled blit, the whole wide view when 3D is
+  widened). The depth he draws there does not go back to the back buffer. He shows as a faint dark ghost, as the
+  game's alpha (about 0.8 on the body) and the fade give; not compared with Xbox footage.
 - Tower of Water (m007) waterfall: vertex program 0x1D93961 with fixed-function stage 0 (ripple texture x diffuse),
   added (SRCALPHA, ONE) as stacked strip layers, vertex fog: c158 = (-4e-6, 1), fog colour FFBCC7D7 (`0x18170`, table
   `0x20A3D8`); D3D's fog setup (`0xFC220`) for FOGTABLEMODE NONE is LINEAR (1, 1), and the final combiner
@@ -394,7 +404,7 @@
 - `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
   zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in
   `setup/main.zig`. `otogi-xunchain-setup.exe <iso> <out>` starts at once (for tests).
-- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` SHA-1 in the
+- Steps, stamped in `<out>\build\.stamps` (a step that runs reruns every later one): check `default.xbe` in the
   ISO (`src/xiso.zig`), extract to `<out>\game`, unpack the source to `<out>\build`, download Zig 0.17.0, Python
   3.14.7 embeddable and the Capstone 5.0.9 wheel (SHA-256 pinned in `setup/main.zig`, kept in
   `<out>\build\downloads`), lift (xbe_parser, disasm, func_id, abi_analysis, recomp), `zig build --prefix <out>
@@ -422,6 +432,19 @@
   downloads run in-process and finish their step first. Tested: stop during the compile left no processes.
 - The last disc image that checked out is remembered in `otogi-setup-iso.txt` beside the exe; without one, setup
   tries the first `.iso` beside the exe.
+- Dumps (issue #11, discussion #3; `checkXbe` in `setup/logic.zig`). Sources: a redump ISO (XDVDFS at 0x18300000),
+  an XISO (at 0; `Image.open` already tried that base), or a folder of the disc's files (picked as the folder or its
+  `default.xbe`; copied with `copyTree`). `default.xbe` is then one of: the redump's (SHA-1 `abf12bb6...`); the
+  same with extract-xiso's media patch, which XISOs and repacked HDD rips carry: `E8 CA FD FF FF 85 C0 7D`
+  (`call; test eax,eax; jge`) at file offset 0xD5955 becomes `... EB` (`jmp`), the only byte that differs in the
+  owner's XISO (SHA-1 `25f42754...`); setup undoes it in memory, the hash then matches, and the restored file
+  goes into `game\` so the lift is the verified one; any other bytes with the certificate's title ID 0x46530002
+  and a game region with North America (bit 0): a warning, the build goes on (a player's mismatched dump built and
+  played); anything else (another game, region 2 = Japan) is refused.
+- Downloads (issue #1, "stops when IMG-GUI cannot be fetched"): already front-loaded. Step 3 runs `zig build
+  --fetch` (ANGLE, Dear ImGui, dear_bindings, SDL3; the lazy RmlUi/FreeType are not needed by the player's build),
+  step 4 Python and Capstone, all before the lift; each is tried 3 times, finished downloads are kept by hash and
+  steps by stamp, so Try again resumes.
 - Run on this machine (2026-11-01): full pipeline ~7 min (compile alone ~2.5 min with an empty cache); the lifted C matched `src/recomp/gen` exactly; the built
   `<out>\otogi.exe` boots to the title. Not yet run on a clean VM (the M6 exit check).
 

@@ -41,7 +41,7 @@
 You need:
 
 - Windows 10 or 11, 64-bit
-- A disc image (`.iso`) of your own **Otogi: Myth of Demons, USA** disc. The launcher checks it, and only this version works for now.
+- Your own **Otogi: Myth of Demons, USA** disc, dumped: a disc image (`.iso`, redump or XISO) or a folder of its files (with `default.xbe`, as an Xbox 360 or HDD rip leaves it). The launcher checks it, and only this version works for now. A dump that differs from the known good one gets a warning, but you can still build.
 - About 5 GB of free disk space. 16 GB of RAM is best; less works, the build just takes longer.
 - A controller is recommended: Xbox, PlayStation and Switch pads all work, with no extra tools. Keyboard works too.
 
