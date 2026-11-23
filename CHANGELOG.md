@@ -7,6 +7,8 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-23
+
 ### Added
 - A Linux version: `otogi-xunchain-linux-x86_64`, the same launcher, builds and plays the
   game natively on Linux (SDL3, OpenGL ES through Mesa), and updates itself like the Windows
