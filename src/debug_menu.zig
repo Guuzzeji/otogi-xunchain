@@ -17,6 +17,7 @@ extern fn cImGui_ImplOpenGL3_InitEx(glsl_version: ?[*:0]const u8) bool;
 extern fn cImGui_ImplOpenGL3_NewFrame() void;
 extern fn cImGui_ImplOpenGL3_RenderDrawData(data: *im.ImDrawData) void;
 const manual = @import("manual.zig");
+const settings_menu = @import("settings_menu.zig");
 
 extern "kernel32" fn GetCurrentProcess() callconv(.winapi) *anyopaque;
 extern "kernel32" fn GetCurrentThread() callconv(.winapi) *anyopaque;
@@ -35,21 +36,26 @@ var inited = false;
 var paused = false;
 var step = false;
 
-/// Window events: F1 toggles the menu; while it is open ImGui sees them all.
-/// True for a key press the game must not also get: one typed into the menu.
+/// Window events: F1 toggles the menu, F10 the settings page; while one is
+/// open ImGui sees them all. True for a key press the game must not also get:
+/// one typed into the menu, any while the settings page is open.
 pub fn event(e: *const sdl.SDL_Event) bool {
     const press = e.type == sdl.SDL_EVENT_KEY_DOWN;
-    if (press and e.key.scancode == sdl.SDL_SCANCODE_F1) {
-        if (!e.key.repeat) open = !open;
+    if (press and (e.key.scancode == sdl.SDL_SCANCODE_F1 or e.key.scancode == sdl.SDL_SCANCODE_F10)) {
+        if (!e.key.repeat) {
+            if (e.key.scancode == sdl.SDL_SCANCODE_F1) open = !open else settings_menu.open = !settings_menu.open;
+        }
         return true;
     }
-    if (!inited or !open) return false;
+    if (!inited or !(open or settings_menu.open)) return false;
     _ = cImGui_ImplSDL3_ProcessEvent(e);
-    return press and im.ImGui_GetIO().*.WantCaptureKeyboard;
+    return press and (settings_menu.open or im.ImGui_GetIO().*.WantCaptureKeyboard);
 }
 
-/// Swap holds the current frame while paused; a step lets one through.
+/// Swap holds the current frame while paused or the settings page is open;
+/// a step lets one through.
 pub fn holdFrame() bool {
+    if (settings_menu.open) return true;
     if (step) {
         step = false;
         return false;
@@ -84,7 +90,7 @@ var rate_t0: f64 = 0;
 var rate_f0: u32 = 0;
 var rate_s0: u32 = 0;
 var game_fps: f32 = 0;
-var shown_fps: f32 = 0;
+pub var shown_fps: f32 = 0; // also the settings page's counter
 var late: u32 = 0;
 
 fn sampleRates() void {
@@ -127,7 +133,7 @@ pub fn draw(window: *sdl.SDL_Window) void {
         open_checked = true;
         if (std.c.getenv("RECOMP_DEBUG_MENU")) |e| open = e[0] == '1';
     }
-    if (!open) return;
+    if (!open and !settings_menu.wanted()) return;
     if (!inited) {
         _ = im.ImGui_CreateContext(null);
         const io = im.ImGui_GetIO();
@@ -140,9 +146,20 @@ pub fn draw(window: *sdl.SDL_Window) void {
         _ = cImGui_ImplOpenGL3_InitEx("#version 300 es");
         inited = true;
     }
+    // The frame rate counter alone leaves the mouse pointer to input.zig.
+    const io = im.ImGui_GetIO();
+    const no_cursor = im.ImGuiConfigFlags_NoMouseCursorChange;
+    io.*.ConfigFlags = if (open or settings_menu.open) io.*.ConfigFlags & ~@as(c_int, no_cursor) else io.*.ConfigFlags | no_cursor;
     cImGui_ImplOpenGL3_NewFrame();
     cImGui_ImplSDL3_NewFrame();
     im.ImGui_NewFrame();
+    if (open) debugWindow();
+    settings_menu.draw(window);
+    im.ImGui_Render();
+    cImGui_ImplOpenGL3_RenderDrawData(im.ImGui_GetDrawData());
+}
+
+fn debugWindow() void {
     im.ImGui_SetNextWindowPos(.{ .x = 20, .y = 20 }, im.ImGuiCond_FirstUseEver);
     im.ImGui_SetNextWindowSize(.{ .x = 760, .y = 640 }, im.ImGuiCond_FirstUseEver);
     if (im.ImGui_Begin("Debug (F1)", &open, 0)) {
@@ -163,8 +180,6 @@ pub fn draw(window: *sdl.SDL_Window) void {
         }
     }
     im.ImGui_End();
-    im.ImGui_Render();
-    cImGui_ImplOpenGL3_RenderDrawData(im.ImGui_GetDrawData());
 }
 
 fn renderTab() void {

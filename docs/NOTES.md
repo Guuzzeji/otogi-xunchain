@@ -358,6 +358,30 @@
 - Testing by script: `Get-Process otogi` gives the window; `SetCursorPos` + `mouse_event` clicks reach ImGui once
   the window is topmost.
 
+## Settings page (F10, issue #10)
+- `src/settings_menu.zig`: the players' page, in the same ImGui context and frame as the debug menu (which stays
+  as it was). F10 or Back+Start on any pad toggles it; B / Esc / the X close it. While it is open
+  `debug_menu.holdFrame` holds the game (the debug menu's pause path), key presses go only to ImGui and the guest
+  pad reads neutral. Back+Start is detected in `input.poll` on the merged host pads; from the moment both are
+  down until both are up the guest sees neither, so the combo does not also reach the game. Back does nothing
+  visible in a stage (tested with `RECOMP_PAD_SCRIPT` in m000); Start is the pause menu, so pressing Start well
+  before Back can still open it under the page.
+- Rows come from `settings.ini` through `setup/logic.zig` (`entries`, `withValue`, the `known` table with labels
+  and choices, now shared with the launcher; the game imports it as module `logic`). A key the table lacks shows
+  as a toggle if its value is 0 or 1, else as a text field, so new keys appear without code. A change rewrites only
+  its line, `_putenv`s `RECOMP_<KEY>` and, for `known` entries marked `.live`, re-applies on the render thread:
+  framerate (`frRate`), vsync (`applyVsync`), window/resolution (`applyWindow`, the Alt+Enter path), draw/fog
+  distance (`cheats.scales_read`), fps_counter; cam_invert and show_mouse are read from the environment as used.
+  The rest say "applies after restart".
+- Text: the page pushes a font size of window height / 40 (27 px at 1080p, 54 at 4K) and scales its paddings with
+  it; it is always centred, 34 font-heights wide, 88% of the height. Keyboard and gamepad navigation
+  (`NavEnableKeyboard`/`NavEnableGamepad`) are on only while it is open, so the F1 menu behaves as before.
+- `fps_counter = 1`: shown frames per second (the debug menu's one-second rate) in the top right corner. It keeps an
+  ImGui frame running with the menus closed, with `NoMouseCursorChange` so `input.zig` still owns the pointer.
+- Scripted: `set <key> <value>` in `logs\cheat` saves and applies as the page does. `logs\drawlog` while the game is
+  held (pause or the page) saves just the shot. Posted WM_KEYDOWN F10 reaches the page in a background window, but
+  ImGui ignores posted keys and clicks there (SDL gives them no window), so navigation needs a focused window.
+
 ## Setup (M6)
 - `zig build setup` makes `zig-out\bin\otogi-xunchain-setup.exe` (~4 MB, ReleaseSmall). It embeds `git archive HEAD` as a
   zip, so commit first. GUI: Win32 + D3D11 (`setup/window.cpp`, after ImGui's example), UI and pipeline in

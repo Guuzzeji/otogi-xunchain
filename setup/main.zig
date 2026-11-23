@@ -454,12 +454,9 @@ const Ui = struct {
             const on = for (u.entries()) |e| (if (eql(u8, e.key, cmd[7..])) break eql(u8, e.value, "1")) else false;
             u.setSetting(cmd[7..], if (on) "0" else "1");
         } else if (std.mem.startsWith(u8, cmd, "step:")) {
-            const now = for (u.entries()) |e| (if (eql(u8, e.key, cmd[5..])) break std.fmt.parseFloat(f32, e.value) catch 1) else 1;
-            var i: usize = 0;
-            while (i + 1 < distances.len and distances[i] < now - 0.01) i += 1;
-            i = if (eql(u8, val, "-")) i -| 1 else @min(i + 1, distances.len - 1);
+            const now = for (u.entries()) |e| (if (eql(u8, e.key, cmd[5..])) break e.value) else "";
             var b: [16]u8 = undefined;
-            u.setSetting(cmd[5..], std.fmt.bufPrint(&b, "{d}", .{distances[i]}) catch return);
+            u.setSetting(cmd[5..], std.fmt.bufPrint(&b, "{d}", .{logic.stepDistance(now, !eql(u8, val, "-"))}) catch return);
         } else if (eql(u8, cmd, "open-saves")) {
             var p: [600:0]u8 = undefined;
             win_open(z(&p, "{s}", .{saveDir(&p)}));
@@ -954,36 +951,7 @@ const Ui = struct {
     }
 };
 
-/// Settings the form knows: a label and proper controls. Others get a text field.
-const Known = struct {
-    key: []const u8,
-    label: []const u8,
-    kind: enum { chips, toggle, stepper, text, resolution },
-    opts: []const struct { v: []const u8, label: []const u8 } = &.{},
-    summary: bool = false, // on the Play page's Settings tile
-};
-const known = [_]Known{
-    .{ .key = "window", .label = "Window mode", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Window" }, .{ .v = "1", .label = "Borderless" }, .{ .v = "2", .label = "Fullscreen" } } },
-    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .resolution },
-    .{ .key = "scale", .label = "Internal resolution", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "1", .label = "1x (640x480)" }, .{ .v = "2", .label = "2x" }, .{ .v = "3", .label = "3x" }, .{ .v = "4", .label = "4x" } } },
-    .{ .key = "widescreen", .label = "Widescreen (16:9)", .kind = .toggle },
-    .{ .key = "framerate", .label = "Frame rate", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "0", .label = "Monitor's" }, .{ .v = "30", .label = "30 (original)" }, .{ .v = "60", .label = "60" }, .{ .v = "120", .label = "120" }, .{ .v = "144", .label = "144" } } },
-    .{ .key = "vsync", .label = "V-sync", .kind = .toggle },
-    .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
-    .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
-    .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle },
-    .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle },
-    .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper },
-    .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper },
-    .{ .key = "debug_menu", .label = "Debug menu at start (F1)", .kind = .toggle },
-    .{ .key = "log", .label = "Write otogi.log", .kind = .toggle },
-};
-const distances = [_]f32{ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8 };
-
-fn knownSetting(key: []const u8) ?Known {
-    for (known) |k| if (std.mem.eql(u8, k.key, key)) return k;
-    return null;
-}
+const knownSetting = logic.knownSetting;
 
 /// The primary display's modes, 1280x720 and up, largest first ("1920x1080"):
 /// the choices for the fullscreen resolution (the game sets it on that display).

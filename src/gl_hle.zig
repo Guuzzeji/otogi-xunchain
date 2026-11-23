@@ -300,6 +300,19 @@ fn blobInit() void {
     sayShader("disk cache on, in shader_cache beside the game");
 }
 
+/// The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
+/// also waits for the monitor's, so frames do not tear. Render thread.
+pub fn applyVsync() void {
+    const vsync = if (std.c.getenv("RECOMP_VSYNC")) |e| e[0] != '0' else true;
+    _ = gl.eglSwapInterval(dpy, @intFromBool(vsync));
+}
+
+/// RECOMP_WINDOW and RECOMP_RESOLUTION again (the settings page). Render thread.
+pub fn applyWindow() void {
+    window_mode = if (std.c.getenv("RECOMP_WINDOW")) |m| std.math.clamp(m[0] -| '0', 0, 2) else 0;
+    setFull(window_mode != 0);
+}
+
 /// Window, context and back buffer. RECOMP_GFX=d3d11 (default), vulkan or gl.
 fn glInit() bool {
     if (std.c.getenv("RECOMP_SCALE")) |s| scale = std.math.clamp(std.fmt.parseInt(u32, std.mem.span(s), 10) catch 2, 1, 4);
@@ -313,8 +326,7 @@ fn glInit() bool {
     }
     window = sdl.SDL_CreateWindow("Otogi: Myth of Demons", @intCast(bbw() * scale), @intCast(480 * scale), sdl.SDL_WINDOW_RESIZABLE) orelse return false;
     const hwnd = sdl.SDL_GetPointerProperty(sdl.SDL_GetWindowProperties(window), sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
-    if (std.c.getenv("RECOMP_WINDOW")) |m| window_mode = std.math.clamp(m[0] -| '0', 0, 2);
-    if (window_mode != 0) setFull(true);
+    applyWindow();
 
     var platform: gl.EGLAttrib = gl.EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE;
     if (std.c.getenv("RECOMP_GFX")) |g| {
@@ -342,10 +354,7 @@ fn glInit() bool {
         std.debug.print("[GL] EGL context failed: 0x{X}\n", .{gl.eglGetError()});
         return false;
     }
-    // The game paces itself by its vblank; RECOMP_VSYNC (default on, 0 = off)
-    // also waits for the monitor's, so frames do not tear.
-    const vsync = if (std.c.getenv("RECOMP_VSYNC")) |e| e[0] != '0' else true;
-    _ = gl.eglSwapInterval(dpy, @intFromBool(vsync));
+    applyVsync();
     // The NV2A does not clip on depth, it clamps (as xemu does): Otogi's sky
     // dome lies past the far plane.
     if (hasExt("GL_EXT_depth_clamp")) gl.glEnable(gl.GL_DEPTH_CLAMP_EXT) else std.debug.print("[GL] no GL_EXT_depth_clamp: geometry past the far plane is clipped\n", .{});
@@ -2371,7 +2380,7 @@ fn wake() void {
 /// RECOMP_FRAMERATE=<hz> shows that many frames a second; unset or 0 follows
 /// the refresh rate of the monitor the window is on (59.94 and such
 /// included), again whenever that changes; 30 is off.
-fn frRate() void {
+pub fn frRate() void {
     var hz: f64 = 0;
     if (std.c.getenv("RECOMP_FRAMERATE")) |e| hz = std.fmt.parseFloat(f64, std.mem.span(e)) catch 0;
     if (hz == 0) {
@@ -2941,7 +2950,7 @@ fn renderThread() void {
         last_present = if (now - due < present_period) due else now;
         frameStats(cur);
         if (frame % 256 == 0) meshSweep();
-        // Debug menu pause: show this frame until resumed or stepped.
+        // Debug menu pause or the settings page: show this frame until resumed or stepped.
         while (debug_menu.holdFrame()) {
             serveSync();
             showFbo(hold[1 - hold_at].fbo);
@@ -2994,9 +3003,10 @@ fn frameStats(f: *const Frame) void {
     fps.sync = 0;
 }
 
-/// A frame again (paused).
+/// A frame again (paused). logs\drawlog then saves only the shot (the menus).
 fn showFbo(src: gl.GLuint) void {
     blitWindow(src);
+    if (DeleteFileA("logs\\drawlog") != 0) writeShot() catch {};
     swapWindow();
 }
 

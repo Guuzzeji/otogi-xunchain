@@ -34,6 +34,8 @@ pub fn build(b: *std.Build) void {
         mod.addIncludePath(b.path("xboxrecomp/src/" ++ d));
     mod.addCSourceFiles(.{ .root = b.path("xboxrecomp/src"), .files = &toolkit_c, .flags = &.{ "-std=gnu11", "-O2", "-fno-strict-aliasing", "-w" } });
     addGenerated(b, mod);
+    // settings.ini as a form, shared with the launcher (the F10 settings page).
+    mod.addImport("logic", b.createModule(.{ .root_source_file = b.path("setup/logic.zig"), .target = target, .optimize = optimize }));
 
     // ANGLE (GL ES 3 on D3D11/Vulkan/GL): headers, import libs, and the 4 DLLs beside the exe.
     const angle = b.dependency("angle", .{});

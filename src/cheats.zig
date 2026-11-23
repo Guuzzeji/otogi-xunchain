@@ -52,7 +52,7 @@ var inf_magic = false;
 /// Draw and fog distance, times the stage's own (settings.ini draw_distance,
 /// fog_distance). 1 leaves the game untouched.
 var far_scale: f32 = 1;
-var scales_read = false;
+pub var scales_read = false; // false reads the settings again (the settings page)
 
 fn envScale(name: [*:0]const u8) f32 {
     const v = std.fmt.parseFloat(f32, std.mem.span(std.c.getenv(name) orelse return 1)) catch return 1;
@@ -68,7 +68,8 @@ extern "c" fn remove([*:0]const u8) c_int;
 /// logs\cheat, for scripted testing: read and deleted when it appears, one
 /// command per line: warp <stage id>, stage <id> (the story stage only), god,
 /// ungod, magic, kill, all, clear, give, status, far <x>, fog <x> (draw and fog
-/// distance), cull (last frame's frustum tests). Results go to the log.
+/// distance), cull (last frame's frustum tests), set <key> <value> (settings.ini
+/// as the settings page sets it). Results go to the log.
 fn liveCommands() void {
     const f = fopen("logs\\cheat", "rb") orelse return;
     var buf: [512]u8 = undefined;
@@ -87,6 +88,8 @@ fn liveCommands() void {
             warp();
         } else if (std.mem.eql(u8, cmd, "stage")) {
             p32(STAGE).* = std.fmt.parseInt(u32, it.next() orelse "", 10) catch continue;
+        } else if (std.mem.eql(u8, cmd, "set")) {
+            @import("settings_menu.zig").save(it.next() orelse continue, it.rest());
         } else if (std.mem.eql(u8, cmd, "far")) {
             far_scale = std.fmt.parseFloat(f32, it.next() orelse "") catch continue;
         } else if (std.mem.eql(u8, cmd, "fog")) {

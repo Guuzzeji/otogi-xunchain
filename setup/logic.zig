@@ -65,6 +65,57 @@ pub fn withValue(gpa: std.mem.Allocator, text: []const u8, key: []const u8, valu
     return out.toOwnedSlice();
 }
 
+/// Settings the forms know (the launcher's, the game's F10 page): a label and
+/// proper controls. Others get a text field (in the game, a toggle if 0 or 1).
+pub const Known = struct {
+    key: []const u8,
+    label: []const u8,
+    kind: enum { chips, toggle, stepper, text, resolution },
+    opts: []const struct { v: []const u8, label: []const u8 } = &.{},
+    summary: bool = false, // on the launcher's Play page Settings tile
+    live: bool = false, // the game's F10 page applies it at once (src/settings_menu.zig)
+};
+pub const known = [_]Known{
+    .{ .key = "window", .label = "Window mode", .kind = .chips, .summary = true, .live = true, .opts = &.{ .{ .v = "0", .label = "Window" }, .{ .v = "1", .label = "Borderless" }, .{ .v = "2", .label = "Fullscreen" } } },
+    .{ .key = "resolution", .label = "Fullscreen resolution", .kind = .resolution, .live = true },
+    .{ .key = "scale", .label = "Internal resolution", .kind = .chips, .summary = true, .opts = &.{ .{ .v = "1", .label = "1x (640x480)" }, .{ .v = "2", .label = "2x" }, .{ .v = "3", .label = "3x" }, .{ .v = "4", .label = "4x" } } },
+    .{ .key = "widescreen", .label = "Widescreen (16:9)", .kind = .toggle },
+    .{ .key = "framerate", .label = "Frame rate", .kind = .chips, .summary = true, .live = true, .opts = &.{ .{ .v = "0", .label = "Monitor's" }, .{ .v = "30", .label = "30 (original)" }, .{ .v = "60", .label = "60" }, .{ .v = "120", .label = "120" }, .{ .v = "144", .label = "144" } } },
+    .{ .key = "vsync", .label = "V-sync", .kind = .toggle, .live = true },
+    .{ .key = "gfx", .label = "Graphics backend", .kind = .chips, .opts = &.{ .{ .v = "d3d11", .label = "Direct3D 11" }, .{ .v = "vulkan", .label = "Vulkan" }, .{ .v = "gl", .label = "OpenGL" } } },
+    .{ .key = "mist_depth", .label = "Ground mist stays behind the ground", .kind = .toggle },
+    .{ .key = "cam_invert", .label = "Modern right-stick camera", .kind = .toggle, .live = true },
+    .{ .key = "show_mouse", .label = "Always show the mouse pointer", .kind = .toggle, .live = true },
+    .{ .key = "draw_distance", .label = "Draw distance", .kind = .stepper, .live = true },
+    .{ .key = "fog_distance", .label = "Fog distance", .kind = .stepper, .live = true },
+    .{ .key = "fps_counter", .label = "Frame rate counter", .kind = .toggle, .live = true },
+    .{ .key = "debug_menu", .label = "Debug menu at start (F1)", .kind = .toggle },
+    .{ .key = "log", .label = "Write otogi.log", .kind = .toggle },
+};
+pub const distances = [_]f32{ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8 };
+
+pub fn knownSetting(key: []const u8) ?Known {
+    for (known) |k| if (std.mem.eql(u8, k.key, key)) return k;
+    return null;
+}
+
+/// A stepper's next value: the next of `distances` up or down from `now`
+/// (empty or unreadable = 1).
+pub fn stepDistance(now: []const u8, up: bool) f32 {
+    const v = std.fmt.parseFloat(f32, now) catch 1;
+    var i: usize = 0;
+    while (i + 1 < distances.len and distances[i] < v - 0.01) i += 1;
+    i = if (up) @min(i + 1, distances.len - 1) else i -| 1;
+    return distances[i];
+}
+
+test stepDistance {
+    try std.testing.expectEqual(1.25, stepDistance("1", true));
+    try std.testing.expectEqual(0.75, stepDistance("", false));
+    try std.testing.expectEqual(8, stepDistance("8", true));
+    try std.testing.expectEqual(0.25, stepDistance("0.25", false));
+}
+
 /// "0.10.0" > "0.9.2"; a leading "v" is ignored.
 pub fn newer(a: []const u8, b: []const u8) bool {
     var ia = std.mem.splitScalar(u8, std.mem.trimStart(u8, a, "v"), '.');

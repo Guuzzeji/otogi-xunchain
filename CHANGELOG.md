@@ -7,6 +7,15 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Added
+- Settings in game: **F10**, or **Back+Start** on a controller, opens a settings page with
+  every option of `settings.ini` and its explanation. The game waits while it is open.
+  Frame rate, V-sync, window mode, fullscreen resolution, camera, mouse pointer, draw and
+  fog distance change at once; the rest are saved and marked "applies after restart".
+  Its text grows with the window, so it stays readable at 1440p and 4K.
+- A frame rate counter in the top right corner (`fps_counter`, in the new settings page
+  and the launcher).
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
