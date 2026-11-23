@@ -10,6 +10,8 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 ### Added
 - The launcher builds from a folder of the disc's files too (as an Xbox 360 or HDD rip
   leaves them): pick the `default.xbe` in it, or type the folder's path.
+- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
+  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
 
 ### Changed
 - A dump of the USA disc whose `default.xbe` differs from the known good one no longer
@@ -20,8 +22,6 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 - XISOs and ISOs repacked with extract-xiso were rejected as "not the Otogi disc": the tool
   patches one byte of `default.xbe` (the media check). The launcher now recognises that
   patch, accepts the disc as verified and puts the original byte back for the build.
-- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
-  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
 - In widescreen, the trailer that plays when you wait on the title screen no longer has
   smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
   bars at the sides (issue #9).
