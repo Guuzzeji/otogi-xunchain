@@ -7,6 +7,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-23
+
 ### Added
 - PlayStation and Switch controllers work directly, without DS4Windows or Steam Input, and any
   controller can be plugged in, unplugged or swapped while playing. Rumble works on all of them.
