@@ -820,7 +820,9 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
         try w.writeAll("uniform vec4 u_c[192];\n");
         for (0..16) |i| if (h.inputs & (@as(u16, 1) << @intCast(i)) != 0) try w.print("in vec4 v{d};\n", .{i});
         // oFog.x is a distance for table fog and the factor itself with FOGTABLEMODE
-        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A.
+        // NONE (Otogi writes 1 - z/far). A NaN factor reads as no fog, as on the NV2A, and so
+        // does a program that never writes oFog (the strand hair, D730B1B8: at 0 the Crimson
+        // King's mane drew in the fog colour).
         try w.writeAll(
             \\float nv_fog(float f) { float d = abs(f); return u_fog.x == 3.0 ? (u_fog.z - d) / (u_fog.z - u_fog.y)
             \\  : u_fog.x == 1.0 ? exp(-d * u_fog.w) : u_fog.x == 2.0 ? exp(-(d * u_fog.w) * (d * u_fog.w)) : f; }
@@ -830,7 +832,7 @@ fn genVs(k: *const Key, w: *std.Io.Writer) !void {
             \\#define c u_c
             \\void main() {
             \\  vec4 R0 = vec4(0.0), R1 = R0, R2 = R0, R3 = R0, R4 = R0, R5 = R0, R6 = R0, R7 = R0, R8 = R0, R9 = R0, R10 = R0, R11 = R0, R12 = R0;
-            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(0.0);
+            \\  vec4 oD0 = vec4(0.0, 0.0, 0.0, 1.0), oD1 = oD0, oFog = vec4(1.0);
             \\  vec4 oT0 = vec4(0.0, 0.0, 0.0, 1.0), oT1 = oT0, oT2 = oT0, oT3 = oT0;
             \\  int a0 = 0;
             \\

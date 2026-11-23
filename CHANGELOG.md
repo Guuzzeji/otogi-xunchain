@@ -19,6 +19,8 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
   build. A different game, or the Japanese release, is still refused.
 
 ### Fixed
+- The Crimson King's mane is crimson again (Palace of Gold and later): it drew as a dark blue or
+  black shape, the colour of the stage's fog.
 - The "There is a problem with the disc you are using" message that could appear in the
   menus (for example after going back and forth between the title and the save list) on
   some PCs. The game now reads its files the same way on every disk.
