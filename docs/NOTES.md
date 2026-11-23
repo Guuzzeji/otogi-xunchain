@@ -256,6 +256,20 @@
   repeats (the first tuning's 1x1 gave long cloth-like streaks), threshold -0.3..0.45 at the top (solid but for the
   darkest grain) to 0.15..0.95 at the bottom (mist). The first tuning's 15% fade-in, then solid white, showed as a
   bright band at each strip's top; 5% under the solid white of the strip above does not.
+- Forbidden Mansion (m001, story stage 1, "stage 2" to players) path flipping between grass and a hard-edged
+  dirt square as the camera turned (issue #14): the ground is a grass base (pushbuffer drawing texture 34)
+  with detail chunks and two dirt/grass overlay layers (textures 77, 80) on top, all vertex program
+  `1D93501` / pixel shader `1E91DA0` (t0/t1 mixed by `oT3.w` = v3.z, 7 combiners). The map recorder
+  (`0x25640`) sets ALPHABLENDENABLE 1, BLENDOP, SRCBLEND and DESTBLEND inside the recording for materials
+  with flag bit 0 (`0x258BB`). The state before BeginPushBuffer already held those values, so the replay
+  ("recorded where it changed, live elsewhere") took the live state, and that is whatever the game set
+  before each RunPushBuffer: 0 when the detail chunks had just been drawn, which depends on what is in
+  view. The overlay then drew opaque: the dirt square. Now `recordDraw` scans the guest pushbuffer since the
+  last draw for simple render state methods (`d3d.simpleStatesSet`, NV2A method per D3DRS 57-81) and a state
+  the recording set wins even when it equals the old value. Checked by camera turns on the path (draw logs:
+  the overlays blended in every frame, were opaque in the bad ones before) and in m007.
+  Not covered: complex states (cull mode, stencil fail...) and deferred ones (fog, texture stages) set to
+  the value they already had still replay live.
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.

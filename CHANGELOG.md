@@ -7,6 +7,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- Forbidden Mansion (stage 2): the path no longer flips between grass and a hard-edged
+  square of dirt as the camera turns; the dirt blends softly into the grass as on the Xbox.
+  The same fix applies to any map layer the game draws see-through.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
