@@ -14,7 +14,8 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
   them up, and What's new with every release's notes. It works with a controller too.
 - Updates from the launcher: when a new release is out, **Update** downloads it and
   rebuilds the game from the files you already have (the disc is not needed again).
-  Settings and saves stay. This release is the last one to download by hand.
+  Settings and saves stay. This release is the last one to download by hand. The version
+  list beside Play also goes back to an earlier launcher release, the same way.
 - Help & logs in the launcher: the game's and the build's logs, live, with Copy and Open;
   **Report on GitHub** opens a new issue with your version and PC filled in and copies the
   log to paste into it; **Open Discussions** is for questions that are not bugs.

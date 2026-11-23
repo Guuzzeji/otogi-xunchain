@@ -309,6 +309,10 @@ const Ui = struct {
     refreshed_at: u64 = 0,
     shown_page: ?Page = null,
     news_shown: bool = false,
+    /// The version picked beside Play (a tag without "v"; this one = none).
+    picked: []const u8 = build_info.version,
+    ver_open: bool = false,
+    ver_shown: ?[*]const u8 = null,
     /// settings.ini as last read, and what the page shows of it.
     ini: []u8 = &.{},
     ini_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
@@ -394,6 +398,7 @@ const Ui = struct {
             const d: i32 = if (eql(u8, val, "-1")) -1 else 1;
             u.page = @enumFromInt(@mod(i + d, @as(i32, std.meta.tags(Page).len)));
         } else if (eql(u8, cmd, "back")) {
+            if (u.ver_open) return u.handle("ver-menu", "");
             u.page = .play;
         } else if (eql(u8, cmd, "play-main")) {
             if (u.built and !busy) openOut("otogi.exe") else u.page = .install;
@@ -460,9 +465,19 @@ const Ui = struct {
             win_open(z(&p, "{s}", .{saveDir(&p)}));
         } else if (eql(u8, cmd, "backup-saves")) {
             u.backupSaves();
+        } else if (eql(u8, cmd, "ver-menu")) {
+            u.ver_open = !u.ver_open;
+            ui_class("ver-menu", "shown", u.ver_open);
+        } else if (eql(u8, cmd, "pick-version")) {
+            u.ver_open = false;
+            ui_class("ver-menu", "shown", false);
+            u.picked = if (release(val)) |r| std.mem.trimStart(u8, r.tag_name, "v") else build_info.version;
         } else if (eql(u8, cmd, "update")) {
             if (busy) return u.say("Wait for the build to finish first.");
             if (news.update.load(.acquire) == .downloading) return; // only this thread starts one
+            // A version picked beside Play, else the newest.
+            news.target = if (val.len != 0) release(val) else news.latest;
+            if (news.target == null) return;
             if (news.update_thread) |t| t.join(); // the last try, finished
             update_err[0] = 0;
             news.update.store(.downloading, .release);
@@ -501,6 +516,8 @@ const Ui = struct {
             set("play-status", "Downloading the update...", .{})
         else if (update == .failed)
             set("play-status", "<span class=\"bad\">{f}</span>", .{esc(updateError())})
+        else if (!std.mem.eql(u8, u.picked, build_info.version))
+            set("play-status", "Rebuilds in about 8 minutes. Saves stay.", .{})
         else if (u.built)
             set("play-status", "<strong>Ready</strong> &#x2014; {s}", .{"v" ++ build_info.version})
         else
@@ -508,6 +525,7 @@ const Ui = struct {
 
         u.drawInstall(busy, &b);
         u.drawNews();
+        u.drawVersions(update);
     }
 
     fn drawInstall(u: *Ui, busy: bool, b: []u8) void {
@@ -839,16 +857,12 @@ const Ui = struct {
     fn drawNews(u: *Ui) void {
         const update = news.update.load(.acquire);
         switch (update) {
-            .downloading => {
-                set("update-btn", "UPDATING", .{});
-                set("play-update", "UPDATING", .{});
-            },
+            .downloading => set("update-btn", "Updating...", .{}),
             .failed => {
-                set("update-btn", "TRY AGAIN", .{});
-                set("play-update", "TRY AGAIN", .{});
+                set("update-btn", "Try again", .{});
                 set("banner-text", "<span class=\"bad\">{f}</span>", .{esc(updateError())});
             },
-            else => set("update-btn", "UPDATE", .{}),
+            else => set("update-btn", "Update", .{}),
         }
         const state = news.state.load(.acquire);
         if (state == .fetching or u.news_shown) return;
@@ -891,8 +905,6 @@ const Ui = struct {
             const tag = std.mem.trimStart(u8, l.tag_name, "v");
             ui_class("banner", "shown", true);
             ui_class("news-badge", "shown", true);
-            ui_class("play-update", "hidden", false);
-            set("play-update", "UPDATE TO v{f}", .{esc(tag)});
             set("banner-title", "v{f} is out", .{esc(tag)});
             set("banner-text", "You have v{s}. Update downloads the new launcher, then rebuilds the game from your disc (translate and compile again, about 8 minutes). Your saves and settings stay.", .{build_info.version});
             set("tile-news-title", "v{f} is out", .{esc(tag)});
@@ -900,6 +912,46 @@ const Ui = struct {
         } else {
             set("tile-news-title", "v{s}", .{build_info.version});
             set("tile-news-text", "You have the latest version.", .{});
+        }
+    }
+
+    /// Beside Play: the version picker (every release that carries the
+    /// launcher, and this one), and one small button to switch or update.
+    fn drawVersions(u: *Ui, update: @TypeOf(news.update.raw)) void {
+        if (!u.news_shown or news.state.load(.acquire) != .ok) return;
+        if (u.picked.ptr != u.ver_shown) {
+            u.ver_shown = u.picked.ptr;
+            var out: std.Io.Writer.Allocating = .init(u.gpa);
+            defer out.deinit();
+            const w = &out.writer;
+            var rows: usize = 0;
+            for (news.releases) |r| {
+                const tag = std.mem.trimStart(u8, r.tag_name, "v");
+                if (r.draft or r.prerelease or rows == 10) continue;
+                const now = std.mem.eql(u8, tag, build_info.version);
+                if (!now and !hasLauncher(r)) continue; // before the launcher: nothing to switch to
+                rows += 1;
+                w.print("<div class=\"verrow{s}\" onclick=\"pick-version\" value=\"{f}\">v{f}{s}</div>", .{
+                    if (std.mem.eql(u8, tag, u.picked)) " on" else "", esc(tag), esc(tag),
+                    if (now) "<span class=\"tag now\">INSTALLED</span>" else if (logic.newer(tag, build_info.version)) "<span class=\"tag new\">NEW</span>" else "",
+                }) catch return;
+            }
+            w.writeByte(0) catch return;
+            ui_set("ver-menu", @ptrCast(out.written().ptr));
+            ui_class("ver", "hidden", rows < 2);
+        }
+        set("ver-btn", "v{f}<span class=\"icon\">&#xE70E;</span>", .{esc(u.picked)});
+        // Switch to the picked one, or update to the newest.
+        const to: ?[]const u8 = if (!std.mem.eql(u8, u.picked, build_info.version)) u.picked else if (news.latest) |l| std.mem.trimStart(u8, l.tag_name, "v") else null;
+        ui_class("play-switch", "hidden", to == null);
+        if (to) |t| {
+            var b: [24:0]u8 = undefined;
+            ui_attr("play-switch", "value", z(&b, "{s}", .{t}));
+            switch (update) {
+                .downloading => set("play-switch", "Downloading...", .{}),
+                .failed => set("play-switch", "Try again", .{}),
+                else => set("play-switch", "{s} v{f}", .{ if (logic.newer(t, build_info.version)) "Update to" else "Switch to", esc(t) }),
+            }
         }
     }
 
@@ -1073,6 +1125,8 @@ var news: struct {
     thread: ?std.Thread = null,
     update: std.atomic.Value(enum(u8) { none, downloading, ready, failed }) = .init(.none),
     update_thread: ?std.Thread = null,
+    /// What "update" downloads: the newest, or a version picked beside Play.
+    target: ?Release = null,
 } = .{};
 
 fn fetchNews(io: Io, gpa: std.mem.Allocator) void {
@@ -1092,9 +1146,7 @@ fn fetchNews(io: Io, gpa: std.mem.Allocator) void {
     for (news.releases) |r| {
         if (r.draft or r.prerelease or !logic.newer(r.tag_name, build_info.version)) continue;
         if (news.latest) |l| if (!logic.newer(r.tag_name, l.tag_name)) continue;
-        for (r.assets) |x| if (std.mem.eql(u8, x.name, asset_name)) {
-            news.latest = r;
-        };
+        if (hasLauncher(r)) news.latest = r;
     }
     news.state.store(.ok, .release);
 }
@@ -1106,6 +1158,18 @@ fn updateError() []const u8 {
     return if (update_err[0] != 0) std.mem.sliceTo(&update_err, 0) else "The download is not a launcher exe. Try again later.";
 }
 
+fn hasLauncher(r: Release) bool {
+    for (r.assets) |x| if (std.mem.eql(u8, x.name, asset_name)) return true;
+    return false;
+}
+
+/// A listed release by its tag, "v" or not; only once the list is in.
+fn release(tag: []const u8) ?Release {
+    if (news.state.load(.acquire) != .ok) return null;
+    for (news.releases) |r| if (std.mem.eql(u8, std.mem.trimStart(u8, r.tag_name, "v"), std.mem.trimStart(u8, tag, "v"))) return r;
+    return null;
+}
+
 fn downloadUpdate(io: Io, gpa: std.mem.Allocator) void {
     const ok = swapIn(io, gpa) catch |e| blk: {
         _ = std.fmt.bufPrintSentinel(&update_err, "Update failed ({t}). Check your connection and try again.", .{e}, 0) catch {};
@@ -1115,7 +1179,7 @@ fn downloadUpdate(io: Io, gpa: std.mem.Allocator) void {
 }
 
 fn swapIn(io: Io, gpa: std.mem.Allocator) !bool {
-    const l = news.latest orelse return false;
+    const l = news.target orelse return false;
     const url = for (l.assets) |x| (if (std.mem.eql(u8, x.name, asset_name)) break x.browser_download_url) else return false;
     var p: [1100]u8 = undefined;
     const exe = p[0..try std.process.executablePath(io, &p)];

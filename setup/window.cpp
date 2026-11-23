@@ -323,6 +323,8 @@ static void pad() {
     if (s.Gamepad.sThumbLY < -dead) b |= XINPUT_GAMEPAD_DPAD_DOWN;
     if (s.Gamepad.sThumbLX < -dead) b |= XINPUT_GAMEPAD_DPAD_LEFT;
     if (s.Gamepad.sThumbLX > dead) b |= XINPUT_GAMEPAD_DPAD_RIGHT;
+    // Only while the launcher is the active window: not while playing the game.
+    if (GetForegroundWindow() != hwnd) return (void)(held = b);
     WORD down = b & ~held;
     const WORD dirs = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT;
     ULONGLONG now = GetTickCount64();

@@ -429,6 +429,9 @@
   downloads to `<exe>.new`, renames the running exe to `.old` (Windows allows renaming, not overwriting, a running
   exe), moves the new one in, and starts it with `--rebuild <out>`: every stamp but `extract` is deleted and the build
   runs. The disc check is skipped once `extract` is stamped, so no ISO is needed. `.old` is deleted on the next start.
+- The version list beside Play offers every release with that asset (older ones shipped only setup, so they are left
+  out) and switches the same way, downgrades too: the older launcher rebuilds its own source. Its XInput is read only
+  while the launcher is the foreground window, or A in the game would click the launcher's focused button.
 - Help & logs: a viewer for `<out>\otogi.log` (the game opens it with FILE_SHARE_READ, so it can be read while the
   game runs) and `<out>\setup.log`: the last 96 KB, re-read each second while the page is open, 400 lines shown.
   Report opens `issues/new?labels=bug&body=...` (version and `machine()`: Windows, CPU, RAM, GPU) and copies the whole

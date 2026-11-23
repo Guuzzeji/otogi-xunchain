@@ -214,9 +214,16 @@ h4 { font-weight: bold; font-size: 13dp; letter-spacing: 1dp; color: #9bf00b; ma
 .play.busy:hover { background-color: #9e322a; }
 .play.off { background-color: #252d24; color: #8a9684; }
 .play.wide { width: auto; font-size: 15dp; }
-/* Beside PLAY when a newer release is out: same height, quieter. */
-.play.update { width: auto; margin-left: 12dp; padding: 0 24dp; font-size: 14dp; color: #9bf00b; background-color: #1b2a16; }
-.play.update:hover { background-color: #24391d; }
+/* Beside PLAY: which version, and a button to switch to it. The list opens upward, over the art. */
+#hero .cta > .verpick, #hero .cta > .btn { margin-left: 10dp; }
+.verpick { position: relative; }
+.verpick .btn .icon { font-family: "Segoe MDL2 Assets"; font-size: 10dp; margin-left: 8dp; }
+.vermenu { display: none; position: absolute; left: 0; bottom: 42dp; min-width: 200dp; padding: 4dp; border-radius: 4dp; background-color: #0d140b; border: 1dp #2f4a26; z-index: 10; }
+.vermenu.shown { display: block; }
+.verrow { display: block; padding: 0 10dp; height: 30dp; line-height: 30dp; border-radius: 3dp; color: #e6eee0; font-size: 14dp; white-space: nowrap; tab-index: auto; nav: auto; }
+.verrow:hover, .verrow:focus-visible { background-color: #1b2a16; }
+.verrow.on { color: #9bf00b; }
+.verrow .tag { line-height: 16dp; vertical-align: middle; }
 
 /* ── Form controls ─────────────────────────────────────────────────────── */
 input.text {

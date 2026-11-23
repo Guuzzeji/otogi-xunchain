@@ -50,7 +50,11 @@
 					<div class="sub">Myth of Demons &#x2014; on PC</div>
 					<div class="cta">
 						<div class="play" id="play-btn" onclick="play-main">PLAY</div>
-						<div class="play update hidden" id="play-update" onclick="update"></div>
+						<div class="verpick hidden" id="ver">
+							<div class="btn" id="ver-btn" onclick="ver-menu"></div>
+							<div class="vermenu" id="ver-menu"></div>
+						</div>
+						<div class="btn primary hidden" id="play-switch" onclick="update"></div>
 						<div class="status" id="play-status"></div>
 					</div>
 				</div>
@@ -172,7 +176,7 @@
 							<h3 id="banner-title"></h3>
 							<div class="muted small" id="banner-text"></div>
 						</div>
-						<div class="play" style="width: 220dp;" id="update-btn" onclick="update">UPDATE</div>
+						<div class="btn primary" id="update-btn" onclick="update">Update</div>
 					</div>
 				</div>
 				<div id="releases"></div>
