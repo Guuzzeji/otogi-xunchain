@@ -7,6 +7,11 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- The "There is a problem with the disc you are using" message that could appear in the
+  menus (for example after going back and forth between the title and the save list) on
+  some PCs. The game now reads its files the same way on every disk.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added

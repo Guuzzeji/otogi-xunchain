@@ -285,8 +285,16 @@ NTSTATUS __stdcall xbox_NtCreateFile(
             xbox_share_to_win32(ShareAccess), NULL, OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS, NULL);
     } else {
-        if (CreateOptions & XBOX_FILE_NO_INTERMEDIATE_BUFFERING)
-            flags_and_attrs |= FILE_FLAG_NO_BUFFERING;
+        /* FILE_NO_INTERMEDIATE_BUFFERING is not passed on as
+         * FILE_FLAG_NO_BUFFERING. The title meets the console's rules for it
+         * (2048-byte DVD sectors, a 4-byte-aligned buffer), not the host
+         * disk's: Windows then wants the offset and length in the host's
+         * sector size and the buffer aligned as that disk's driver asks.
+         * Otogi streams into 16-byte-aligned heap buffers at 2048-byte
+         * offsets; on a disk that wants 32-byte buffers (or 4096-byte
+         * sectors) a read failed with ERROR_INVALID_PARAMETER, depending on
+         * where the heap put the buffer, and the title showed its dirty
+         * disc message. The POSIX side never asked for O_DIRECT either. */
         if (FileAttributes & XBOX_FILE_ATTRIBUTE_READONLY)
             flags_and_attrs |= FILE_ATTRIBUTE_READONLY;
         DWORD access = xbox_access_to_win32(DesiredAccess);

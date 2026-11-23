@@ -48,6 +48,22 @@
      XGetDeviceChanges, as on hardware. XAPI's own USB stack hung, then crashed in `sub_000DB930`, on the toolkit OHCI model.
   7. `RECOMP_AC97_READY` on by default. Without DirectSound the game never starts its sound-stream worker
      (`sub_00072DA0`, started through vtable `0x18432C`+4), and the main menu spins in `0x78037` waiting on it.
+- Dirty disc (issue #14). Every streamed read goes through `sub_0007BEF0` (read at offset; a 2 KB bounce buffer
+  `sub_00070980` for an unaligned head and tail) and `sub_0007BDD0` (one aligned read; E_FAIL at once unless the
+  buffer is 4-byte aligned and offset/length are 2048 multiples; a failed read is retried until 15 s after
+  `sub_0007BD80` stamped `0x13C260C`). Any failure calls vtable `0x175D74`+0xC8 of the object at `0x13C25F8`,
+  i.e. the disc-error loop `0x40600` -> `sub_000137D0`, on the reading thread: the main thread shows a black
+  screen with the message (seen); a stream thread would draw it over a menu that keeps going (the issue's
+  screenshot, not seen here). The text is `menu.msg`
+  id 0x1770 (entries: u16 id, u16 group, u32 byte offset, u32; UTF-16 text).
+  The files are opened `FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING`. The toolkit passed NO_BUFFERING on to
+  Windows, which then enforces the host disk's rules: offset/length in its sector size, buffer aligned to its
+  driver's alignment mask. Otogi reads into 16-byte-aligned heap buffers (e.g. `0x01DAB7F0`, `0x0131A7B0`,
+  moving as the heap churns) at 2048 offsets. This PC's NVMe asks 4 bytes (buffer+1 fails with error 87,
+  +4 works), so it never failed here, and 15 save-list round trips did not show it; a disk that asks 32
+  bytes, or 4096-byte sectors, fails whenever the heap hands out such a buffer. Simulating a 32-byte rule on
+  these reads gave the message at once. `kernel_file.c` now opens without NO_BUFFERING (POSIX never used
+  O_DIRECT).
 - Exit check passes: `RECOMP_PAD_SCRIPT=2000:start,4000:start,7000:a,9000:a,...` reaches stage m000
   (`map\m000\map.dat`, `chr\c000.dat`); 70 s, no crash. Idle (no input) runs the title/attract loop.
 - Missing on disc too (the game probes them): `sfx\s000_00.dds` etc., `media\distortion.dds`.
