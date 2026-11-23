@@ -256,6 +256,15 @@
   repeats (the first tuning's 1x1 gave long cloth-like streaks), threshold -0.3..0.45 at the top (solid but for the
   darkest grain) to 0.15..0.95 at the bottom (mist). The first tuning's 15% fade-in, then solid white, showed as a
   bright band at each strip's top; 5% under the solid white of the strip above does not.
+- Crimson King's mane (issue #14, m004 Palace of Gold, first seen in the opening cutscene's "...in stone..." shot):
+  the mane is not part of his model (`chr\c020.dat`: body, a red tuft, a club, all program 2A115F15) but Otogi's
+  strand hair: vertex program D730B1B8 (guest 1E0A1F1), one FLOAT2 input, strands built from constants, texture
+  `media\Hair2.dds` (red; the player's hair is `Hair.dds`, black), 90 draws, fog on. Its pixel shader is just the
+  texture with the vertex alpha, and the program never writes oFog. The host started oFog at 0, which with
+  FOGTABLEMODE NONE is fully fogged: the mane came out the fog colour (m004: FF081018, dark navy; black elsewhere).
+  An unwritten oFog now starts at 1 (no fog), as the Xbox's red mane shows. 9 of the 235 programs never write oFog;
+  stages 1 and 5 look the same otherwise (the player's black hair is the same program). Checked on d3d11, gl and
+  vulkan. Not a recorded-pushbuffer or leaked-state problem (cf. stages 2 and 10).
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.

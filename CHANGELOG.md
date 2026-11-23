@@ -7,6 +7,10 @@ merging a PR runs the Release workflow, which moves "Unreleased" into a new vers
 
 ## [Unreleased]
 
+### Fixed
+- The Crimson King's mane is crimson again (Palace of Gold and later): it drew as a dark blue or
+  black shape, the colour of the stage's fog.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
