@@ -7,6 +7,10 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 
 ## [Unreleased]
 
+### Added
+- Setting `cam_invert_y` (Settings > Invert camera up/down): flips the right stick's
+  up/down, so pushing up looks down. Left and right stay as `cam_invert` sets them.
+
 ## [0.11.0] - 2026-11-23
 
 ### Added
