@@ -26,6 +26,7 @@ const std = @import("std");
 const gl = @import("gl");
 const d3d = @import("d3d.zig");
 const debug_menu = @import("debug_menu.zig");
+const pacer = @import("pacer.zig");
 
 const arg = d3d.arg;
 const mem32 = d3d.mem32;
@@ -2077,6 +2078,8 @@ fn drawGl(xprim: u32, n: u32, idx: ?[*]align(1) const u16, up: ?[*]const u8, up_
 
 var fr_step: f64 = present_period; // ms between shown frames
 var fr_pass_ms: f64 = 0; // what drawing one in-between costs, averaged
+var fr_slow = false; // an in-between costs too much to fit one
+var fr_said: u32 = 0;
 var fr_d: *FDraw = undefined; // the draw being replayed
 var fr_same = false; // and its constants and transforms are the draw's before it
 var fr_final = false; // this pass draws the game's frame for showing: not an in-between, not a read-back
@@ -2736,11 +2739,19 @@ fn renderThread() void {
                 frameReplay(fr_prev, cur, 0, cur.ops.items.len, @floatCast((next - last_present) / present_period));
                 sync_have = 0;
                 blitWindow(fbo);
-                fr_pass_ms += (nowMs() - t0 - fr_pass_ms) * 0.1;
+                fr_pass_ms = pacer.cost(fr_pass_ms, nowMs() - t0, present_period);
                 waitServing(next);
                 swapWindow();
                 shown_at = nowMs(); // with vsync the swap returns at the vblank
             }
+            if (shown_at == last_present) fr_pass_ms = pacer.cost(fr_pass_ms, null, present_period);
+            // For reports of a game stuck at 30 shown frames (issue #15).
+            const slow = slot * 1.5 >= present_period;
+            if (slow != fr_slow and fr_said < 20) {
+                fr_said += 1;
+                std.debug.print("[GL] in-between frames {s}: one costs {d:.1} ms\n", .{ if (slow) "off" else "on", fr_pass_ms });
+            }
+            fr_slow = slow;
         }
         if (!final_done) finalPass();
         frame += 1;
