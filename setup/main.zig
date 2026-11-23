@@ -635,30 +635,21 @@ const Ui = struct {
         showLog(u.gpa, "help-log", buf[0..got], "The log is empty.");
     }
 
-    /// A new GitHub issue with the version and this PC filled in, and the log
-    /// on the clipboard to paste into it (a URL cannot carry a file).
+    /// A new GitHub issue on the matching form (.github/ISSUE_TEMPLATE, fields
+    /// by id) with the version and this PC filled in, and the log on the
+    /// clipboard to paste into it (a URL cannot carry a file).
     fn report(u: *Ui, log: []const u8) void {
         const copied = u.copyLog(log);
         var m: [400]u8 = undefined;
-        var body_buf: [2048]u8 = undefined;
-        const body = std.fmt.bufPrint(&body_buf,
-            \\**What happened?**
-            \\
-            \\
-            \\**What were you doing?** (stage, menu, settings you changed)
-            \\
-            \\
-            \\**Version:** {s}
-            \\**PC:** {s}
-            \\
-            \\**Log** ({s}):
-            \\{s}
-            \\
-        , .{ version, machine(&m), log, if (copied) "the launcher copied it: paste it here, or drag the file in from the game folder" else "drag it in from the game folder" }) catch return;
         var url: [6144:0]u8 = undefined;
         var w: std.Io.Writer = .fixed(&url);
-        w.writeAll(issues_url ++ "/new?labels=bug&body=") catch return;
-        logic.urlEncode(&w, body) catch return;
+        const build = std.mem.eql(u8, log, "setup.log");
+        w.writeAll(if (build) issues_url ++ "/new?template=setup.yml&version=" else issues_url ++ "/new?template=bug.yml&version=") catch return;
+        logic.urlEncode(&w, version) catch return;
+        if (!build) {
+            w.writeAll("&pc=") catch return;
+            logic.urlEncode(&w, machine(&m)) catch return;
+        }
         w.writeByte(0) catch return;
         win_open(@ptrCast(w.buffered().ptr));
         u.say(if (copied) "Log copied. Paste it into the issue that just opened." else "Opened a new issue on GitHub.");
