@@ -139,6 +139,61 @@ pub const Rs = enum(u32) {
     zbias,
 };
 
+/// The NV2A (Kelvin) method each simple render state sets, ZFUNC (57) to
+/// SOLIDOFFSETENABLE (81) in Rs order: SetRenderState_Simple writes the method
+/// and value to the pushbuffer, the title the value to D3D_g_RenderState.
+const simple_methods = [_]u32{ 0x354, 0x33C, 0x304, 0x300, 0x340, 0x344, 0x348, 0x35C, 0x310, 0x37C, 0x358, 0x374, 0x378, 0x364, 0x368, 0x36C, 0x360, 0x350, 0x34C, 0x9F8, 0x384, 0x388, 0x330, 0x334, 0x338 };
+pub const simple_first = @intFromEnum(Rs.zfunc);
+/// Complex render states with a method of their own (read from each
+/// SetRenderState_X in the title): CULLMODE always writes cull enable (0x308),
+/// then the face to cull when it is not NONE.
+const complex_methods = [_]struct { u32, Rs }{
+    .{ 0x308, .cullmode },      .{ 0x39C, .cullmode },     .{ 0x3A0, .frontface },        .{ 0x30C, .zenable },
+    .{ 0x32C, .stencilenable }, .{ 0x370, .stencilfail },  .{ 0x2A8, .fogcolor },         .{ 0x328, .vertexblend },
+    .{ 0x38C, .fillmode },      .{ 0x390, .backfillmode }, .{ 0x3A4, .normalizenormals },
+};
+
+/// The render states a stretch of pushbuffer sets: bit n is state
+/// simple_first + n. Stops at anything but a method header (jump, call, return).
+pub fn statesSet(words: []align(1) const u32) u128 {
+    var set: u128 = 0;
+    var i: usize = 0;
+    while (i < words.len) {
+        const cmd = words[i];
+        if (cmd & 0xE0030003 != 0 and cmd & 0xE0030003 != 0x40000000) break;
+        const n = (cmd >> 18) & 0x7FF;
+        if (cmd & 0xE000 == 0) for (0..n) |k| { // subchannel 0, the 3D object
+            const m = (cmd & 0x1FFC) + (if (cmd & 0x40000000 == 0) 4 * @as(u32, @intCast(k)) else 0);
+            for (simple_methods, 0..) |sm, b| if (sm == m) {
+                set |= @as(u128, 1) << @intCast(b);
+            };
+            for (complex_methods) |cm| if (cm[0] == m) {
+                set |= @as(u128, 1) << @intCast(@intFromEnum(cm[1]) - simple_first);
+            };
+        };
+        i += 1 + n;
+    }
+    return set;
+}
+
+test statesSet {
+    const bit = struct {
+        fn f(s: Rs) u128 {
+            return @as(u128, 1) << @intCast(@intFromEnum(s) - simple_first);
+        }
+    }.f;
+    // Blend on, then source and destination factors as one two-method write.
+    try std.testing.expectEqual(bit(.alphablendenable) | bit(.srcblend) | bit(.destblend), statesSet(&.{ 0x40304, 1, 0x80344, 0x302, 0x303 }));
+    // A transform constant (not a render state), then Z write; a jump ends the scan.
+    try std.testing.expectEqual(bit(.zwriteenable), statesSet(&.{ 0x80B80, 0, 0, 0x4035C, 1, 0x00001001, 0x40304, 1 }));
+    // Another subchannel's method 0x304 is not the blend switch.
+    try std.testing.expectEqual(0, statesSet(&.{ 0x42304, 1 }));
+    // CULLMODE NONE: cull enable off and nothing else (stage 10's cave ceilings).
+    try std.testing.expectEqual(bit(.cullmode), statesSet(&.{ 0x40308, 0 }));
+    // Z test on, then fog colour.
+    try std.testing.expectEqual(bit(.zenable) | bit(.fogcolor), statesSet(&.{ 0x4030C, 1, 0x402A8, 0xFFFFFFFF }));
+}
+
 /// D3DTEXTURESTAGESTATETYPE: the index into a stage's 32 dwords.
 pub const Tss = enum(u32) {
     addressu,
