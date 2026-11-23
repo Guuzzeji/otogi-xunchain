@@ -87,7 +87,7 @@ Then:
 2. Make it runnable and start it: `chmod +x otogi-xunchain-linux-x86_64 && ./otogi-xunchain-linux-x86_64`
 3. As on Windows: **Install**, **Build the game**, then **Play**. The game is `otogi` in the install folder; your saves go to `~/.local/share/Otogi`.
 
-In WSL, Mesa draws on the CPU unless told to use your GPU through Direct3D 12: start the game with `GALLIUM_DRIVER=d3d12` (and `MESA_D3D12_DEFAULT_ADAPTER_NAME=<part of your GPU's name>` if you have more than one).
+In WSL, Mesa draws on the CPU (slow, and the launcher alone takes about 3 cores) unless told to use your GPU through Direct3D 12: start the launcher with `GALLIUM_DRIVER=d3d12 ./otogi-xunchain-linux-x86_64` (add `MESA_D3D12_DEFAULT_ADAPTER_NAME=<part of your GPU's name>` if you have more than one); the game it starts gets the same.
 
 ## Settings
 

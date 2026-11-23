@@ -208,8 +208,9 @@ extern "C" bool ui_frame() {
     context->Render();
     renderer->EndFrame();
     SDL_GL_SwapWindow(window);
-    // At most 60 frames a second, 10 in the background: V-sync does not always hold
-    // (llvmpipe, some compositors), and a spinning launcher takes every core.
+    // At most 60 frames a second, 10 in the background: V-sync does not always
+    // hold, and a spinning launcher takes every core. (On llvmpipe, Mesa's CPU
+    // renderer, a frame alone costs ~170 ms of CPU at 1280x860: ~18 a second.)
     static Uint64 last;
     const Uint64 frame_ns = SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS ? 16666667 : 100000000;
     const Uint64 now = SDL_GetTicksNS();

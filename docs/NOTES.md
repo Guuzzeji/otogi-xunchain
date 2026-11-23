@@ -677,6 +677,10 @@
   `otogi-xunchain-linux-x86_64`, `\x7fELF` checked, made executable, `rename`). Step 1 fails at once if the SDL3, EGL
   or GL ES headers are missing, not after the lift. Not done: tools outlive a launcher closed mid-build (no
   PR_SET_PDEATHSIG); the game is not reaped (a zombie until the launcher exits).
+- Launcher frame rate: capped at 60 (10 unfocused) by sleeping, as V-sync does not always hold. On llvmpipe (WSLg's
+  default) a frame costs ~170 ms of CPU across ~3 cores (the hero's mask-image layer, 2x MSAA layers at 1280x860):
+  18 fps, ~315% CPU, whatever the cap. On the GPU (`GALLIUM_DRIVER=d3d12`) 29% of one core. The first full build in
+  WSL from an empty folder took 7 min 20 s (lift 4.6 min, compile 1.7 min with -j1), launcher running meanwhile.
 - Launcher look on Linux: the art is PNG now on both (JPEG has no decoder on Linux without a library, and SDL only
   reads PNG from 3.4): `setup/png.zig` decodes 8-bit RGB/RGBA, tested against System.Drawing's pixels. Fonts as in
   the game (fontconfig under Segoe UI and Consolas); the Segoe MDL2 icons become Unicode symbols at compile time
