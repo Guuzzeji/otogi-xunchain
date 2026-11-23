@@ -48,6 +48,22 @@
      XGetDeviceChanges, as on hardware. XAPI's own USB stack hung, then crashed in `sub_000DB930`, on the toolkit OHCI model.
   7. `RECOMP_AC97_READY` on by default. Without DirectSound the game never starts its sound-stream worker
      (`sub_00072DA0`, started through vtable `0x18432C`+4), and the main menu spins in `0x78037` waiting on it.
+- Dirty disc (issue #14). Every streamed read goes through `sub_0007BEF0` (read at offset; a 2 KB bounce buffer
+  `sub_00070980` for an unaligned head and tail) and `sub_0007BDD0` (one aligned read; E_FAIL at once unless the
+  buffer is 4-byte aligned and offset/length are 2048 multiples; a failed read is retried until 15 s after
+  `sub_0007BD80` stamped `0x13C260C`). Any failure calls vtable `0x175D74`+0xC8 of the object at `0x13C25F8`,
+  i.e. the disc-error loop `0x40600` -> `sub_000137D0`, on the reading thread: the main thread shows a black
+  screen with the message (seen); a stream thread would draw it over a menu that keeps going (the issue's
+  screenshot, not seen here). The text is `menu.msg`
+  id 0x1770 (entries: u16 id, u16 group, u32 byte offset, u32; UTF-16 text).
+  The files are opened `FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING`. The toolkit passed NO_BUFFERING on to
+  Windows, which then enforces the host disk's rules: offset/length in its sector size, buffer aligned to its
+  driver's alignment mask. Otogi reads into 16-byte-aligned heap buffers (e.g. `0x01DAB7F0`, `0x0131A7B0`,
+  moving as the heap churns) at 2048 offsets. This PC's NVMe asks 4 bytes (buffer+1 fails with error 87,
+  +4 works), so it never failed here, and 15 save-list round trips did not show it; a disk that asks 32
+  bytes, or 4096-byte sectors, fails whenever the heap hands out such a buffer. Simulating a 32-byte rule on
+  these reads gave the message at once. `kernel_file.c` now opens without NO_BUFFERING (POSIX never used
+  O_DIRECT).
 - Exit check passes: `RECOMP_PAD_SCRIPT=2000:start,4000:start,7000:a,9000:a,...` reaches stage m000
   (`map\m000\map.dat`, `chr\c000.dat`); 70 s, no crash. Idle (no input) runs the title/attract loop.
 - Missing on disc too (the game probes them): `sfx\s000_00.dds` etc., `media\distortion.dds`.
@@ -290,11 +306,33 @@
   ("recorded where it changed, live elsewhere") took the live state, and that is whatever the game set
   before each RunPushBuffer: 0 when the detail chunks had just been drawn, which depends on what is in
   view. The overlay then drew opaque: the dirt square. Now `recordDraw` scans the guest pushbuffer since the
-  last draw for simple render state methods (`d3d.simpleStatesSet`, NV2A method per D3DRS 57-81) and a state
+  last draw for simple render state methods (`d3d.statesSet`, NV2A method per D3DRS 57-81) and a state
   the recording set wins even when it equals the old value. Checked by camera turns on the path (draw logs:
   the overlays blended in every frame, were opaque in the bad ones before) and in m007.
-  Not covered: complex states (cull mode, stencil fail...) and deferred ones (fog, texture stages) set to
-  the value they already had still replay live.
+- The Green Cave (m009, "stage 10" to players; the hub's stage menu names it) missing its ceiling, a white sky
+  showing through, and walls reduced to brown slabs (issue #14): the same replay leak, through CULLMODE. The
+  recorder calls `SetRenderState_CullMode` inside the recording (`0x25AD1`; NONE for the cave's
+  inward-facing chunks), the value it had at BeginPushBuffer, so the replay used the live cull mode (CCW, left
+  by the draw before) and dropped the ceiling and the inner faces of the walls. Found by replaying with all
+  recorded render states (fixed it), then by group and by index; none of the textures were wrong (dumped:
+  t0 mossy rock, t1 green rock, t2 a 32x32 black additive layer). `d3d.statesSet` now also knows the complex
+  states that write a method of their own, read from each setter in the title: CULLMODE 0x308 (always) and
+  0x39C, FRONTFACE 0x3A0, ZENABLE 0x30C, STENCILENABLE 0x32C, STENCILFAIL 0x370, FOGCOLOR 0x2A8, VERTEXBLEND
+  0x328, FILLMODE 0x38C, BACKFILLMODE 0x390, NORMALIZENORMALS 0x3A4 (the mask is a u128 over D3DRS 57-149).
+  Left live on purpose, as the Xbox does: ZWRITEENABLE and FOGENABLE, which the replay caller `0x254E0` sets
+  per object before each RunPushBuffer and the recorder does not touch (forcing the recorded Z write off
+  showed the pillar hall through the cave wall). Still not covered: deferred states (fog enable, texture
+  stages) and ZBIAS/TEXTUREFACTOR set to the value they had. Checked in m009 (D3D11 and Vulkan), m000,
+  m001, m007.
+- Crimson King's mane (issue #14, m004 Palace of Gold, first seen in the opening cutscene's "...in stone..." shot):
+  the mane is not part of his model (`chr\c020.dat`: body, a red tuft, a club, all program 2A115F15) but Otogi's
+  strand hair: vertex program D730B1B8 (guest 1E0A1F1), one FLOAT2 input, strands built from constants, texture
+  `media\Hair2.dds` (red; the player's hair is `Hair.dds`, black), 90 draws, fog on. Its pixel shader is just the
+  texture with the vertex alpha, and the program never writes oFog. The host started oFog at 0, which with
+  FOGTABLEMODE NONE is fully fogged: the mane came out the fog colour (m004: FF081018, dark navy; black elsewhere).
+  An unwritten oFog now starts at 1 (no fog), as the Xbox's red mane shows. 9 of the 235 programs never write oFog;
+  stages 1 and 5 look the same otherwise (the player's black hair is the same program). Checked on d3d11, gl and
+  vulkan. Not a recorded-pushbuffer or leaked-state problem (cf. stages 2 and 10).
 
 ## Draw cost (issue #2)
 - Report: a 15 W laptop (i5-1035G1) at 15 fps on stage 2 (m001), 3,080 draws and 62-69 ms of guest work a frame.

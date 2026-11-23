@@ -21,6 +21,11 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 ### Fixed
 - The ripple over the title screen when you press Start (as it turns grey and the
   New Game / Load Game menu comes in) shows again; nothing was drawn before (#16).
+- The Crimson King's mane is crimson again (Palace of Gold and later): it drew as a dark blue or
+  black shape, the colour of the stage's fog.
+- The "There is a problem with the disc you are using" message that could appear in the
+  menus (for example after going back and forth between the title and the save list) on
+  some PCs. The game now reads its files the same way on every disk.
 - Raikoh disappeared during dash attacks (dash with light or heavy attack): only the sword
   trail and his shadow showed. He now shows through the move, drawn with the game's
   fading after-image effect.
@@ -30,6 +35,9 @@ running the Release workflow by hand moves "Unreleased" into a new version secti
 - Forbidden Mansion (stage 2): the path no longer flips between grass and a hard-edged
   square of dirt as the camera turns; the dirt blends softly into the grass as on the Xbox.
   The same fix applies to any map layer the game draws see-through.
+- The Green Cave (stage 10): the cave has its ceiling and walls again at the start of the
+  stage, instead of brown slabs with a white sky showing through the roof (issue #14).
+  Other map pieces the game draws from both sides no longer go missing at some angles.
 - In widescreen, the trailer that plays when you wait on the title screen no longer has
   smeared, streaky strips at the left and right: it plays at its own 4:3 shape with black
   bars at the sides (issue #9).
